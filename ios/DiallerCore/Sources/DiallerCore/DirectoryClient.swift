@@ -1,0 +1,75 @@
+import Foundation
+
+/// One address-book entry as served by GET /v1/directory.
+public struct DirectoryContact: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var displayName: String
+    public var uri: String
+    public var mode: String // "local" | "trunk"
+    public var version: Int64
+    public var deleted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id, uri, mode, version, deleted
+        case displayName = "display_name"
+    }
+}
+
+public struct DirectorySync: Codable, Equatable, Sendable {
+    public var version: Int64
+    public var since: Int64
+    public var contacts: [DirectoryContact]
+}
+
+/// Delta-sync client for the directory API (SPEC §5 component 8, server
+/// side in server/internal/directory). Device-authenticated with the same
+/// credential as the gateway.
+public struct DirectoryClient {
+    private let base: URL
+    private let deviceID: String
+    private let token: String
+    private let session: URLSession
+
+    public init(base: URL, deviceID: String, token: String, session: URLSession = .shared) {
+        self.base = base
+        self.deviceID = deviceID
+        self.token = token
+        self.session = session
+    }
+
+    /// Fetch everything newer than `since` (0 = full sync, no tombstones).
+    public func changes(since: Int64) async throws -> DirectorySync {
+        var req = URLRequest(url: base.appendingPathComponent("v1/directory").appending(queryItems: [.init(name: "since", value: String(since))]))
+        req.setValue(deviceID, forHTTPHeaderField: "X-Device-ID")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(DirectorySync.self, from: data)
+    }
+}
+
+/// Local address book with reconcile: applies deltas (including tombstones)
+/// and remembers the cursor.
+public struct AddressBook: Equatable, Sendable {
+    public private(set) var version: Int64 = 0
+    public private(set) var contacts: [String: DirectoryContact] = [:]
+
+    public init() {}
+
+    public var sorted: [DirectoryContact] {
+        contacts.values.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    public mutating func apply(_ sync: DirectorySync) {
+        for c in sync.contacts {
+            if c.deleted == true {
+                contacts[c.id] = nil
+            } else {
+                contacts[c.id] = c
+            }
+        }
+        version = max(version, sync.version)
+    }
+}

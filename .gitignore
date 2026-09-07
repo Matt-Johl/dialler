@@ -1,0 +1,18 @@
+# build outputs
+/bin/
+/data/
+server/*.test
+server/coverage.out
+
+# swift
+.build/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.swiftpm/
+
+# harness artefacts
+harness/baresip/media/*.wav
+
+# os / editor
+.DS_Store
+*.swp

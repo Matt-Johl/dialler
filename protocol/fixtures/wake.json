@@ -1,0 +1,23 @@
+{
+  "v": 1,
+  "type": "wake",
+  "id": "01J9WAKE0000000000000000001",
+  "ts": "2026-09-05T10:01:00Z",
+  "body": {
+    "call_id": "call_9b8a7c6d",
+    "from": {
+      "display_name": "Reception",
+      "uri": "sip:100@pbx.example.local"
+    },
+    "to": {
+      "display_name": "Matt",
+      "uri": "sip:201@dialler.example.local"
+    },
+    "sip": {
+      "host": "dialler.example.local",
+      "port": 5061,
+      "transport": "tls"
+    },
+    "expires_at": "2026-09-05T10:01:30Z"
+  }
+}

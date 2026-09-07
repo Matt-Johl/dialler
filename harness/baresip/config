@@ -1,0 +1,36 @@
+# baresip config for the headless harness phone. @MODULE_PATH@ is filled in
+# by entrypoint.sh. TLS verification is off because the server uses a
+# self-signed dev certificate.
+
+poll_method             epoll
+
+# SIP
+sip_listen              0.0.0.0:0
+sip_verify_server       no
+sip_transports          tls
+
+# Audio: WAV in, WAV out (SPEC §7.1 automated audio sibling)
+audio_player            aufile,/media/out-@SIP_USER@.wav
+audio_source            aufile,/media/in.wav
+audio_alert             none
+audio_srate             48000
+audio_channels          1
+
+# Media
+rtp_tos                 184
+jitter_buffer_type      adaptive
+
+# Modules
+module_path             @MODULE_PATH@
+module                  opus.so
+module                  g711.so
+module                  aufile.so
+module                  ice.so
+
+# Application modules
+module_app              account.so
+module_app              contact.so
+module_app              menu.so
+module_app              ctrl_tcp.so
+
+ctrl_tcp_listen         0.0.0.0:4444

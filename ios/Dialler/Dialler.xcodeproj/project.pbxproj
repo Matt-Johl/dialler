@@ -1,0 +1,483 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		D1A11E700000000000000101 /* DiallerCore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000501 /* DiallerCore */; };
+		D1A11E700000000000000102 /* DiallerProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000502 /* DiallerProtocol */; };
+		D1A11E700000000000000106 /* DiallerEngine in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000505 /* DiallerEngine */; };
+		D1A11E700000000000000103 /* DiallerCore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000503 /* DiallerCore */; };
+		D1A11E700000000000000104 /* DiallerProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000504 /* DiallerProtocol */; };
+		D1A11E700000000000000105 /* PushProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D1A11E700000000000000202 /* PushProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D1A11E700000000000000601 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = D1A11E700000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D1A11E700000000000000302;
+			remoteInfo = PushProvider;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		D1A11E700000000000000701 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D1A11E700000000000000105 /* PushProvider.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		D1A11E700000000000000201 /* Dialler.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Dialler.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D1A11E700000000000000202 /* PushProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PushProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D1A11E700000000000000801 /* Exceptions for "App" folder in "Dialler" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D1A11E700000000000000301 /* Dialler */;
+		};
+		D1A11E700000000000000802 /* Exceptions for "PushProvider" folder in "PushProvider" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = D1A11E700000000000000302 /* PushProvider */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		D1A11E700000000000000901 /* App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D1A11E700000000000000801 /* Exceptions for "App" folder in "Dialler" target */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		D1A11E700000000000000902 /* PushProvider */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D1A11E700000000000000802 /* Exceptions for "PushProvider" folder in "PushProvider" target */,
+			);
+			path = PushProvider;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		D1A11E700000000000000A01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1A11E700000000000000101 /* DiallerCore in Frameworks */,
+				D1A11E700000000000000102 /* DiallerProtocol in Frameworks */,
+				D1A11E700000000000000106 /* DiallerEngine in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D1A11E700000000000000A02 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1A11E700000000000000103 /* DiallerCore in Frameworks */,
+				D1A11E700000000000000104 /* DiallerProtocol in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		D1A11E700000000000000B01 = {
+			isa = PBXGroup;
+			children = (
+				D1A11E700000000000000901 /* App */,
+				D1A11E700000000000000902 /* PushProvider */,
+				D1A11E700000000000000B02 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		D1A11E700000000000000B02 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				D1A11E700000000000000201 /* Dialler.app */,
+				D1A11E700000000000000202 /* PushProvider.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		D1A11E700000000000000301 /* Dialler */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D1A11E700000000000000C02 /* Build configuration list for PBXNativeTarget "Dialler" */;
+			buildPhases = (
+				D1A11E700000000000000D01 /* Sources */,
+				D1A11E700000000000000A01 /* Frameworks */,
+				D1A11E700000000000000E01 /* Resources */,
+				D1A11E700000000000000701 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D1A11E700000000000000F01 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				D1A11E700000000000000901 /* App */,
+			);
+			name = Dialler;
+			packageProductDependencies = (
+				D1A11E700000000000000501 /* DiallerCore */,
+				D1A11E700000000000000502 /* DiallerProtocol */,
+				D1A11E700000000000000505 /* DiallerEngine */,
+			);
+			productName = Dialler;
+			productReference = D1A11E700000000000000201 /* Dialler.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D1A11E700000000000000302 /* PushProvider */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D1A11E700000000000000C03 /* Build configuration list for PBXNativeTarget "PushProvider" */;
+			buildPhases = (
+				D1A11E700000000000000D02 /* Sources */,
+				D1A11E700000000000000A02 /* Frameworks */,
+				D1A11E700000000000000E02 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				D1A11E700000000000000902 /* PushProvider */,
+			);
+			name = PushProvider;
+			packageProductDependencies = (
+				D1A11E700000000000000503 /* DiallerCore */,
+				D1A11E700000000000000504 /* DiallerProtocol */,
+			);
+			productName = PushProvider;
+			productReference = D1A11E700000000000000202 /* PushProvider.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D1A11E700000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					D1A11E700000000000000301 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					D1A11E700000000000000302 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = D1A11E700000000000000C01 /* Build configuration list for PBXProject "Dialler" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = D1A11E700000000000000B01;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D1A11E700000000000000401 /* XCLocalSwiftPackageReference "../DiallerCore" */,
+				D1A11E700000000000000402 /* XCLocalSwiftPackageReference "../DiallerProtocol" */,
+				D1A11E700000000000000403 /* XCLocalSwiftPackageReference "../DiallerEngine" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = D1A11E700000000000000B02 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				D1A11E700000000000000301 /* Dialler */,
+				D1A11E700000000000000302 /* PushProvider */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		D1A11E700000000000000E01 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D1A11E700000000000000E02 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		D1A11E700000000000000D01 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D1A11E700000000000000D02 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D1A11E700000000000000F01 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D1A11E700000000000000302 /* PushProvider */;
+			targetProxy = D1A11E700000000000000601 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		D1A11E700000000000001001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D1A11E700000000000001002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		D1A11E700000000000001003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/Dialler.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 568U7M6YTX;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.latentbadger.dialler;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		D1A11E700000000000001004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/Dialler.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 568U7M6YTX;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.latentbadger.dialler;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		D1A11E700000000000001005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PushProvider/PushProvider.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 568U7M6YTX;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PushProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.latentbadger.dialler.PushProvider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		D1A11E700000000000001006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = PushProvider/PushProvider.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 568U7M6YTX;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PushProvider/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.latentbadger.dialler.PushProvider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		D1A11E700000000000000C01 /* Build configuration list for PBXProject "Dialler" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1A11E700000000000001001 /* Debug */,
+				D1A11E700000000000001002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D1A11E700000000000000C02 /* Build configuration list for PBXNativeTarget "Dialler" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1A11E700000000000001003 /* Debug */,
+				D1A11E700000000000001004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		D1A11E700000000000000C03 /* Build configuration list for PBXNativeTarget "PushProvider" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D1A11E700000000000001005 /* Debug */,
+				D1A11E700000000000001006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D1A11E700000000000000401 /* XCLocalSwiftPackageReference "../DiallerCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../DiallerCore;
+		};
+		D1A11E700000000000000402 /* XCLocalSwiftPackageReference "../DiallerProtocol" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../DiallerProtocol;
+		};
+		D1A11E700000000000000403 /* XCLocalSwiftPackageReference "../DiallerEngine" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../DiallerEngine;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		D1A11E700000000000000501 /* DiallerCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1A11E700000000000000401 /* XCLocalSwiftPackageReference "../DiallerCore" */;
+			productName = DiallerCore;
+		};
+		D1A11E700000000000000502 /* DiallerProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1A11E700000000000000402 /* XCLocalSwiftPackageReference "../DiallerProtocol" */;
+			productName = DiallerProtocol;
+		};
+		D1A11E700000000000000503 /* DiallerCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1A11E700000000000000401 /* XCLocalSwiftPackageReference "../DiallerCore" */;
+			productName = DiallerCore;
+		};
+		D1A11E700000000000000504 /* DiallerProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1A11E700000000000000402 /* XCLocalSwiftPackageReference "../DiallerProtocol" */;
+			productName = DiallerProtocol;
+		};
+		D1A11E700000000000000505 /* DiallerEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1A11E700000000000000403 /* XCLocalSwiftPackageReference "../DiallerEngine" */;
+			productName = DiallerEngine;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = D1A11E700000000000000001 /* Project object */;
+}

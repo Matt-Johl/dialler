@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "type": "error",
+  "id": "01J9ERROR000000000000000001",
+  "ts": "2026-09-05T10:00:00Z",
+  "body": {
+    "code": "unauthorized",
+    "message": "unknown device or bad token",
+    "fatal": true
+  }
+}

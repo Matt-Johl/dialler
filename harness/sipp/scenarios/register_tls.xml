@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- REGISTER over TLS to the light server; expects 200 with our Contact echoed. -->
+<scenario name="register_tls">
+  <send>
+    <![CDATA[
+      REGISTER sip:dialler SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      Max-Forwards: 70
+      From: <sip:[service]@dialler>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@dialler>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
+      User-Agent: sipp-harness
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <recv response="200" timeout="5000">
+    <action>
+      <ereg regexp="expires=300" search_in="hdr" header="Contact:" check_it="true" assign_to="1"/>
+    </action>
+  </recv>
+
+  <!-- SIPp rejects variables that are assigned but never read; this marks $1 as used. -->
+  <Reference variables="1"/>
+</scenario>

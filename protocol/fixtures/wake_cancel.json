@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "wake_cancel",
+  "id": "01J9WAKECANCEL0000000000001",
+  "ts": "2026-09-05T10:01:20Z",
+  "body": {
+    "call_id": "call_9b8a7c6d",
+    "reason": "caller_hangup"
+  }
+}

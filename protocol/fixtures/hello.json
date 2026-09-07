@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "type": "hello",
+  "id": "01J9HELLO000000000000000001",
+  "ts": "2026-09-05T10:00:00Z",
+  "body": {
+    "device_id": "dev_4f3c2a1b",
+    "token": "tok_c29tZS1sb25nLXJhbmRvbS1zdHJpbmc",
+    "client": "extension",
+    "app_version": "0.1.0",
+    "capabilities": ["wake", "directory"]
+  }
+}

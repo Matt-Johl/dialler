@@ -1,0 +1,97 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild -version)",
+      "Bash(swift --version)",
+      "Bash(xcrun simctl *)",
+      "Bash(docker --version)",
+      "Bash(go version *)",
+      "Bash(rustc --version)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "WebFetch(domain:auth.docker.io)",
+      "Bash(grep -vE '^\\\\s*\\(=>|#[0-9]+ \\)|^\\\\s*$')",
+      "Bash(export GOPATH=\"$HOME/Library/Caches/dialler-go\" GOMODCACHE=\"$HOME/Library/Caches/dialler-go/pkg/mod\")",
+      "Bash(go doc *)",
+      "Bash(export GOMODCACHE=\"$HOME/Library/Caches/dialler-go/pkg/mod\")",
+      "Bash(export GOPATH=\"$HOME/Library/Caches/dialler-go\" GOMODCACHE=\"$HOME/Library/Caches/dialler-go/pkg/mod\"; cd \"$TMPDIR/spike\" && go doc github.com/emiago/sipgo.Server 2>&1 | grep -E '^func' | head -30; echo \"== UA options\"; go doc -short github.com/emiago/sipgo 2>&1 | grep -E '^func With' | head -20; echo \"== tls listen\"; grep -n -iE 'case \"tls\"|\"tls\"' \"$GOMODCACHE/github.com/emiago/sipgo@v1.4.3/sip/transport_layer.go\" | head)",
+      "Read(//Users/matt/Library/Caches/dialler-go/pkg/mod/github.com/emiago/sipgo@v1.4.3/sip/**)",
+      "Bash(grep -n -A30 'func \\(b \\\\*Bridge\\) ProxyMedia\\(\\)' __TRACKED_VAR__/bridge.go)",
+      "Bash(grep -n -A40 'func NewDiago' __TRACKED_VAR__/diago.go)",
+      "Bash(go mod *)",
+      "Bash(go build *)",
+      "Bash(docker compose *)",
+      "Bash(sh harness/spike/dial.sh)",
+      "Bash(docker run *)",
+      "Bash(grep -n -A45 'func \\(dg \\\\*Diago\\) InviteBridge' __TRACKED_VAR__/diago.go)",
+      "Bash(go get *)",
+      "Bash(grep -nE '^func \\\\\\(d \\\\*DialogServerSession\\\\\\) \\(Respond|Context|Hangup|Answer|AnswerOptions|Ringing|Trying\\)\\\\\\(' __TRACKED_VAR__/dialog_server_session.go)",
+      "Bash(sed -n '/^type InviteClientOptions struct/,/^}/p' __TRACKED_VAR__/dialog_client_session.go)",
+      "Bash(gofmt -l .)",
+      "Bash(go vet *)",
+      "Bash(go test *)",
+      "Bash(gofmt -l cmd/ internal/)",
+      "Bash(gofmt -l cmd internal)",
+      "Bash(xcodebuild -project Dialler.xcodeproj -scheme Dialler -configuration Debug -destination generic/platform=iOS -derivedDataPath /Users/matt/Library/Developer/Xcode/DerivedData/Dialler-sandbox CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation -skipMacroValidation -IDEPackageSupportDisableManifestSandbox YES build)",
+      "Bash(xcodebuild -project Dialler.xcodeproj -scheme Dialler -configuration Debug -destination generic/platform=iOS -derivedDataPath /Users/matt/Library/Developer/Xcode/DerivedData/Dialler-sandbox CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO -skipPackagePluginValidation -skipMacroValidation build)",
+      "Bash(defaults write *)",
+      "Bash(echo \"rc=$?\")",
+      "Bash(defaults read *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:codeload.github.com)",
+      "WebFetch(domain:release-assets.githubusercontent.com)",
+      "Bash(ar -t ios/vendor/prefix/device/lib/libbaresip.a)",
+      "Bash(nm ios/vendor/prefix/device/lib/libbaresip.a)",
+      "Bash(DIALLER_REWRITE_CONTACT=false make harness-call-nat)",
+      "Bash(gofmt -w cmd internal)",
+      "WebSearch",
+      "WebFetch(domain:getstream.io)",
+      "Bash(DIALLER_PUBLIC_HOST=127.0.0.1 make harness-up)",
+      "Read(//Users/matt/Code/Cursor/**)",
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 make harness-up)",
+      "Bash(DIALLER_LOG_LEVEL=debug docker compose -f harness/docker-compose.yml config)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "auth.docker.io",
+        "registry-1.docker.io",
+        "index.docker.io",
+        "*.docker.io",
+        "*.docker.com",
+        "gcr.io",
+        "*.gcr.io",
+        "*.googleapis.com",
+        "proxy.golang.org",
+        "sum.golang.org"
+      ],
+      "allowUnixSockets": [
+        "~/.docker/run/docker.sock"
+      ],
+      "allowMachLookup": [
+        "com.apple.CoreSimulator.*"
+      ]
+    },
+    "filesystem": {
+      "allowWrite": [
+        "~/Code/Cursor",
+        "~/Library/Developer",
+        "~/Library/Caches",
+        "/var/folders/yy/zt2_k1_177n0vgbhwbwyjtq40000gn/T",
+        "~/.docker"
+      ],
+      "allowRead": [
+        "~/Code/Cursor",
+        "~/Library/Developer",
+        "~/Library/Caches",
+        "/var/folders/yy/zt2_k1_177n0vgbhwbwyjtq40000gn/T",
+        "~/.docker"
+      ]
+    },
+    "enableWeakerNetworkIsolation": true,
+    "mode": "auto-allow"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "v": 1,
+  "type": "welcome",
+  "id": "01J9WELCOME00000000000000001",
+  "ts": "2026-09-05T10:00:00Z",
+  "body": {
+    "session_id": "sess_7d1e9a",
+    "heartbeat_seconds": 25,
+    "server_time": "2026-09-05T10:00:00Z",
+    "directory_version": 42,
+    "sip": {
+      "user": "201",
+      "domain": "dialler.example.local",
+      "host": "dialler.example.local",
+      "port": 5061,
+      "transport": "tls"
+    }
+  }
+}

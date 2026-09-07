@@ -1,0 +1,93 @@
+# Headless validation harness (SPEC §7.2): the light server, an Asterisk PBX
+# peer, SIPp for protocol conformance, and two headless baresip phones.
+#
+#   docker compose -f harness/docker-compose.yml up --build dialler asterisk
+#   docker compose -f harness/docker-compose.yml --profile test run --rm sipp
+#   docker compose -f harness/docker-compose.yml --profile test up baresip-a baresip-b
+#
+# See harness/README.md. This file has not been executed in the environment
+# that wrote it (no Docker socket access); expect first-run fixes.
+name: dialler-harness
+
+services:
+  dialler:
+    build:
+      context: ..
+      dockerfile: harness/dialler/Dockerfile
+    command:
+      - -signal-addr=:7443
+      - -sip-addr=:5061
+      - -http-addr=:8080
+      - -admin-token=harness
+      # The host apps register SIP to. Inside the compose network "dialler"
+      # resolves; a phone needs the Mac's LAN address:
+      #   DIALLER_PUBLIC_HOST=$(ipconfig getifaddr en0) make harness-up
+      - -public-host=${DIALLER_PUBLIC_HOST:-dialler}
+      - -local-domain=dialler
+      - -data-dir=/data
+      - -ring-timeout=30s
+      # Host-side ports are overridable so this harness can run next to a
+      # native `make dev-server` (DIALLER_SIGNAL_HOSTPORT / SIP_HOSTPORT /
+      # HTTP_HOSTPORT / RTP_MIN / RTP_MAX); the RTP range is published 1:1.
+      - -rtp-min=${DIALLER_RTP_MIN:-20000}
+      - -rtp-max=${DIALLER_RTP_MAX:-20100}
+      - -public-sip-port=${DIALLER_SIP_HOSTPORT:-5061}
+      - -rewrite-contact=${DIALLER_REWRITE_CONTACT:-true} # false only to prove harness-call-nat fails without it
+      - -sip-trace=${DIALLER_SIP_TRACE:-false} # every SIP message in the server log
+      # Off here on purpose: Docker Desktop's UDP port proxy rewrites a LAN
+      # phone's RTP source, and replies to that rewritten source are not
+      # delivered, so learning the source (symmetric RTP) silences the phone
+      # after its first packet. Phones on this harness are reachable at their
+      # SDP address directly. Production default is on (NAT'd phones).
+      - -rtp-symmetric=${DIALLER_RTP_SYMMETRIC:-false}
+      - -log-level=${DIALLER_LOG_LEVEL:-info} # debug shows the relay's RTP source learning
+    volumes:
+      - dialler-data:/data
+    ports:
+      - "${DIALLER_SIGNAL_HOSTPORT:-7443}:7443"
+      - "${DIALLER_SIP_HOSTPORT:-5061}:5061"
+      - "${DIALLER_HTTP_HOSTPORT:-8080}:8080" # directory + admin API; reachable from devices on the LAN (token-protected)
+      - "${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}:${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}/udp" # relayed media, so phones (and containers via the host address) reach it
+
+  asterisk:
+    build: ./asterisk
+    depends_on: [dialler]
+    ports:
+      - "5060:5060/udp"
+
+  sipp:
+    build: ./sipp
+    profiles: [test]
+    depends_on: [dialler]
+    volumes:
+      - ./sipp/scenarios:/scenarios:ro
+    environment:
+      DIALLER_HOST: dialler
+      DIALLER_SIP_PORT: "5061"
+
+  baresip-a:
+    build: ./baresip
+    profiles: [test]
+    depends_on: [dialler]
+    environment:
+      SIP_USER: "201"
+      SIP_DOMAIN: dialler
+    volumes:
+      - ./baresip/media:/media
+
+  baresip-b:
+    build: ./baresip
+    profiles: [test]
+    depends_on: [dialler]
+    environment:
+      SIP_USER: "202"
+      SIP_DOMAIN: dialler
+      REGINT: "${BARESIP_B_REGINT:-300}" # 0 → starts unregistered (wake test)
+      # Set to <mac-ip>:5061 to register with a server running natively on
+      # the Mac instead of the dialler container (harness/ring_native.sh).
+      OUTBOUND: "${BARESIP_B_OUTBOUND:-}"
+    volumes:
+      - ./baresip/media:/media
+
+volumes:
+  dialler-data: {}

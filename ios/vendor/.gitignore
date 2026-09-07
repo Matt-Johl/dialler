@@ -1,0 +1,6 @@
+# Scratch and outputs of build-baresip.sh. Rebuild with the script; the
+# XCFrameworks are large binaries and are not committed.
+src/
+build/
+prefix/
+xcframeworks/

@@ -1,0 +1,35 @@
+# Engine-spike call test (SPEC §6): the diago B2BUA bridges an app-to-app call
+# between two headless baresip phones, media proxied through the server.
+#
+#   docker compose -f harness/docker-compose.spike.yml up --build -d
+#   sh harness/spike/dial.sh                 # 201 → 202, ~6s of tone
+#   python3 harness/spike/assert_audio.py    # callee recording has energy
+#   docker compose -f harness/docker-compose.spike.yml down -v
+name: dialler-spike
+
+services:
+  spike:
+    build:
+      context: ..
+      dockerfile: harness/spike/Dockerfile
+    command: ["-bind-host=0.0.0.0", "-bind-port=5061", "-ext-host=spike"]
+
+  phone-a:
+    build: ./baresip
+    depends_on: [spike]
+    environment:
+      SIP_USER: "201"
+      SIP_DOMAIN: spike
+    volumes:
+      - ./spike/media:/media
+    ports:
+      - "127.0.0.1:4401:4444" # ctrl_tcp, for driving the dial
+
+  phone-b:
+    build: ./baresip
+    depends_on: [spike]
+    environment:
+      SIP_USER: "202"
+      SIP_DOMAIN: spike
+    volumes:
+      - ./spike/media:/media

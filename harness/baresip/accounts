@@ -1,0 +1,7 @@
+# One account registered over TLS to the light server. No Digest password is
+# used in Phase 0 (transport-authenticated app leg); auth_pass is a placeholder.
+# @REGINT@ is the registration interval; 0 = start unregistered (the wake test
+# registers on demand via ctrl_tcp, as the woken app would).
+# @OUTBOUND@ (optional) is an outbound proxy by address, like a real phone
+# uses; libre resolves the AOR domain by DNS only (never /etc/hosts).
+<sip:@SIP_USER@@@SIP_DOMAIN@;transport=tls>;auth_pass=unused;regint=@REGINT@;answermode=auto;audio_codecs=opus/48000/2,PCMU/8000/1@OUTBOUND@

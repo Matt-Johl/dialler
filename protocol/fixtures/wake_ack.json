@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "wake_ack",
+  "id": "01J9WAKEACK000000000000001",
+  "ts": "2026-09-05T10:01:01Z",
+  "body": {
+    "call_id": "call_9b8a7c6d",
+    "action": "will_answer"
+  }
+}

@@ -32,7 +32,11 @@ enum op_type {
     OP_AUDIO_INTERRUPT_END,
     OP_AUDIO_TEST_ALLOC,
     OP_AUDIO_TEST_FREE,
-    OP_MEDIA_STATS
+    OP_MEDIA_STATS,
+    OP_DIAL,
+    OP_MUTE,
+    OP_HOLD,
+    OP_TRANSFER
 };
 
 static cb_media_stats_t media_stats; /* filled by OP_MEDIA_STATS on the loop thread */
@@ -51,7 +55,8 @@ static void test_error_h(int err, const char *str, void *arg) { (void)err; (void
 
 struct op {
     enum op_type type;
-    const char *aor;
+    const char *aor; /* account line, or the URI to dial */
+    bool flag;       /* mute / hold on-off */
     int err;
     bool done;
     pthread_mutex_t mu;
@@ -133,8 +138,18 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
         g.call = call;
         emit(CB_EVENT_CALL_INCOMING, peer, txt);
         break;
+    case UA_EVENT_CALL_OUTGOING:
+        g.call = call;
+        emit(CB_EVENT_CALL_OUTGOING, peer, txt);
+        break;
     case UA_EVENT_CALL_RINGING:
         emit(CB_EVENT_CALL_RINGING, peer, txt);
+        break;
+    case UA_EVENT_CALL_PROGRESS:
+        emit(CB_EVENT_CALL_PROGRESS, peer, txt);
+        break;
+    case UA_EVENT_CALL_TRANSFER_FAILED:
+        emit(CB_EVENT_CALL_TRANSFER_FAILED, peer, txt);
         break;
     case UA_EVENT_CALL_ESTABLISHED:
         g.call = call;
@@ -184,6 +199,24 @@ static int do_op(struct op *op)
             err = ENOENT;
         else
             err = ua_answer(g.ua, g.call, VIDMODE_OFF);
+        break;
+    case OP_DIAL:
+        if (!g.ua)
+            err = ENOENT;
+        else if (g.call)
+            err = EBUSY; /* one call at a time (call_max_calls 1) */
+        else
+            err = ua_connect(g.ua, &g.call, NULL, op->aor, VIDMODE_OFF);
+        break;
+    case OP_MUTE:
+        if (g.call)
+            audio_mute(call_audio(g.call), op->flag);
+        break;
+    case OP_HOLD:
+        err = g.call ? call_hold(g.call, op->flag) : ENOENT;
+        break;
+    case OP_TRANSFER:
+        err = g.call ? call_transfer(g.call, op->aor) : ENOENT;
         break;
     case OP_HANGUP:
         if (g.ua)
@@ -272,12 +305,12 @@ static bool on_loop_thread(void)
 }
 
 /* Run an op on the loop thread and wait (bounded) for its result. */
-static int run_op(enum op_type type, const char *aor)
+static int run_op_flag(enum op_type type, const char *aor, bool flag)
 {
     if (!g.running || !g.mq)
         return -ENOTCONN;
 
-    struct op op = { .type = type, .aor = aor };
+    struct op op = { .type = type, .aor = aor, .flag = flag };
     if (on_loop_thread())
         return -do_op(&op);
 
@@ -306,6 +339,11 @@ out:
     pthread_cond_destroy(&op.cv);
     pthread_mutex_destroy(&op.mu);
     return -err;
+}
+
+static int run_op(enum op_type type, const char *aor)
+{
+    return run_op_flag(type, aor, false);
 }
 
 /* ---- lifecycle ------------------------------------------------------------- */
@@ -410,6 +448,26 @@ int cb_ua_register(void)
 int cb_answer(void)
 {
     return run_op(OP_ANSWER, NULL);
+}
+
+int cb_dial(const char *uri)
+{
+    return run_op(OP_DIAL, uri);
+}
+
+void cb_mute(bool muted)
+{
+    run_op_flag(OP_MUTE, NULL, muted);
+}
+
+int cb_hold(bool hold)
+{
+    return run_op_flag(OP_HOLD, NULL, hold);
+}
+
+int cb_transfer(const char *uri)
+{
+    return run_op(OP_TRANSFER, uri);
 }
 
 void cb_hangup(void)

@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import DiallerCore
 import DiallerProtocol
@@ -25,6 +26,23 @@ final class AppModel: ObservableObject {
     @Published private(set) var contacts: [DirectoryContact] = []
     @Published private(set) var log: [String] = []
     @Published private(set) var localPushStatus = "not configured"
+
+    /// The call in progress, for the in-call screen. Nil while idle or
+    /// merely ringing (ringing is CallKit's UI alone).
+    struct ActiveCall: Identifiable, Equatable {
+        var id: String
+        var title: String
+        var outgoing: Bool
+        var connectedAt: Date?
+        var muted = false
+        var speaker = false
+        var held = false
+        var status: String {
+            if connectedAt == nil { return outgoing ? "Calling…" : "Connecting…" }
+            return held ? "On hold" : "Connected"
+        }
+    }
+    @Published private(set) var activeCall: ActiveCall?
 
     private let store: AppConfigStore = AppGroupConfigStore(appGroup: DiallerIDs.appGroup)
     private let callKit = CallKitBridge()
@@ -54,8 +72,43 @@ final class AppModel: ObservableObject {
             token = cfg.token
             acceptAnyCertificate = cfg.gateway.acceptAnyCertificate
         }
-        callKit.onAnswer = { [weak self] id in self?.controller.userAnswered(callID: id) }
-        callKit.onEnd = { [weak self] id in self?.controller.userEnded(callID: id) }
+        callKit.onAnswer = { [weak self] id in
+            guard let self else { return }
+            self.controller.userAnswered(callID: id)
+            let title = self.controller.activeCalls.first { $0.wake.callID == id }.map { self.title(for: $0) } ?? "Call"
+            self.activeCall = ActiveCall(id: id, title: title, outgoing: false, connectedAt: Date())
+        }
+        callKit.onEnd = { [weak self] id in
+            guard let self else { return }
+            self.controller.userEnded(callID: id)
+            if self.activeCall?.id == id { self.activeCall = nil }
+        }
+        callKit.onStart = { [weak self] id in
+            guard let self else { return }
+            self.controller.userStarted(callID: id)
+            let title = self.controller.activeCalls.first { $0.wake.callID == id }.map { self.title(for: $0) } ?? "Call"
+            self.activeCall = ActiveCall(id: id, title: title, outgoing: true, connectedAt: nil)
+        }
+        callKit.onEnded = { [weak self] id in self?.callEnded(id) }
+        callKit.onStartFailed = { [weak self] id in
+            self?.controller.startFailed(callID: id)
+            if self?.activeCall?.id == id { self?.activeCall = nil }
+        }
+        callKit.onConnected = { [weak self] id in
+            guard let self, self.activeCall?.id == id else { return }
+            self.activeCall?.connectedAt = Date()
+        }
+        callKit.onMute = { [weak self] id, muted in
+            guard let self else { return }
+            self.controller.setMuted(muted)
+            if self.activeCall?.id == id { self.activeCall?.muted = muted }
+        }
+        controller.onTransferFailed = { [weak self] reason in Task { @MainActor in self?.append("transfer refused: \(reason)") } }
+        callKit.onHold = { [weak self] id, held in
+            guard let self else { return }
+            self.controller.setHeld(callID: id, held)
+            if self.activeCall?.id == id { self.activeCall?.held = held }
+        }
         callKit.onAudioActivated = { [weak self] in self?.engine.audioSessionActivated() }
         callKit.onAudioDeactivated = { [weak self] in self?.engine.audioSessionDeactivated() }
         callKit.onLog = { [weak self] m in Task { @MainActor in self?.append(m) } }
@@ -65,6 +118,68 @@ final class AppModel: ObservableObject {
         #else
         logging.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
         #endif
+    }
+
+    // MARK: Calls
+
+    /// Place a call. `target` is whatever the user gave: a directory URI
+    /// ("sip:202@dialler"), a user ("202") or digits from the keypad; the
+    /// engine completes bare targets with the account's domain and the
+    /// server routes local users to apps and everything else to the trunk.
+    func dial(_ target: String) {
+        let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        let name = contacts.first { $0.uri == t || CallController.userPart(of: $0.uri) == t }?.displayName
+        if controller.startCall(to: t, displayName: name) == nil {
+            append("call to \(t) not started (see log above)")
+        }
+    }
+
+    func hangUp() {
+        guard let id = activeCall?.id else { return }
+        callKit.requestEnd(callID: id)
+    }
+
+    func toggleMute() {
+        guard let call = activeCall else { return }
+        callKit.requestMute(callID: call.id, muted: !call.muted)
+    }
+
+    /// Blind transfer of the active call. The call ends when the server has
+    /// connected the other party; a refusal is logged and the call stays up.
+    func transfer(to target: String) {
+        guard let call = activeCall, call.connectedAt != nil else { return }
+        controller.transfer(callID: call.id, to: target)
+    }
+
+    func toggleHold() {
+        guard let call = activeCall, call.connectedAt != nil else { return }
+        callKit.requestHold(callID: call.id, held: !call.held)
+    }
+
+    func toggleSpeaker() {
+        guard var call = activeCall else { return }
+        call.speaker.toggle()
+        do {
+            try AVAudioSession.sharedInstance().overrideOutputAudioPort(call.speaker ? .speaker : .none)
+            activeCall = call
+        } catch {
+            append("speaker toggle failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// CallKit ended a call that the in-call screen is showing (remote
+    /// hangup, failure) — the bridge reports it through the controller's
+    /// `end`, which calls this.
+    func callEnded(_ id: String) {
+        if activeCall?.id == id { activeCall = nil }
+    }
+
+    private func title(for call: TrackedCall) -> String {
+        if call.direction == .outgoing {
+            return call.wake.to.displayName ?? call.target
+        }
+        return call.wake.from.displayName?.isEmpty == false ? call.wake.from.displayName! : CallController.userPart(of: call.wake.from.uri)
     }
 
     var currentConfig: AppConfig {
@@ -238,12 +353,18 @@ final class AppModel: ObservableObject {
 final class LoggingCallEngine: CallEngine {
     var onIncomingCall: ((String) -> Void)?
     var onCallEnded: ((String) -> Void)?
+    var onOutgoingRinging: (() -> Void)?
+    var onCallEstablished: (() -> Void)?
+    var onTransferFailed: ((String) -> Void)?
     var log: (String) -> Void = { _ in }
     func register(user: String, sip: SIPTarget) {
         log("engine: would REGISTER \(user) to \(sip.host):\(sip.port)/\(sip.transport)")
     }
     func prepareForIncomingCall(callID: String, user: String, sip: SIPTarget) {
         log("engine: would answer call \(callID) as \(user) via \(sip.host):\(sip.port)/\(sip.transport)")
+    }
+    func dial(callID: String, to target: String) {
+        log("engine: would dial \(target) for \(callID)")
     }
     func hangup(callID: String) {
         log("engine: hangup \(callID)")

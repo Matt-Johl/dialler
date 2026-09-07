@@ -49,7 +49,15 @@
       "Bash(DIALLER_PUBLIC_HOST=127.0.0.1 make harness-up)",
       "Read(//Users/matt/Code/Cursor/**)",
       "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 make harness-up)",
-      "Bash(DIALLER_LOG_LEVEL=debug docker compose -f harness/docker-compose.yml config)"
+      "Bash(DIALLER_LOG_LEVEL=debug docker compose -f harness/docker-compose.yml config)",
+      "Bash(grep -v \"^$\")",
+      "Bash(grep -E 'call closed|session closed|closed|terminated|486|480|603' __TRACKED_VAR__/sim-call.log)",
+      "Bash(grep -nE 'call closed|session closed|Call with|terminated|hangup' __TRACKED_VAR__/sim-call.log)",
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 make harness-trunk)",
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIRECTION=out KEEP=1 sh harness/trunk_test.sh)",
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIRECTION=in KEEP=1 sh harness/trunk_test.sh)",
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug KEEP=1 DIRECTION=out sh harness/trunk_test.sh)",
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIALLER_SIP_TRACE=true docker compose -f harness/docker-compose.yml up -d dialler)"
     ]
   },
   "sandbox": {

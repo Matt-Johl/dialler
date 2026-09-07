@@ -29,6 +29,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
+	"dialler/server/internal/pbx"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
 	"dialler/server/internal/wire"
@@ -70,11 +71,19 @@ type Config struct {
 	// PublicPort is the SIP port apps are told to reach us on (wakes) when
 	// it differs from Port (container published on another host port).
 	// 0 = Port.
-	PublicPort  int
-	RingTimeout time.Duration
-	MinExpires            int
-	MaxExpires            int
-	Logger                *slog.Logger
+	PublicPort int
+	// Trunk is the PBX peer for non-local destinations (SPEC §4.4 rule 7);
+	// nil = standalone (app↔app only). Trunk-originated calls arrive on a
+	// second listener, TrunkBind ("0.0.0.0:5060"), over Trunk.Transport.
+	Trunk     *pbx.Trunk
+	TrunkBind string
+	// TrunkExternalHost is the address the PBX reaches us at (trunk-leg
+	// signalling Contact and media). Empty = this host's first address.
+	TrunkExternalHost string
+	RingTimeout       time.Duration
+	MinExpires        int
+	MaxExpires        int
+	Logger            *slog.Logger
 }
 
 func (c Config) withDefaults() Config {
@@ -138,9 +147,35 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 	srv.OnRegister(s.onRegister)
 	s.tl = srv.TransportLayer()
 
-	s.dg = diago.NewDiago(ua,
+	opts := []diago.DiagoOption{
 		diago.WithServer(srv),
 		diago.WithLogger(cfg.Logger),
+	}
+	if cfg.Trunk != nil {
+		host, port, err := trunkBind(cfg.TrunkBind, cfg.Trunk)
+		if err != nil {
+			return nil, err
+		}
+		ext := cfg.TrunkExternalHost
+		if ext == "" {
+			ext = firstIPv4()
+		}
+		opts = append(opts, diago.WithTransport(diago.Transport{
+			ID:           "trunk",
+			Transport:    cfg.Trunk.Transport,
+			BindHost:     host,
+			BindPort:     port,
+			ExternalHost: ext,
+		}))
+	}
+	opts = append(opts, mediaOptions(cfg)...)
+	s.dg = diago.NewDiago(ua, opts...)
+	return s, nil
+}
+
+// mediaOptions is the app-leg transport (always present) and the codec set.
+func mediaOptions(cfg Config) []diago.DiagoOption {
+	return []diago.DiagoOption{
 		diago.WithTransport(diago.Transport{
 			Transport:    "tls",
 			BindHost:     cfg.BindHost,
@@ -154,14 +189,17 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 		diago.WithMediaConfig(diago.MediaConfig{
 			Codecs: []media.Codec{media.CodecAudioOpus, media.CodecAudioUlaw, media.CodecAudioAlaw},
 		}),
-	)
-	return s, nil
+	}
 }
 
 // Serve listens on the app leg until ctx ends.
 func (s *Server) Serve(ctx context.Context) error {
+	trunk := "none"
+	if s.cfg.Trunk != nil {
+		trunk = s.cfg.Trunk.URI("*")
+	}
 	s.log.Info("b2bua listening", "bind", fmt.Sprintf("%s:%d", s.cfg.BindHost, s.cfg.Port), "external", s.cfg.ExternalHost, "domains", s.cfg.Domains,
-		"app_leg_symmetric_rtp", !s.cfg.NoSymmetricRTP, "rewrite_contact", !s.cfg.KeepAdvertisedContact)
+		"app_leg_symmetric_rtp", !s.cfg.NoSymmetricRTP, "rewrite_contact", !s.cfg.KeepAdvertisedContact, "trunk", trunk)
 	err := s.dg.Serve(ctx, s.serveDialog)
 	if ctx.Err() != nil {
 		return nil
@@ -306,14 +344,15 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 	log := s.log.With("call", callID, "from", in.FromUser(), "to", callee)
 
 	d := s.router.Resolve(callee)
-	switch d.Target {
-	case routing.Unknown:
+	if d.Target == routing.Unknown {
 		log.Info("invite: unknown destination")
 		_ = in.Respond(404, "Not Found", nil)
 		return
-	case routing.Trunk:
-		log.Info("invite: trunk destination, PBX leg not implemented")
-		_ = in.Respond(503, "Service Unavailable", nil)
+	}
+	legs := legs{callerTrunk: s.isTrunkLeg(in)}
+
+	if d.Target == routing.Echo {
+		s.echo(log, in, legs.callerTrunk)
 		return
 	}
 
@@ -322,6 +361,25 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 
 	ctx, cancel := context.WithTimeout(in.Context(), s.cfg.RingTimeout)
 	defer cancel()
+
+	if d.Target == routing.Trunk {
+		// Non-local destination: hand it to the PBX as a trunk peer. The
+		// PBX does the ringing; we relay media between the two legs.
+		if s.cfg.Trunk == nil {
+			_ = in.Respond(503, "Service Unavailable", nil)
+			return
+		}
+		var dst sip.Uri
+		if err := sip.ParseUri(s.cfg.Trunk.URI(d.User), &dst); err != nil {
+			log.Error("bad trunk uri", "err", err)
+			_ = in.Respond(500, "Server Internal Error", nil)
+			return
+		}
+		legs.calleeTrunk = true
+		log.Info("invite: to trunk", "dst", dst.String(), "from_trunk", legs.callerTrunk)
+		_ = s.bridge(ctx, log, in, dst, callID, legs)
+		return
+	}
 
 	ep := d.Endpoint
 	if d.Registered && !s.cfg.KeepAdvertisedContact && !s.flowAlive(ep.Contact) {
@@ -353,7 +411,7 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 		_ = in.Respond(500, "Server Internal Error", nil)
 		return
 	}
-	if err := s.bridge(ctx, log, in, dst, callID); err != nil && wakeable {
+	if err := s.bridge(ctx, log, in, dst, callID, legs); err != nil && wakeable {
 		// Never bridged: stop the app ringing.
 		reason := wire.CancelTimeout
 		if in.Context().Err() != nil {
@@ -365,10 +423,17 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 
 // wakeFor builds the wake payload for an inbound call to ep.
 func (s *Server) wakeFor(callID string, in *diago.DialogServerSession, ep registry.Endpoint) wire.Wake {
-	from := in.InviteRequest.From()
+	return s.wakeForFrom(callID, in.InviteRequest.From(), ep)
+}
+
+func (s *Server) wakeForFrom(callID string, from *sip.FromHeader, ep registry.Endpoint) wire.Wake {
+	party := wire.Party{}
+	if from != nil {
+		party = wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()}
+	}
 	return wire.Wake{
 		CallID:    callID,
-		From:      wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()},
+		From:      party,
 		To:        wire.Party{URI: fmt.Sprintf("sip:%s@%s", ep.User, s.primaryDomain())},
 		SIP:       wire.SIPTarget{Host: s.cfg.ExternalHost, Port: s.publicPort(), Transport: "tls"},
 		ExpiresAt: time.Now().Add(s.cfg.RingTimeout),
@@ -379,19 +444,31 @@ func (s *Server) wakeFor(callID string, in *diago.DialogServerSession, ep regist
 // registers, the caller gives up, or the ring timeout passes. On failure it
 // has already answered the caller and cancelled the wake.
 func (s *Server) wakeAndWait(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, callID string, ep registry.Endpoint) (registry.Endpoint, error) {
+	return s.wakeAndWaitFrom(ctx, log, in, callID, in.InviteRequest.From(), ep)
+}
+
+// wakeAndWaitFrom is wakeAndWait with the caller identity given explicitly
+// (a transfer wakes the target on behalf of the remaining party). With a
+// nil `in` no SIP response is sent; the caller reports the failure.
+func (s *Server) wakeAndWaitFrom(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, callID string, from *sip.FromHeader, ep registry.Endpoint) (registry.Endpoint, error) {
+	respond := func(code int, reason string) {
+		if in != nil {
+			_ = in.Respond(code, reason, nil)
+		}
+	}
 	if ep.DeviceID == "" || s.waker == nil {
 		log.Info("invite: callee not registered and not wake-routable")
-		_ = in.Respond(480, "Temporarily Unavailable", nil)
+		respond(480, "Temporarily Unavailable")
 		return ep, errors.New("no wake path")
 	}
 
-	delivered := s.waker.Wake(ep.DeviceID, s.wakeFor(callID, in, ep))
+	delivered := s.waker.Wake(ep.DeviceID, s.wakeForFrom(callID, from, ep))
 	if delivered == 0 {
 		// Nobody to wake (no live connection; APNS is Phase 4b). Fail fast
 		// rather than making the caller wait out the ring timeout.
 		s.waker.CancelWake(ep.DeviceID, callID, wire.CancelTimeout)
 		log.Info("invite: callee offline, wake undeliverable")
-		_ = in.Respond(480, "Temporarily Unavailable", nil)
+		respond(480, "Temporarily Unavailable")
 		return ep, errors.New("wake undeliverable")
 	}
 	log.Info("invite: woke callee device", "device", ep.DeviceID, "connections", delivered)
@@ -399,13 +476,13 @@ func (s *Server) wakeAndWait(ctx context.Context, log *slog.Logger, in *diago.Di
 	woken, err := s.reg.WaitRegistered(ctx, ep.User)
 	if err != nil {
 		reason := wire.CancelTimeout
-		if in.Context().Err() != nil {
+		if ctx.Err() != nil && (in == nil || in.Context().Err() != nil) {
 			reason = wire.CancelCallerHangup
 		}
 		s.waker.CancelWake(ep.DeviceID, callID, reason)
 		log.Info("invite: wake did not produce a registration", "reason", reason)
 		if reason == wire.CancelTimeout {
-			_ = in.Respond(480, "Temporarily Unavailable", nil)
+			respond(480, "Temporarily Unavailable")
 		}
 		return ep, err
 	}
@@ -418,7 +495,113 @@ func (s *Server) wakeAndWait(ctx context.Context, log *slog.Logger, in *diago.Di
 // behind NAT): the relay learns each peer's real media address from the
 // first packet it receives instead of trusting the SDP, whose address is
 // often a private one.
-func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, dst sip.Uri, callID string) error {
+// echo answers the caller and plays its own audio straight back: the
+// end-to-end self-test for a phone (microphone → encoder → RTP → relay →
+// RTP → decoder → speaker) with no second party. Same relay pump as a
+// bridged call, source and sink on one leg.
+func (s *Server) echo(log *slog.Logger, in *diago.DialogServerSession, trunk bool) {
+	_ = in.Trying()
+	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: s.legNAT(trunk)}); err != nil {
+		log.Error("echo: answer", "err", err)
+		return
+	}
+	p, err := newPump(in, in)
+	if err != nil {
+		log.Error("echo: relay", "err", err)
+		_ = in.Hangup(in.Context())
+		return
+	}
+	codec := media.CodecAudioFromSession(in.Media().MediaSession())
+	log.Info("echo: answered", "codec", codec.Name, "from_trunk", trunk)
+	go p.run(in.Context(), log.With("dir", "echo"))
+	<-in.Context().Done()
+	log.Info("echo: ended", "relayed", p.String())
+}
+
+// legs says which side of a call is the PBX trunk (neither, for app↔app).
+type legs struct {
+	callerTrunk bool
+	calleeTrunk bool
+}
+
+// trunkCodecs is what a PBX trunk gets offered: G.711 only. Apps get the
+// full set (Opus first). Because the relay copies encoded audio between
+// the legs, the caller is always answered with the codec the callee took.
+var trunkCodecs = []media.Codec{media.CodecAudioUlaw, media.CodecAudioAlaw}
+
+// legNAT is the symmetric-RTP setting for a leg: the trunk always learns
+// (a PBX behind NAT is normal); app legs follow the deployment flag.
+func (s *Server) legNAT(trunk bool) int {
+	if trunk || !s.cfg.NoSymmetricRTP {
+		return media.RTPNATSymetric
+	}
+	return media.RTPNATDisabled
+}
+
+// isTrunkLeg reports whether an incoming call came from the PBX trunk
+// rather than an app: the app leg is TLS-only, so any other transport is
+// the trunk listener; a TLS trunk is told apart by source address.
+func (s *Server) isTrunkLeg(in *diago.DialogServerSession) bool {
+	if s.cfg.Trunk == nil {
+		return false
+	}
+	return isTrunkSource(in.InviteRequest.Transport(), in.InviteRequest.Source(), s.cfg.Trunk)
+}
+
+func isTrunkSource(transport, source string, t *pbx.Trunk) bool {
+	if t == nil {
+		return false
+	}
+	if !strings.EqualFold(transport, "tls") {
+		return true
+	}
+	host, _, err := net.SplitHostPort(source)
+	if err != nil {
+		host = source
+	}
+	return strings.EqualFold(host, t.Host)
+}
+
+// trunkBind parses the trunk listener address; an empty host is 0.0.0.0 and
+// an empty address is port 5060 (5061 for a TLS trunk).
+func trunkBind(addr string, t *pbx.Trunk) (string, int, error) {
+	if addr == "" {
+		port := 5060
+		if t.Transport == "tls" {
+			port = 5061
+		}
+		return "0.0.0.0", port, nil
+	}
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", 0, fmt.Errorf("b2bua: bad trunk bind %q: %w", addr, err)
+	}
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, fmt.Errorf("b2bua: bad trunk bind port %q", portStr)
+	}
+	return host, port, nil
+}
+
+// firstIPv4 is this host's first non-loopback IPv4 address, the address a
+// PBX on the same network reaches us at.
+func firstIPv4() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && !ipn.IP.IsLoopback() && ipn.IP.To4() != nil {
+			return ipn.IP.String()
+		}
+	}
+	return "127.0.0.1"
+}
+
+func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, dst sip.Uri, callID string, l legs) error {
 	// Order matters: the caller keeps ringing (180 already sent) until the
 	// phone answers, and is answered (200) only then. Answering the caller
 	// first — as diago's own bridge helper does — starts the caller's media
@@ -434,14 +617,19 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		_ = in.Respond(500, "Server Internal Error", nil)
 		return err
 	}
-	appLegNAT := media.RTPNATSymetric
-	if s.cfg.NoSymmetricRTP {
-		appLegNAT = media.RTPNATDisabled
+	calleeNAT := s.legNAT(l.calleeTrunk)
+	if l.calleeTrunk {
+		out.SetCodecs(trunkCodecs)
 	}
+	from := in.InviteRequest.From()
+	legA := &callLeg{name: "caller", trunk: l.callerTrunk, sess: in, party: wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()}}
+	legB := &callLeg{name: "callee", trunk: l.calleeTrunk, sess: out, party: wire.Party{URI: dst.String()}}
+	call := newBridgedCall(s, log, callID, legA, legB)
 	err = out.Invite(ctx, diago.InviteClientOptions{
 		Originator:    in,
 		Headers:       []sip.Header{sip.NewHeader(CallIDHeader, callID)},
-		OnMediaUpdate: func(m *diago.DialogMedia) { m.MediaSession().RTPNAT = appLegNAT },
+		OnMediaUpdate: func(m *diago.DialogMedia) { m.MediaSession().RTPNAT = calleeNAT },
+		OnRefer:       call.onRefer(legB),
 	})
 	if err != nil {
 		log.Error("invite callee", "dst", dst.String(), "err", err)
@@ -455,8 +643,13 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		}
 		return err
 	}
-	// The phone answered: answer the caller now, then complete the callee.
-	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: media.RTPNATSymetric}); err != nil {
+	// The callee answered: answer the caller now with the codec the callee
+	// took (the relay copies encoded audio, so the legs must match), then
+	// complete the callee.
+	negotiated := media.CodecAudioFromSession(out.Media().MediaSession())
+	log.Info("callee answered", "codec", negotiated.Name, "callee_trunk", l.calleeTrunk, "caller_trunk", l.callerTrunk)
+	legA.codec, legB.codec = negotiated, negotiated
+	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: s.legNAT(l.callerTrunk), Codecs: []media.Codec{negotiated}, OnRefer: call.onRefer(legA)}); err != nil {
 		log.Error("answer caller", "err", err)
 		_ = out.Hangup(out.Context())
 		out.Close()
@@ -474,31 +667,14 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	// Media relay: our own pumps rather than diago's Bridge, so every leg
 	// reports what it read and wrote — a phone that receives nothing while
 	// "phone<-caller" keeps writing is the network eating packets, not us.
-	toPhone, err := newPump(in, out)
-	if err != nil {
-		log.Error("relay caller→phone", "err", err)
+	// The bridged call also handles REFER (transfer) by swapping a leg.
+	if err := call.start(); err != nil {
+		log.Error("relay", "err", err)
 		_ = out.Hangup(out.Context())
 		_ = in.Hangup(in.Context())
 		return err
 	}
-	toCaller, err := newPump(out, in)
-	if err != nil {
-		log.Error("relay phone→caller", "err", err)
-		_ = out.Hangup(out.Context())
-		_ = in.Hangup(in.Context())
-		return err
-	}
-	go toPhone.run(ctx, log.With("dir", "caller→phone"))
-	go toCaller.run(ctx, log.With("dir", "phone→caller"))
-
-	select {
-	case <-in.Context().Done():
-		_ = out.Hangup(out.Context())
-	case <-out.Context().Done():
-		_ = in.Hangup(in.Context())
-	}
-	log.Info("call ended",
-		"caller→phone", toPhone.String(), "phone→caller", toCaller.String())
+	call.wait()
 	return nil
 }
 
@@ -548,6 +724,9 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 		defer close(done)
 		for {
 			n, err := p.r.Read(buf)
+			if ctx.Err() != nil {
+				return // pumps replaced (transfer) or call over
+			}
 			if n > 0 {
 				p.read.Add(1)
 				p.lastReadAt.Store(time.Now().UnixMilli())

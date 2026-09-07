@@ -67,20 +67,51 @@ elif docker ps --format '{{.Names}}' | grep -q '^dialler-harness-dialler-1$'; th
   # Leave a running server alone (its flags, e.g. -log-level, were chosen
   # by whoever started it); a plain `up` would recreate it with defaults.
   echo "== server already running (leaving it as is)"
-  $C up -d --no-deps baresip-b >/dev/null 2>&1
+  # phone-b is (re)created once, below, when it is the callee.
+  [ -n "${OUTBOUND:-}" ] || $C up -d --no-deps baresip-b >/dev/null 2>&1
 else
   echo "== server advertising $HOST"
   $C up -d dialler baresip-b >/dev/null 2>&1
 fi
 sleep 2
 
+if [ -n "${OUTBOUND:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; then
+  # The simulated phone dials phone-b the moment it registers, so phone-b
+  # must already hold a live registration with THIS server instance:
+  # recreate it and wait for that registration BEFORE the phone starts.
+  # (echo / 600 need no callee: the server or the PBX answers.)
+  echo "== phone-b (202) must be registered (callee)"
+  MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [ "$SERVER" = native ]; then
+    BARESIP_B_OUTBOUND="$HOST:5061" $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
+    sleep 4
+  else
+    $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
+    i=0
+    until $C logs --no-log-prefix --since "$MARK" dialler 2>/dev/null | grep -q 'sip register" user=202'; do
+      i=$((i+1)); [ $i -le 25 ] || { echo "FAIL: phone-b did not register within 25s"; exit 1; }
+      sleep 1
+    done
+  fi
+  echo "   phone-b registered"
+fi
+
 echo "== simulator $SIM"
 xcrun simctl boot "$SIM" 2>/dev/null || true
 : > "$OUT"
 # GATEWAY=no: no wire-protocol session, so no wake; calls ring from the INVITE.
+# OUTBOUND=202 (or any target): the simulated phone dials phone-b, which
+# auto-answers and plays its tone — the keypad / directory path.
 MODE=""; [ "${GATEWAY:-yes}" = no ] && MODE=nogateway
+[ -n "${OUTBOUND:-}" ] && MODE="outbound:$OUTBOUND"
 SIGNAL_PORT="${SIGNAL_PORT:-${DIALLER_SIGNAL_HOSTPORT:-7443}}"
-xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-a tok_dev_a_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" > "$OUT" 2>&1 &
+# HOLD_MS=3000: hold the call for 3 s after the first verdict, then resume;
+# asserts media stops while held and flows again after.
+# TRANSFER=echo: after the first verdict the simulated phone REFERs the
+# caller (phone-b) to "echo"; our call must end as transferred, and phone-b's
+# recording must then contain audio it did not get from us (its own echo).
+if [ -n "${TRANSFER:-}" ]; then SOURCE=""; fi   # silent phone, so any audio phone-b records is the echo
+xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-a tok_dev_a_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" > "$OUT" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
 
@@ -92,17 +123,21 @@ until grep -q 'sim: registered' "$OUT"; do
 done
 echo "   registered as 201 (dev-a)"
 
-echo "== phone-b (202) dials 201"
+[ -n "${OUTBOUND:-}" ] || echo "== phone-b (202) dials 201"
 ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
 }
 n=1
 while :; do
-  ctl '{"command":"dial","params":"201@dialler"}'
+  if [ -n "${OUTBOUND:-}" ]; then
+    echo "   (outbound: the simulated phone dials $OUTBOUND)"
+  else
+    ctl '{"command":"dial","params":"201@dialler"}'
+  fi
   i=0
   until grep -q "sim: call $n: \|sim: FAIL" "$OUT"; do
-    i=$((i+1)); [ $i -le 40 ] || break
+    i=$((i+1)); [ $i -le 45 ] || break
     sleep 1
   done
   ctl '{"command":"hangup"}' 2>/dev/null || true
@@ -127,6 +162,11 @@ trap - EXIT
 
 echo "== simulated phone"
 grep -E 'sim:|engine:|callkit|audiounit:|stream:|INVITE|answered|incoming|wake|call .* ended|registering' "$OUT" | grep -v '^  baresip:' | sed 's/^/   /'
+if [ -n "${TRANSFER:-}" ]; then
+  echo "== transfer: did phone-b hear the echo after being transferred?"
+  sleep 3
+  python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-202.wav" || { echo "FAIL: phone-b heard nothing after the transfer"; exit 1; }
+fi
 if [ "$SERVER" = native ]; then
   echo "== server: native; its relay lines are in the dev-server terminal"
 else

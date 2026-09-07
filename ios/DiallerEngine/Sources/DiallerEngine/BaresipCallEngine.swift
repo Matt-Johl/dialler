@@ -21,11 +21,14 @@ import os
 /// Phase 1 scope: one call at a time (call_max_calls 1).
 public final class BaresipCallEngine: CallEngine {
     public enum State: Equatable, Sendable {
-        case idle, starting, registering, registered, ringing, inCall, failed(String)
+        case idle, starting, registering, registered, ringing, dialing, inCall, failed(String)
     }
 
     public var onIncomingCall: ((String) -> Void)?
     public var onCallEnded: ((String) -> Void)?
+    public var onOutgoingRinging: (() -> Void)?
+    public var onCallEstablished: (() -> Void)?
+    public var onTransferFailed: ((String) -> Void)?
     /// Observed by the app for status display.
     public var onStateChange: ((State) -> Void)?
     public var log: (String) -> Void = { _ in }
@@ -39,6 +42,7 @@ public final class BaresipCallEngine: CallEngine {
     /// deactivated it.
     private var sessionActive = false
     private var account: String? // the AOR line currently registered (or registering)
+    private var domain = ""      // SIP domain of the account, completes bare dial targets
     private let acceptAnyCertificate: Bool
     /// Whether libre/baresip are up. Independent of `state`: a failed
     /// registration leaves the stack running (restarting it returns EALREADY).
@@ -63,8 +67,9 @@ public final class BaresipCallEngine: CallEngine {
             if !stackRunning { return } // start() logged the reason
         }
         let aor = Self.aor(user: user, sip: sip)
+        lock.withLock { domain = user.split(separator: "@", maxSplits: 1).count > 1 ? String(user.split(separator: "@", maxSplits: 1)[1]) : sip.host }
         let already: Bool = lock.withLock { account == aor }
-        if already, state == .ringing || state == .inCall {
+        if already, state == .ringing || state == .inCall || state == .dialing {
             return // a call is up on this account; leave its flow alone
         }
         if already, state == .registered || state == .registering {
@@ -109,10 +114,58 @@ public final class BaresipCallEngine: CallEngine {
         }
     }
 
+    public func dial(callID: String, to target: String) {
+        guard stackRunning else { log("engine: cannot dial \(target): stack not running"); return }
+        let uri = Self.dialURI(target, domain: lock.withLock { domain })
+        state = .dialing
+        log("engine: dialling \(uri) for \(callID)")
+        let rc = cb_dial(uri)
+        if rc != 0 {
+            log("engine: dial failed (\(rc))")
+            state = cb_registered() ? .registered : .idle
+            onCallEnded?("dial failed (\(rc))")
+        }
+    }
+
+    /// "202" → "sip:202@dialler"; "202@dialler" → "sip:202@dialler";
+    /// "sip:…" unchanged. Digits typed on a keypad take the same route.
+    static func dialURI(_ target: String, domain: String) -> String {
+        let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.hasPrefix("sip:") || t.hasPrefix("sips:") { return t }
+        if t.contains("@") { return "sip:\(t)" }
+        return "sip:\(t)@\(domain)"
+    }
+
+    public func setMuted(_ muted: Bool) {
+        guard stackRunning else { return }
+        cb_mute(muted)
+        log("engine: microphone \(muted ? "muted" : "unmuted")")
+    }
+
+    /// Hold: baresip re-INVITEs with the audio stream sendonly and stops its
+    /// audio; resume re-INVITEs sendrecv. The audio units stay bound to the
+    /// CallKit session throughout (CallKit keeps it active for a held call).
+    public func setHeld(_ held: Bool) {
+        guard stackRunning else { return }
+        let rc = cb_hold(held)
+        log(rc == 0 ? "engine: \(held ? "held" : "resumed")" : "engine: \(held ? "hold" : "resume") failed (\(rc))")
+    }
+
+    /// Blind transfer: baresip sends REFER with the target URI; the server
+    /// answers 202, connects the other party, and NOTIFYs the outcome —
+    /// 200 ends this call ("Call transfered"), a failure keeps it up.
+    public func transfer(callID: String, to target: String) {
+        guard stackRunning else { return }
+        let uri = Self.dialURI(target, domain: lock.withLock { domain })
+        let rc = cb_transfer(uri)
+        log(rc == 0 ? "engine: REFER \(callID) → \(uri)" : "engine: transfer failed to send (\(rc))")
+        if rc != 0 { onTransferFailed?("could not send REFER (\(rc))") }
+    }
+
     public func hangup(callID: String) {
         cb_hangup()
         lock.withLock { answerWhenRinging = false; incomingPending = false }
-        if state == .inCall || state == .ringing { state = cb_registered() ? .registered : .idle }
+        if state == .inCall || state == .ringing || state == .dialing { state = cb_registered() ? .registered : .idle }
         log("engine: hangup \(callID)")
     }
 
@@ -298,13 +351,22 @@ public final class BaresipCallEngine: CallEngine {
             } else {
                 onIncomingCall?(peer)
             }
-        case CB_EVENT_CALL_RINGING:
-            log("engine: ringing \(peer)")
+        case CB_EVENT_CALL_OUTGOING:
+            state = .dialing
+            log("engine: INVITE sent to \(peer)")
+        case CB_EVENT_CALL_TRANSFER_FAILED:
+            log("engine: transfer failed: \(text)")
+            onTransferFailed?(text)
+        case CB_EVENT_CALL_RINGING, CB_EVENT_CALL_PROGRESS:
+            log("engine: far end \(event == CB_EVENT_CALL_RINGING ? "ringing" : "progress") \(peer)")
+            onOutgoingRinging?()
         case CB_EVENT_CALL_ESTABLISHED:
             let active: Bool = lock.withLock { incomingPending = false; return sessionActive }
+            let wasOutgoing = state == .dialing
             state = .inCall
             log("engine: call established with \(peer); audio \(active ? "starting (session already active)" : "held until didActivate")")
             if active { verifyAudioFlow() }
+            if wasOutgoing { onCallEstablished?() }
         case CB_EVENT_CALL_CLOSED:
             log("engine: call closed (\(text))")
             lock.withLock { incomingPending = false; answerWhenRinging = false; flowCheckScheduled = false }

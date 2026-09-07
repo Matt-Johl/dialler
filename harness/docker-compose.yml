@@ -34,6 +34,11 @@ services:
       - -public-sip-port=${DIALLER_SIP_HOSTPORT:-5061}
       - -rewrite-contact=${DIALLER_REWRITE_CONTACT:-true} # false only to prove harness-call-nat fails without it
       - -sip-trace=${DIALLER_SIP_TRACE:-false} # every SIP message in the server log
+      # PBX leg (SPEC §4.4 rule 7): Asterisk as a SIP trunk peer over UDP
+      # (the SIP default); the server listens for trunk-originated calls
+      # on :5060/udp.
+      - -trunk=${DIALLER_TRUNK:-sip:172.30.0.20:5060;transport=udp}
+      - -trunk-addr=:5060
       # Off here on purpose: Docker Desktop's UDP port proxy rewrites a LAN
       # phone's RTP source, and replies to that rewritten source are not
       # delivered, so learning the source (symmetric RTP) silences the phone
@@ -43,6 +48,9 @@ services:
       - -log-level=${DIALLER_LOG_LEVEL:-info} # debug shows the relay's RTP source learning
     volumes:
       - dialler-data:/data
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
     ports:
       - "${DIALLER_SIGNAL_HOSTPORT:-7443}:7443"
       - "${DIALLER_SIP_HOSTPORT:-5061}:5061"
@@ -52,8 +60,28 @@ services:
   asterisk:
     build: ./asterisk
     depends_on: [dialler]
+    networks:
+      default:
+        ipv4_address: 172.30.0.20
     ports:
       - "5060:5060/udp"
+
+  # Desk phone 100: registers to Asterisk (UDP, Digest), G.711 only — the
+  # far side of the trunk leg for harness/trunk_test.sh.
+  baresip-c:
+    build: ./baresip
+    profiles: [test]
+    depends_on: [asterisk]
+    environment:
+      SIP_USER: "100"
+      SIP_DOMAIN: asterisk
+      TRANSPORT: udp
+      AUTH_USER: "100"
+      AUTH_PASS: harness
+      CODECS: PCMU/8000/1,PCMA/8000/1
+      OUTBOUND: asterisk:5060
+    volumes:
+      - ./baresip/media:/media
 
   sipp:
     build: ./sipp
@@ -91,3 +119,12 @@ services:
 
 volumes:
   dialler-data: {}
+
+# Fixed addresses: Asterisk identifies the light server as its trunk peer
+# by source address (pjsip.conf `match=`), which it resolves only at load,
+# so the server's address must be known and stable.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

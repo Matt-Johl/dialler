@@ -1,13 +1,16 @@
-# baresip config for the headless harness phone. @MODULE_PATH@ is filled in
-# by entrypoint.sh. TLS verification is off because the server uses a
-# self-signed dev certificate.
+# baresip config for the headless harness phone. @MODULE_PATH@ and
+# @TRANSPORT@ are filled in by entrypoint.sh. TLS verification is off
+# because the server uses a self-signed dev certificate.
+#
+# TRANSPORT=tls (default): an app-leg phone registered to the light server.
+# TRANSPORT=udp: a "desk phone" registered to the harness PBX (Asterisk).
 
 poll_method             epoll
 
 # SIP
 sip_listen              0.0.0.0:0
 sip_verify_server       no
-sip_transports          tls
+sip_transports          @TRANSPORT@
 
 # Audio: WAV in, WAV out (SPEC §7.1 automated audio sibling)
 audio_player            aufile,/media/out-@SIP_USER@.wav
@@ -26,6 +29,10 @@ module                  opus.so
 module                  g711.so
 module                  aufile.so
 module                  ice.so
+# The WAV files are 48 kHz stereo; G.711 legs (the PBX trunk) run 8 kHz
+# mono, so the audio filters must convert, as they do in the app.
+module                  auconv.so
+module                  auresamp.so
 
 # Application modules
 module_app              account.so

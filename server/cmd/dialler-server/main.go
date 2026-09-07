@@ -55,6 +55,9 @@ func main() {
 		logLevel    = flag.String("log-level", "info", "debug|info|warn|error (debug includes the media relay's RTP source learning)")
 		rtpSym      = flag.Bool("rtp-symmetric", true, "re-target a phone's media at the source of its first RTP packet (needed behind NAT); false where that source is not a deliverable reply address (Docker Desktop harness)")
 		pubSIPPort  = flag.Int("public-sip-port", 0, "SIP port advertised to apps (welcome, wakes) when it differs from -sip-addr, e.g. a container published on another host port; 0 = same as -sip-addr")
+		trunk       = flag.String("trunk", "", "PBX SIP peer for non-local destinations, e.g. sip:asterisk:5060;transport=tcp (empty: standalone, app↔app only)")
+		trunkAddr   = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5061 for a TLS trunk); transport follows -trunk")
+		trunkExt    = flag.String("trunk-external-host", "", "address the PBX reaches this server at, used in trunk-leg Contact and SDP (default: this host's first address)")
 	)
 	flag.Parse()
 	sip.SIPDebug = *sipTrace
@@ -82,6 +85,9 @@ func main() {
 		keepAdvertisedContact: !*rewrite,
 		noSymmetricRTP:        !*rtpSym,
 		publicSIPPort:         *pubSIPPort,
+		trunk:                 *trunk,
+		trunkAddr:             *trunkAddr,
+		trunkExternalHost:     *trunkExt,
 	}); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -98,6 +104,8 @@ type options struct {
 	keepAdvertisedContact         bool
 	noSymmetricRTP                bool
 	publicSIPPort                 int
+	trunk, trunkAddr              string
+	trunkExternalHost             string
 }
 
 func run(ctx context.Context, log *slog.Logger, o options) error {
@@ -143,6 +151,15 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		}
 	}
 	var adapter pbx.Adapter = pbx.None{}
+	var trunkCfg *pbx.Trunk
+	if o.trunk != "" {
+		t, err := pbx.ParseTrunk(o.trunk)
+		if err != nil {
+			return fmt.Errorf("bad -trunk %q: %w", o.trunk, err)
+		}
+		trunkCfg = &t
+		adapter = pbx.NewSIPTrunk(t)
+	}
 	router := routing.New(reg, []string{o.localDomain, o.publicHost}, func() bool { _, ok := adapter.Trunk(); return ok })
 
 	sipHost, sipPortStr, err := net.SplitHostPort(o.sipAddr)
@@ -191,6 +208,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		RTPPortEnd:            o.rtpMax,
 		KeepAdvertisedContact: o.keepAdvertisedContact,
 		NoSymmetricRTP:        o.noSymmetricRTP,
+		Trunk:                 trunkCfg,
+		TrunkBind:             o.trunkAddr,
+		TrunkExternalHost:     o.trunkExternalHost,
 		RingTimeout:           o.ringTimeout,
 		Logger:                log,
 	}, reg, router, gw)

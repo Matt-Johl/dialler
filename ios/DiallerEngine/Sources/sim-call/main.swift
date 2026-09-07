@@ -11,6 +11,7 @@
 //
 // Prints "sim: PASS" or "sim: FAIL: <why>" and exits non-zero on failure.
 // Driven by harness/sim_call.sh (`make sim-call`).
+import CBaresip
 import DiallerCore
 import DiallerEngine
 import DiallerProtocol
@@ -46,12 +47,38 @@ let callsWanted = args.count > 9 ? max(1, Int(args[9]) ?? 1) : 1
 /// "nogateway": register over SIP only, no gateway session, so no wake ever
 /// arrives and every call is rung from the INVITE (the app's "sip-N" path).
 let noGateway = args.count > 10 && args[10] == "nogateway"
+/// "outbound:<target>": this phone places the call (keypad / directory
+/// path) instead of waiting for one; the harness callee auto-answers and
+/// plays its tone, which is asserted exactly as for incoming calls.
+let outboundTarget: String? = args.count > 10 && args[10].hasPrefix("outbound:") ? String(args[10].dropFirst("outbound:".count)) : nil
+/// Hold test: after the 2 s verdict, hold for this long, then resume and
+/// check that media stopped while held and flows again after. 0 = no hold.
+let holdMs = args.count > 11 ? (Int(args[11]) ?? 0) : 0
+/// Transfer test: after the 2 s verdict, REFER the far end to this target
+/// and expect our call to end with "Call transfered" (the server connected
+/// the other party and released us).
+let transferTo: String? = args.count > 12 && !args[12].isEmpty ? args[12] : nil
+
+/// RTP received on the current call so far (cumulative).
+func rtpReceived() -> UInt32 {
+    var m = cb_media_stats_t()
+    cb_media_stats(&m)
+    return m.rx_packets
+}
 
 func out(_ s: String) { print("sim: \(s)") }
 
 let engine = BaresipCallEngine(acceptAnyCertificate: true)
 engine.audioSourceOverride = sourceOverride
-engine.log = { print("  \($0)") }
+var lastCloseReason = ""
+engine.onCallEnded = nil // set by the controller below; we observe through the log instead
+let engineLog: (String) -> Void = { line in
+    print("  \(line)")
+    if line.hasPrefix("engine: call closed (") {
+        lastCloseReason = String(line.dropFirst("engine: call closed (".count).dropLast())
+    }
+}
+engine.log = engineLog
 
 let lock = NSLock()
 var registered = false
@@ -95,6 +122,24 @@ final class ScriptedCallKit: CallUI {
         lock.lock(); if current == callID { ended = true }; lock.unlock()
         engine.audioSessionDeactivated()
     }
+    /// Outgoing: CallKit approves the start action at once, then activates
+    /// the session shortly after (as on the device).
+    var onStart: (String) -> Void = { _ in }
+    func startOutgoing(callID: String, handle: String, displayName: String) {
+        out("callkit: start action for \(callID) → \(handle)")
+        lock.lock(); reported += 1; current = callID; ended = false; lock.unlock()
+        onStart(callID)
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(activateDelayMs)) {
+            out("callkit: didActivate (+\(activateDelayMs)ms)")
+            engine.audioSessionActivated()
+        }
+    }
+    func outgoingConnecting(callID: String) { out("callkit: \(callID) connecting (far end ringing)") }
+    func outgoingConnected(callID: String) {
+        out("callkit: \(callID) connected")
+        lock.lock(); inCall = true; lock.unlock()
+        out("in call")
+    }
 }
 
 /// One call's outcome.
@@ -122,6 +167,7 @@ func judge(_ v: BaresipCallEngine.AudioVerdict?, established: Bool) -> (String, 
 let callKit = ScriptedCallKit()
 let controller = CallController(ui: callKit, engine: engine, log: { print("  \($0)") })
 callKit.onAnswer = { controller.userAnswered(callID: $0) }
+callKit.onStart = { controller.userStarted(callID: $0) }
 
 let cfg = AppConfig(gateway: GatewayEndpoint(host: host, port: port, acceptAnyCertificate: true), deviceID: deviceID, token: token)
 let transport = LANSocketTransport(endpoint: cfg.gateway)
@@ -163,6 +209,18 @@ var fatal: String?
 for index in 1...callsWanted {
     lock.lock(); inCall = false; ended = false; let base = callKit.reported; lock.unlock()
     engine.clearAudioVerdicts()
+    if let target = outboundTarget {
+        // Place the call once registered (the account arrives with the
+        // welcome; registration follows within a second).
+        while Date() < deadline {
+            lock.lock(); let ready = registered; lock.unlock()
+            if ready { break }
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+        out("dialling \(target)")
+        if controller.startCall(to: target) == nil { out("FAIL: could not start the call") }
+    }
     // Wait for this call to be reported before judging anything.
     while Date() < deadline {
         lock.lock(); let seen = callKit.reported > base; let failed = engineFailed; lock.unlock()
@@ -170,13 +228,55 @@ for index in 1...callsWanted {
         Thread.sleep(forTimeInterval: 0.25)
     }
     var sawVerdict = false
+    var holdResult: String?
+    var transferAsked = false
+    var transferResult: String?
     while Date() < deadline {
         Thread.sleep(forTimeInterval: 0.25)
-        if engine.audioVerdicts.contains(where: { $0.seconds == 5 }) { sawVerdict = true; break }
+        if let target = transferTo, !transferAsked, let v = engine.audioVerdicts.first(where: { $0.seconds == 2 }), v.rtpRx > 0 {
+            transferAsked = true
+            lock.lock(); let id = callKit.current ?? ""; lock.unlock()
+            out("transfer: REFER \(id) → \(target)")
+            controller.transfer(callID: id, to: target)
+        }
+        if transferAsked, transferResult == nil {
+            lock.lock(); let done = ended; lock.unlock()
+            if done {
+                transferResult = lastCloseReason.contains("transfer") ? "PASS: call released after the transfer (\(lastCloseReason))" : "FAIL: call ended with \(lastCloseReason), not a completed transfer"
+                out("transfer: \(transferResult!)")
+                if transferResult!.hasPrefix("FAIL") { fatal = transferResult }
+                sawVerdict = true
+                break
+            }
+        }
+        if holdMs > 0, holdResult == nil, let v = engine.audioVerdicts.first(where: { $0.seconds == 2 }), v.rtpRx > 0 {
+            // Hold: our re-INVITE goes sendonly; the server must stop
+            // sending to us. Resume: it must start again.
+            lock.lock(); let id = callKit.current ?? ""; lock.unlock()
+            out("callkit: hold action for \(id)")
+            controller.setHeld(callID: id, true)
+            Thread.sleep(forTimeInterval: 0.6) // let in-flight packets land
+            let atHold = rtpReceived()
+            Thread.sleep(forTimeInterval: TimeInterval(holdMs) / 1000)
+            let duringHold = rtpReceived() - atHold
+            out("callkit: resume action for \(id)")
+            controller.setHeld(callID: id, false)
+            Thread.sleep(forTimeInterval: 0.6)
+            let atResume = rtpReceived()
+            Thread.sleep(forTimeInterval: 1.5)
+            let afterResume = rtpReceived() - atResume
+            out("hold: received \(duringHold) packets while held (\(holdMs)ms), \(afterResume) in 1.5s after resume")
+            if duringHold > 5 { holdResult = "FAIL: server kept sending \(duringHold) packets while we were on hold" }
+            else if afterResume < 40 { holdResult = "FAIL: only \(afterResume) packets after resume" }
+            else { holdResult = "PASS: hold stopped media, resume restored it" }
+            out("hold: \(holdResult!)")
+        }
+        if engine.audioVerdicts.contains(where: { $0.seconds == 5 }) && (holdMs == 0 || holdResult != nil) { sawVerdict = true; break }
         lock.lock(); let done = ended; let failed = engineFailed; lock.unlock()
         if failed != nil { fatal = failed; break }
         if done { break }
     }
+    if let r = holdResult, r.hasPrefix("FAIL") { fatal = r }
     lock.lock(); let established = inCall; lock.unlock()
     let verdicts = engine.audioVerdicts
     for v in verdicts {

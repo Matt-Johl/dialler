@@ -36,6 +36,15 @@ func TestResolve(t *testing.T) {
 		}
 	}
 
+	for _, dest := range []string{"echo", "sip:echo@dialler.example.local", "sip:ECHO@DIALLER.example.local"} {
+		if d := r.Resolve(dest); d.Target != Echo {
+			t.Errorf("%s → %s, want echo", dest, d.Target)
+		}
+	}
+	if d := r.Resolve("sip:echo@pbx.example.local"); d.Target == Echo {
+		t.Error("echo is ours only in our domains")
+	}
+
 	trunk = true
 	if d := r.Resolve("sip:0123456789@dialler.example.local"); d.Target != Trunk {
 		t.Errorf("with trunk, external number → %s", d.Target)

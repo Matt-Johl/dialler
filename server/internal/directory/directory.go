@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -90,12 +91,23 @@ func (s *Store) Version() int64 {
 	return s.st.Version
 }
 
-// Upsert creates or replaces a contact. An empty ID is assigned.
+// Upsert creates or replaces a contact. With an empty ID, a live contact
+// with the same URI is updated in place (a URI identifies one endpoint, so
+// re-seeding a directory must not accumulate duplicates); otherwise an ID
+// is assigned.
 func (s *Store) Upsert(c Contact) (Contact, error) {
 	if c.URI == "" || (c.Mode != ModeLocal && c.Mode != ModeTrunk) {
 		return Contact{}, ErrInvalid
 	}
 	s.mu.Lock()
+	if c.ID == "" {
+		for _, existing := range s.st.Contacts {
+			if !existing.Deleted && strings.EqualFold(existing.URI, c.URI) {
+				c.ID = existing.ID
+				break
+			}
+		}
+	}
 	if c.ID == "" {
 		var b [8]byte
 		_, _ = rand.Read(b[:])

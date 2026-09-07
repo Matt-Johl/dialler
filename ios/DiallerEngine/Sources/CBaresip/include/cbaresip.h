@@ -17,6 +17,13 @@ typedef enum {
     CB_EVENT_CALL_RINGING,
     CB_EVENT_CALL_ESTABLISHED,
     CB_EVENT_CALL_CLOSED,
+    /// Our outgoing INVITE was sent / the far end is ringing (180) or
+    /// sending early media (183).
+    CB_EVENT_CALL_OUTGOING,
+    CB_EVENT_CALL_PROGRESS,
+    /// Our REFER was rejected or the transfer target failed; `text` has the
+    /// status. The call continues.
+    CB_EVENT_CALL_TRANSFER_FAILED,
     CB_EVENT_OTHER,
     /// A line from libre/baresip's own log; `text` is the message.
     CB_EVENT_LOG
@@ -46,6 +53,23 @@ int cb_ua_register(void);
 
 /// Answer the current incoming call (no-op if none).
 int cb_answer(void);
+
+/// Place an outgoing call to `uri` (full SIP URI) from the user agent.
+/// Progress arrives as CB_EVENT_CALL_OUTGOING / RINGING / PROGRESS /
+/// ESTABLISHED / CLOSED. Returns 0 or a negative errno.
+int cb_dial(const char *uri);
+
+/// Mute / unmute the microphone of the current call (no-op if none).
+void cb_mute(bool muted);
+
+/// Put the current call on hold / resume it (re-INVITE). Returns 0 or a
+/// negative errno.
+int cb_hold(bool hold);
+
+/// Blind transfer: REFER the far end of the current call to `uri` (the
+/// server, as B2BUA, connects the other party there and ends our call).
+/// Returns 0 or a negative errno.
+int cb_transfer(const char *uri);
 
 /// Hang up the current call (no-op if none).
 void cb_hangup(void);

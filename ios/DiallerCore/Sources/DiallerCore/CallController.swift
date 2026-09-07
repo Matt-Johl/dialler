@@ -9,6 +9,13 @@ public protocol CallUI: AnyObject {
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void)
     /// Remove a ringing/active call from the system UI.
     func end(callID: String, reason: CallEndReason)
+    /// Ask the system to start an outgoing call to `handle` (a number or a
+    /// SIP user). The system calls back through `CallController.userStarted`
+    /// once it has approved the call (CallKit: CXStartCallAction).
+    func startOutgoing(callID: String, handle: String, displayName: String)
+    /// The far end is being alerted / has answered our outgoing call.
+    func outgoingConnecting(callID: String)
+    func outgoingConnected(callID: String)
 }
 
 public enum CallEndReason: Equatable, Sendable {
@@ -27,13 +34,28 @@ public protocol CallEngine: AnyObject {
     var onIncomingCall: ((_ peer: String) -> Void)? { get set }
     /// The SIP call ended (remote hangup, failure); `reason` is free text.
     var onCallEnded: ((_ reason: String) -> Void)? { get set }
+    /// Our outgoing call: the far end is ringing (180/183) / has answered.
+    var onOutgoingRinging: (() -> Void)? { get set }
+    var onCallEstablished: (() -> Void)? { get set }
+    /// A transfer we asked for was refused; `reason` is the SIP status. The
+    /// call continues.
+    var onTransferFailed: ((_ reason: String) -> Void)? { get set }
     /// Register `user` (e.g. "201@dialler") to `sip` and stay registered, so
     /// calls reach this app directly while it runs. Idempotent.
     func register(user: String, sip: SIPTarget)
     /// The user accepted a call: make sure we are registered and answer the
     /// INVITE (now if it has already arrived, else as soon as it does).
     func prepareForIncomingCall(callID: String, user: String, sip: SIPTarget)
+    /// Place a call to `target`: a full SIP URI, "user@domain", or a bare
+    /// user / number, which the engine completes with the account's domain.
+    func dial(callID: String, to target: String)
     func hangup(callID: String)
+    func setMuted(_ muted: Bool)
+    /// Hold (re-INVITE sendonly, audio stopped) / resume the current call.
+    func setHeld(_ held: Bool)
+    /// Blind transfer: ask the server to connect the far end to `target`
+    /// and end our call (REFER; the server routes the target like a call).
+    func transfer(callID: String, to target: String)
     /// The system audio session became available / was taken away (CallKit
     /// didActivate / didDeactivate, AVAudioSession interruptions). Engines
     /// with their own audio units restart or stop them here.
@@ -44,15 +66,22 @@ public protocol CallEngine: AnyObject {
 public extension CallEngine {
     func audioSessionActivated() {}
     func audioSessionDeactivated() {}
+    func setMuted(_: Bool) {}
+    func setHeld(_: Bool) {}
+    func transfer(callID _: String, to _: String) {}
 }
 
 /// One ringing or active call as the controller tracks it.
 public struct TrackedCall: Equatable, Sendable {
     public enum Phase: Equatable, Sendable { case ringing, answered, ended }
+    public enum Direction: Equatable, Sendable { case incoming, outgoing }
     public var wake: Wake
     public var phase: Phase
     /// The INVITE for this call has reached the SIP stack.
     public var sipArrived: Bool = false
+    public var direction: Direction = .incoming
+    /// Outgoing only: what the user asked to call.
+    public var target: String = ""
 }
 
 /// Turns gateway events into system-call-UI actions and acks, and user UI
@@ -76,6 +105,99 @@ public final class CallController {
         self.log = log
         engine?.onIncomingCall = { [weak self] peer in self?.handle(sipIncoming: peer) }
         engine?.onCallEnded = { [weak self] reason in self?.handle(sipEnded: reason) }
+        engine?.onOutgoingRinging = { [weak self] in self?.handle(outgoingRinging: ()) }
+        engine?.onCallEstablished = { [weak self] in self?.handle(established: ()) }
+        engine?.onTransferFailed = { [weak self] reason in
+            self?.log("transfer refused: \(reason); the call continues")
+            self?.onTransferFailed?(reason)
+        }
+    }
+
+    /// The app is told when a transfer it asked for was refused.
+    public var onTransferFailed: ((String) -> Void)?
+
+    /// Blind transfer of an answered call to `target` (number, user or URI).
+    /// On success the server ends our call once the target answers.
+    public func transfer(callID: String, to target: String) {
+        let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answered: Bool = lock.withLock { calls[callID]?.phase == .answered }
+        guard answered, !t.isEmpty else {
+            log("transfer of \(callID) to \(t) ignored: not an answered call")
+            return
+        }
+        log("\(callID): transferring to \(t)")
+        engine?.transfer(callID: callID, to: t)
+    }
+
+    // MARK: Outgoing calls
+
+    /// The user wants to call `handle` (number, user, or SIP URI). Returns
+    /// the call id; the system UI approves the call and calls back
+    /// `userStarted`, which is when the engine dials.
+    @discardableResult
+    public func startCall(to handle: String, displayName: String? = nil) -> String? {
+        let trimmed = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard let account = lock.withLock({ self.account }) else {
+            log("cannot call \(trimmed): no SIP account yet")
+            return nil
+        }
+        let busy: Bool = lock.withLock { calls.contains { $0.value.phase != .ended } }
+        if busy {
+            log("cannot call \(trimmed): a call is already in progress")
+            return nil
+        }
+        let id: String = lock.withLock { sipCallSeq += 1; return "out-\(sipCallSeq)" }
+        let wake = Wake(callID: id, from: Party(uri: "sip:\(account.user)"), to: Party(displayName: displayName, uri: trimmed),
+                        sip: account.sip, expiresAt: now().addingTimeInterval(120))
+        lock.withLock { calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, direction: .outgoing, target: trimmed) }
+        log("calling \(trimmed) as \(id)")
+        ui.startOutgoing(callID: id, handle: trimmed, displayName: displayName ?? trimmed)
+        return id
+    }
+
+    /// The system UI approved the outgoing call: dial now.
+    public func userStarted(callID: String) {
+        guard let call: TrackedCall = lock.withLock({ calls[callID] }), call.direction == .outgoing else { return }
+        engine?.dial(callID: callID, to: call.target)
+    }
+
+    /// The system UI could not start the call (CallKit refused the action).
+    public func startFailed(callID: String) {
+        lock.withLock { calls[callID] = nil }
+        log("outgoing call \(callID) refused by the system")
+    }
+
+    public func setMuted(_ muted: Bool) {
+        engine?.setMuted(muted)
+    }
+
+    /// System UI held / resumed the call (CallKit CXSetHeldCallAction).
+    public func setHeld(callID: String, _ held: Bool) {
+        let known: Bool = lock.withLock { calls[callID]?.phase == .answered }
+        guard known else {
+            log("hold=\(held) for \(callID) ignored: not an answered call")
+            return
+        }
+        log("\(callID): \(held ? "hold" : "resume")")
+        engine?.setHeld(held)
+    }
+
+    private func handle(outgoingRinging _: Void) {
+        guard let id = outgoingCallID() else { return }
+        log("\(id): far end ringing")
+        ui.outgoingConnecting(callID: id)
+    }
+
+    private func handle(established _: Void) {
+        guard let id = outgoingCallID() else { return }
+        lock.withLock { calls[id]?.phase = .answered }
+        log("\(id): connected")
+        ui.outgoingConnected(callID: id)
+    }
+
+    private func outgoingCallID() -> String? {
+        lock.withLock { calls.first { $0.value.direction == .outgoing && $0.value.phase != .ended }?.key }
     }
 
     public var activeCalls: [TrackedCall] { lock.withLock { Array(calls.values) } }
@@ -219,7 +341,7 @@ public final class CallController {
         let wasRinging: Bool = lock.withLock {
             guard let c = calls[callID] else { return false }
             calls[callID] = nil
-            return c.phase == .ringing
+            return c.phase == .ringing && c.direction == .incoming
         }
         if wasRinging {
             transport?.send(.wakeAck(WakeAck(callID: callID, action: .decline)))
@@ -229,7 +351,7 @@ public final class CallController {
     }
 
     /// "sip:201@dialler;transport=tls" → "201@dialler"; "201" → "201".
-    static func userPart(of uri: String) -> String {
+    public static func userPart(of uri: String) -> String {
         var s = uri
         if let lt = s.firstIndex(of: "<") { s = String(s[s.index(after: lt)...]) }
         if let gt = s.firstIndex(of: ">") { s = String(s[..<gt]) }

@@ -16,6 +16,14 @@ import os
 final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverDelegate {
     var onAnswer: (String) -> Void = { _ in }
     var onEnd: (String) -> Void = { _ in }
+    /// CallKit approved an outgoing call we asked for: dial now.
+    var onStart: (String) -> Void = { _ in }
+    /// CallKit refused the outgoing call.
+    var onStartFailed: (String) -> Void = { _ in }
+    /// Our outgoing call was answered (reported to CallKit as connected).
+    var onConnected: (String) -> Void = { _ in }
+    var onMute: (String, Bool) -> Void = { _, _ in }
+    var onHold: (String, Bool) -> Void = { _, _ in }
     var onAudioActivated: () -> Void = {}
     var onAudioDeactivated: () -> Void = {}
     /// Bridge events for the app's visible log (os_log alone was invisible
@@ -91,6 +99,60 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         }
     }
 
+    func requestHold(callID: String, held: Bool) {
+        guard let uuid = uuids[callID] else { return }
+        controller.request(CXTransaction(action: CXSetHeldCallAction(call: uuid, onHold: held))) { [weak self] err in
+            if let err { self?.onLog("callkit: hold request failed: \(err.localizedDescription)") }
+        }
+    }
+
+    func requestMute(callID: String, muted: Bool) {
+        guard let uuid = uuids[callID] else { return }
+        controller.request(CXTransaction(action: CXSetMutedCallAction(call: uuid, muted: muted))) { [weak self] err in
+            if let err { self?.onLog("callkit: mute request failed: \(err.localizedDescription)") }
+        }
+    }
+
+    // MARK: CallUI — outgoing
+
+    /// Outgoing calls go through CallKit too: request a start action, and
+    /// dial only when CallKit performs it (so the system call bar, Recents
+    /// and audio-session activation all work as for incoming calls).
+    func startOutgoing(callID: String, handle: String, displayName: String) {
+        DispatchQueue.main.async { [self] in
+            let uuid = UUID()
+            uuids[callID] = uuid
+            callIDs[uuid] = callID
+            let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: handle))
+            action.contactIdentifier = displayName
+            onLog("callkit: requesting outgoing call \(callID) to \(handle) as \(short(uuid))")
+            controller.request(CXTransaction(action: action)) { [weak self] err in
+                guard let self, let err else { return }
+                self.onLog("callkit: start request failed: \(err.localizedDescription)")
+                self.uuids[callID] = nil
+                self.callIDs[uuid] = nil
+                self.onStartFailed(callID)
+            }
+        }
+    }
+
+    func outgoingConnecting(callID: String) {
+        DispatchQueue.main.async { [self] in
+            guard let uuid = uuids[callID] else { return }
+            provider.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
+            onLog("callkit: \(callID) connecting")
+        }
+    }
+
+    func outgoingConnected(callID: String) {
+        DispatchQueue.main.async { [self] in
+            guard let uuid = uuids[callID] else { return }
+            provider.reportOutgoingCall(with: uuid, connectedAt: Date())
+            onLog("callkit: \(callID) connected")
+            onConnected(callID)
+        }
+    }
+
     // MARK: CallUI
 
     // The controller calls these from whichever thread delivered the event
@@ -154,8 +216,12 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             }
             onLog("callkit: ending \(callID) (\(reason))")
             provider.reportCall(with: uuid, endedAt: Date(), reason: cxReason)
+            onEnded(callID)
         }
     }
+
+    /// A call was ended by the far end or failed (not by the user).
+    var onEnded: (String) -> Void = { _ in }
 
     /// Set the category and mode for the call; never activate the session —
     /// CallKit activates it and calls didActivate.
@@ -289,16 +355,32 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         action.fulfill()
     }
 
-    // The system in-call screen offers mute and hold; acknowledge them so the
-    // buttons do not error, until the engine implements them.
+    func provider(_: CXProvider, perform action: CXStartCallAction) {
+        guard let id = callIDs[action.callUUID] else {
+            onLog("callkit: start for unknown call \(short(action.callUUID))")
+            action.fail()
+            return
+        }
+        onLog("callkit: start accepted for \(id) → \(action.handle.value)")
+        // Same shape as answering: hand it to the engine, fulfill; CallKit
+        // then activates the session and the engine releases its audio.
+        onStart(id)
+        action.fulfill()
+    }
 
     func provider(_: CXProvider, perform action: CXSetMutedCallAction) {
-        onLog("callkit: mute=\(action.isMuted) (not yet applied)")
+        if let id = callIDs[action.callUUID] {
+            onLog("callkit: mute=\(action.isMuted) for \(id)")
+            onMute(id, action.isMuted)
+        }
         action.fulfill()
     }
 
     func provider(_: CXProvider, perform action: CXSetHeldCallAction) {
-        onLog("callkit: hold=\(action.isOnHold) (not yet applied)")
+        if let id = callIDs[action.callUUID] {
+            onLog("callkit: hold=\(action.isOnHold) for \(id)")
+            onHold(id, action.isOnHold)
+        }
         action.fulfill()
     }
 }

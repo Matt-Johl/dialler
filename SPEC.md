@@ -266,6 +266,26 @@ on by config — see §7.4.
   `CallEngine`, building for device and simulator. Remaining: the first real
   device call with audio, and the killed-app wake through the extension.
 - **Phase 2** — Outbound + hold + transfer; PBX leg via Asterisk.
+  *2026-09-07:* Phase 1 closed on a real iPhone (first and subsequent calls,
+  killed-app wake via the Local Push extension, lock screen); the root
+  causes were the audio driver creating CoreAudio units before CallKit's
+  activation (`!pri`), the B2BUA answering the caller before dialling the
+  callee, and a registration-refresh race. Outbound calls done: keypad and
+  directory share one dial path (`sip:<target>@<domain>`), CallKit start
+  action, in-call screen with mute/speaker/end. PBX leg done: `-trunk`
+  makes the server a SIP trunk peer (UDP/TCP/TLS), non-local destinations
+  route to it, G.711 on both legs of a trunk call (no transcoding), both
+  directions proven headless by `make harness-trunk`. Headless loop for the
+  app path: `make sim-call` runs the real engine on the iOS simulator
+  against the harness and asserts RTP + rendered audio energy. Hold/resume
+  done (re-INVITE through the bridge; media stops and restarts, asserted
+  headless). Blind transfer done: REFER is consumed by the server, the
+  target routed like a fresh call (local, wake, trunk, echo), the remaining
+  party re-bridged, the transferor released with a final NOTIFY; asserted
+  headless. Echo self-test destinations: `echo` (server) and `600` (PBX).
+  Remaining in Phase 2: attended transfer; codec renegotiation when an
+  Opus app call is transferred to the G.711 trunk; ring-back or hold music
+  for the party waiting during a transfer.
 - **Phase 3** — Address book store + server-driven directory sync.
 - **Phase 4** — `LPCTransport`: device-verify against the transport conformance
   suite, then flip background wakes to LPC.

@@ -46,6 +46,6 @@ let package = Package(
         // The app's call path headless (gateway session, wake, register,
         // answer, CallKit activation sequence) on the iOS simulator against
         // the docker harness, asserted on RTP + rendered audio energy.
-        .executableTarget(name: "sim-call", dependencies: ["DiallerEngine", "DiallerCore", "DiallerProtocol"]),
+        .executableTarget(name: "sim-call", dependencies: ["DiallerEngine", "DiallerCore", "DiallerProtocol", "CBaresip"]),
     ]
 )

@@ -65,6 +65,17 @@ probe-call:
 harness-wake:
 	sh harness/wake_test.sh
 
+# PBX leg: the server as Asterisk's SIP trunk peer, both directions, asserted
+# on recorded audio (app → desk phone, desk phone → app).
+harness-trunk:
+	sh harness/trunk_test.sh
+
+# Echo self-test: the app hears its own audio back from the server
+# ("echo", app leg only) or from the PBX ("600", through the trunk).
+harness-echo:
+	sh harness/echo_test.sh
+	TRUNK=1 sh harness/echo_test.sh
+
 # Ring the iOS app (simulator or device, connected as dev-a) through the server.
 harness-ring-sim:
 	sh harness/ring_sim.sh
@@ -135,8 +146,20 @@ audio-probe:
 # and rendered audio energy. Needs `make harness-up` first.
 #   make sim-call                    # activation ~150ms after answer (device order)
 #   ACTIVATE_MS=1500 make sim-call   # activation after the call established
+#   CALLS=3 ANSWER_MS=8000 make sim-call   # several calls in one process, long rings
+#   OUTBOUND=202 make sim-call       # the simulated phone dials (keypad / directory path)
+#   OUTBOUND=echo make sim-call      # full mic→server→speaker loop (server echo)
+#   HOLD_MS=3000 make sim-call       # hold/resume mid-call, asserts media stops and restarts
+#   TRANSFER=echo make sim-call      # blind transfer of the caller to echo (REFER handled server-side)
+#   GATEWAY=no make sim-call         # no wake ever arrives; rings from the INVITE
+#   SERVER=native make sim-call      # against `make dev-server` on this Mac
 sim-call:
 	sh harness/sim_call.sh
+
+# The outbound + incoming pair every call-path change must pass.
+sim-call-all:
+	OUTBOUND=202 sh harness/sim_call.sh
+	CALLS=2 sh harness/sim_call.sh
 
 SIM ?= iPhone 16
 audio-probe-sim:

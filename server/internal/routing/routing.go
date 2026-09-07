@@ -15,8 +15,14 @@ type Target string
 const (
 	Local   Target = "local"   // a user in the registry; wake if not registered
 	Trunk   Target = "trunk"   // hand off to the PBXAdapter
+	Echo    Target = "echo"    // the server answers and plays the caller's audio back (self-test)
 	Unknown Target = "unknown" // no local user and no trunk configured
 )
+
+// EchoUser is the reserved destination that echoes the caller's audio:
+// dial "echo" from the app to test microphone → server → speaker end to
+// end with no second party. A provisioned user cannot take this name.
+const EchoUser = "echo"
 
 // Decision describes how to reach a destination.
 type Decision struct {
@@ -60,6 +66,10 @@ func (r *Router) Resolve(dest string) Decision {
 	}
 	foreign := host != "" && !r.domains[strings.ToLower(host)]
 	if !foreign {
+		if strings.EqualFold(user, EchoUser) {
+			d.Target = Echo
+			return d
+		}
 		if ep, ok := r.reg.Lookup(user); ok {
 			d.Target, d.Endpoint, d.Registered = Local, ep, ep.Contact != ""
 			return d

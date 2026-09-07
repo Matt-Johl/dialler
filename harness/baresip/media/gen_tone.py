@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Generate in.wav: 5 s of a 440 Hz tone, 48 kHz **stereo** 16-bit, for the
-headless baresip phones. Stereo because the phones negotiate opus/48000/2 and
+"""Generate in.wav: 20 s of a 440 Hz tone, 48 kHz **stereo** 16-bit, for the
+headless baresip phones. Long enough to outlast a hold/resume cycle and a
+slow answer within one test call. Stereo because the phones negotiate opus/48000/2 and
 baresip's aufile source requires the file's channel count to match. Media
 tests play this from one phone and assert on the other phone's recording
 (SPEC §7.2). Standard library only.
@@ -13,7 +14,7 @@ import sys
 import wave
 from pathlib import Path
 
-RATE, SECONDS, FREQ, AMP, CHANNELS = 48000, 5, 440.0, 12000, 2
+RATE, SECONDS, FREQ, AMP, CHANNELS = 48000, 20, 440.0, 12000, 2
 
 
 def write(out: Path) -> None:

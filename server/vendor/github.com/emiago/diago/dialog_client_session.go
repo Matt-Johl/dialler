@@ -135,6 +135,17 @@ func (o *InviteClientOptions) WithCaller(displayName string, callerID string, ho
 // - sipgo.ErrDialogResponse
 // - ErrClientEarlyMedia
 //
+// SetCodecs overrides the codecs this dialog offers, replacing the Diago-wide
+// media configuration for this call only. Call before Invite. With an
+// Originator, the offer is still narrowed to what the originator supports.
+//
+// Dialler patch (see server/vendor/PATCHES.md): a B2BUA that relays encoded
+// audio without transcoding must offer each leg only what the other leg can
+// carry — G.711 towards a PBX trunk, the full set towards an app.
+func (d *DialogClientSession) SetCodecs(codecs []media.Codec) {
+	d.mediaConfig.Codecs = codecs
+}
+
 // NOTE: It updates internal invite request so NOT THREAD SAFE.
 // If you pass originator it will use originator to set correct from header and avoid media transcoding
 func (d *DialogClientSession) Invite(ctx context.Context, opts InviteClientOptions) error {

@@ -92,20 +92,30 @@ func (s *Store) Version() int64 {
 }
 
 // Upsert creates or replaces a contact. With an empty ID, a live contact
-// with the same URI is updated in place (a URI identifies one endpoint, so
-// re-seeding a directory must not accumulate duplicates); otherwise an ID
-// is assigned.
+// with the same URI is updated in place and any OTHER live contacts sharing
+// that URI are tombstoned (a URI identifies one endpoint, so re-seeding a
+// directory must not accumulate duplicates, and this heals a directory that
+// already accumulated them); otherwise an ID is assigned.
 func (s *Store) Upsert(c Contact) (Contact, error) {
 	if c.URI == "" || (c.Mode != ModeLocal && c.Mode != ModeTrunk) {
 		return Contact{}, ErrInvalid
 	}
 	s.mu.Lock()
 	if c.ID == "" {
+		// Collapse every live contact with this URI: keep one to update in
+		// place, tombstone the rest so clients delete their duplicates.
 		for _, existing := range s.st.Contacts {
-			if !existing.Deleted && strings.EqualFold(existing.URI, c.URI) {
-				c.ID = existing.ID
-				break
+			if existing.Deleted || !strings.EqualFold(existing.URI, c.URI) {
+				continue
 			}
+			if c.ID == "" {
+				c.ID = existing.ID
+				continue
+			}
+			s.st.Version++
+			existing.Deleted = true
+			existing.Version = s.st.Version
+			existing.UpdatedAt = s.now()
 		}
 	}
 	if c.ID == "" {

@@ -166,6 +166,13 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 			BindHost:     host,
 			BindPort:     port,
 			ExternalHost: ext,
+			// diago fills ExternalPort from BindPort only when ExternalHost is
+			// empty (diago.go). We always set ExternalHost, so set the port too
+			// or the Contact in our responses carries port 0 and the PBX sends
+			// its ACK for our 200 OK to the wrong port: over UDP (no reused
+			// connection like TLS) the ACK never arrives and answering the
+			// inbound leg blocks for 32 s (Timer H) then fails — silent call.
+			ExternalPort: port,
 		}))
 	}
 	opts = append(opts, mediaOptions(cfg)...)
@@ -529,6 +536,11 @@ type legs struct {
 // the legs, the caller is always answered with the codec the callee took.
 var trunkCodecs = []media.Codec{media.CodecAudioUlaw, media.CodecAudioAlaw}
 
+// callTouchesTrunk reports whether either leg is the PBX trunk. When it is,
+// the callee is offered G.711 only so the negotiated codec is one both legs
+// share (the relay does not transcode); app↔app keeps the full set.
+func callTouchesTrunk(l legs) bool { return l.callerTrunk || l.calleeTrunk }
+
 // legNAT is the symmetric-RTP setting for a leg: the trunk always learns
 // (a PBX behind NAT is normal); app legs follow the deployment flag.
 func (s *Server) legNAT(trunk bool) int {
@@ -618,7 +630,15 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		return err
 	}
 	calleeNAT := s.legNAT(l.calleeTrunk)
-	if l.calleeTrunk {
+	// The relay copies encoded audio between the legs without transcoding, so
+	// both legs must settle on the same codec. A PBX trunk speaks G.711 only.
+	// Constrain the callee's offer to G.711 whenever EITHER leg is the trunk,
+	// not just when the callee is: an app callee reached from a trunk caller,
+	// left with its full set, negotiates Opus, which the G.711-only trunk
+	// caller then cannot be answered with — silence in both directions. A
+	// call that touches the trunk is therefore G.711 end to end (app↔app,
+	// neither trunk, keeps the full set with Opus first).
+	if callTouchesTrunk(l) {
 		out.SetCodecs(trunkCodecs)
 	}
 	from := in.InviteRequest.From()

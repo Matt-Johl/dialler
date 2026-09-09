@@ -50,6 +50,44 @@ public struct DirectoryClient {
     }
 }
 
+/// Thread-safe lookup of a caller's friendly name in the directory, for
+/// naming an incoming call. The call controller resolves names on whatever
+/// thread a wake arrives on, not the main actor, so this holds its own
+/// snapshot behind a lock rather than reading the app's @Published contacts.
+///
+/// A caller URI is matched first exactly, then by the user before the "@"
+/// (a trunk caller arrives as sip:101@<pbx-ip> but the directory entry is
+/// sip:101@asterisk — same extension, different host).
+public final class DirectoryNameIndex: @unchecked Sendable {
+    private let lock = NSLock()
+    private var byURI: [String: String] = [:]
+    private var byUser: [String: String] = [:]
+
+    public init() {}
+
+    public func update(_ contacts: [DirectoryContact]) {
+        var uris: [String: String] = [:]
+        var users: [String: String] = [:]
+        for c in contacts {
+            uris[c.uri.lowercased()] = c.displayName
+            let u = Self.user(of: c.uri)
+            if !u.isEmpty { users[u] = c.displayName }
+        }
+        lock.lock(); byURI = uris; byUser = users; lock.unlock()
+    }
+
+    public func name(forURI uri: String) -> String? {
+        let u = Self.user(of: uri)
+        lock.lock(); defer { lock.unlock() }
+        return byURI[uri.lowercased()] ?? (u.isEmpty ? nil : byUser[u])
+    }
+
+    /// "sip:101@10.18.0.5;transport=udp" → "101"; "201@dialler" → "201".
+    static func user(of uri: String) -> String {
+        CallController.numberPart(of: uri).lowercased()
+    }
+}
+
 /// Local address book with reconcile: applies deltas (including tombstones)
 /// and remembers the cursor.
 public struct AddressBook: Equatable, Sendable {

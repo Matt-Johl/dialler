@@ -48,5 +48,6 @@ echo "# directory"
 post /v1/directory '{"display_name":"Matt (201)","uri":"sip:201@dialler","mode":"local"}'
 post /v1/directory '{"display_name":"Phone B (202)","uri":"sip:202@dialler","mode":"local"}'
 post /v1/directory '{"display_name":"Desk phone (100)","uri":"sip:100@asterisk","mode":"trunk"}'
+post /v1/directory '{"display_name":"SIP phone (101)","uri":"sip:101@asterisk","mode":"trunk"}'
 post /v1/directory '{"display_name":"Echo test (server)","uri":"sip:echo@dialler","mode":"local"}'
 post /v1/directory '{"display_name":"Echo test (PBX, 600)","uri":"sip:600@asterisk","mode":"trunk"}'

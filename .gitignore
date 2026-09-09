@@ -16,3 +16,4 @@ harness/baresip/media/*.wav
 # os / editor
 .DS_Store
 *.swp
+

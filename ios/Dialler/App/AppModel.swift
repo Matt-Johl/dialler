@@ -54,6 +54,9 @@ final class AppModel: ObservableObject {
     private var transport: LANSocketTransport?
     private var eventTask: Task<Void, Never>?
     private var book = AddressBook()
+    /// Thread-safe caller-name lookup for incoming calls (the controller
+    /// resolves names off the main actor). Kept in step with `contacts`.
+    private nonisolated let nameIndex = DirectoryNameIndex()
     private let logger = Logger(subsystem: DiallerIDs.bundlePrefix, category: "app")
 
     init() {
@@ -104,6 +107,12 @@ final class AppModel: ObservableObject {
             if self.activeCall?.id == id { self.activeCall?.muted = muted }
         }
         controller.onTransferFailed = { [weak self] reason in Task { @MainActor in self?.append("transfer refused: \(reason)") } }
+        // Show the directory's friendly name for a known incoming caller
+        // (e.g. "SIP phone (101)" instead of sip:101@…). The controller runs
+        // this off the main actor, so read a snapshot of the contacts.
+        controller.resolveDisplayName = { [weak self] uri, provided in
+            self?.nameIndex.name(forURI: uri) ?? provided
+        }
         callKit.onHold = { [weak self] id, held in
             guard let self else { return }
             self.controller.setHeld(callID: id, held)
@@ -179,7 +188,8 @@ final class AppModel: ObservableObject {
         if call.direction == .outgoing {
             return call.wake.to.displayName ?? call.target
         }
-        return call.wake.from.displayName?.isEmpty == false ? call.wake.from.displayName! : CallController.userPart(of: call.wake.from.uri)
+        let provided = call.wake.from.displayName?.isEmpty == false ? call.wake.from.displayName : nil
+        return nameIndex.name(forURI: call.wake.from.uri) ?? provided ?? CallController.numberPart(of: call.wake.from.uri)
     }
 
     var currentConfig: AppConfig {
@@ -269,7 +279,8 @@ final class AppModel: ObservableObject {
             callKit.reaffirm(callID: id)
         case .expired:
             append("expired wake via extension; reporting and ending \(wake.callID) to satisfy PushKit")
-            callKit.reportIncoming(callID: wake.callID, displayName: wake.from.displayName ?? wake.from.uri, handle: wake.from.uri) { [weak self] err in
+            let name = nameIndex.name(forURI: wake.from.uri) ?? (wake.from.displayName?.isEmpty == false ? wake.from.displayName! : CallController.numberPart(of: wake.from.uri))
+            callKit.reportIncoming(callID: wake.callID, displayName: name, handle: wake.from.uri) { [weak self] err in
                 if err == nil { self?.callKit.end(callID: wake.callID, reason: .unanswered) }
             }
         }
@@ -284,6 +295,7 @@ final class AppModel: ObservableObject {
             let delta = try await client.changes(since: book.version)
             book.apply(delta)
             contacts = book.sorted
+            nameIndex.update(contacts)
             append("directory synced: v\(book.version), \(contacts.count) contacts")
         } catch {
             append("directory sync failed: \(error.localizedDescription)")

@@ -83,13 +83,20 @@ harness-ring-sim:
 # Device testing without Docker's UDP proxy in the media path: the server
 # runs natively on this Mac (media ports on en0), provisioned with the same
 # fixed dev tokens; the docker caller registers to it over outbound NAT.
-#   make dev-server            # terminal 1 (Ctrl-C to stop)
-#   make harness-ring-native   # terminal 2: 202 dials the phone
+# The PBX for real SIP phones is a standalone Asterisk on an Ubuntu box on
+# the LAN (harness/asterisk-native/README.md); pass its address as
+# ASTERISK_HOST to trunk to it, or leave it unset for app-only testing.
+#   make dev-server                          # terminal 1 (Ctrl-C to stop)
+#   ASTERISK_HOST=10.18.0.50 make dev-server # trunked to the Ubuntu PBX
+#   make harness-ring-native                 # terminal 2: 202 dials the phone
+ASTERISK_HOST ?=
+TRUNK_FLAGS = $(if $(ASTERISK_HOST),-trunk "sip:$(ASTERISK_HOST):5060;transport=udp" -trunk-addr :5062 -trunk-external-host $(DIALLER_PUBLIC_HOST),)
 dev-server: server tone
 	@echo "native server on $(DIALLER_PUBLIC_HOST); app Settings: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed"
+	@echo "trunk: $(if $(ASTERISK_HOST),Asterisk at $(ASTERISK_HOST):5060; trunk listener :5062,none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
 	( sleep 2 && DIALLER_API=http://127.0.0.1:8080 sh harness/provision.sh ) &
 	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
-	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(DEV_SERVER_FLAGS)
+	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS)
 # e.g. DEV_SERVER_FLAGS="-log-level debug" make dev-server   (shows sipgo's connection reference counting)
 
 harness-ring-native:

@@ -73,3 +73,26 @@ func TestTrunkCodecsAreG711Only(t *testing.T) {
 		}
 	}
 }
+
+// The relay does not transcode, so the callee must be constrained to G.711
+// whenever EITHER leg is the trunk — otherwise a trunk→app call lets the app
+// pick Opus, which the G.711-only trunk caller cannot be answered with, and
+// audio dies in both directions (the phone→app-silence bug). app↔app is left
+// with its full set.
+func TestCallTouchesTrunk(t *testing.T) {
+	cases := []struct {
+		name string
+		l    legs
+		want bool
+	}{
+		{"app to app", legs{}, false},
+		{"app to trunk (callee)", legs{calleeTrunk: true}, true},
+		{"trunk to app (caller)", legs{callerTrunk: true}, true},
+		{"trunk to trunk", legs{callerTrunk: true, calleeTrunk: true}, true},
+	}
+	for _, c := range cases {
+		if got := callTouchesTrunk(c.l); got != c.want {
+			t.Errorf("%s: callTouchesTrunk = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

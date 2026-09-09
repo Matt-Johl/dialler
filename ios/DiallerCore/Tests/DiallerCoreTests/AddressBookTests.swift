@@ -6,6 +6,22 @@ final class AddressBookTests: XCTestCase {
         DirectoryContact(id: id, displayName: name, uri: "sip:\(id)@dialler", mode: "local", version: version, deleted: deleted)
     }
 
+    func testDirectoryNameIndexMatchesByURIAndBareUser() {
+        let idx = DirectoryNameIndex()
+        idx.update([
+            DirectoryContact(id: "1", displayName: "SIP phone (101)", uri: "sip:101@asterisk", mode: "trunk", version: 1, deleted: nil),
+            DirectoryContact(id: "2", displayName: "Matt (201)", uri: "sip:201@dialler", mode: "local", version: 2, deleted: nil),
+        ])
+        // Exact URI match.
+        XCTAssertEqual(idx.name(forURI: "sip:101@asterisk"), "SIP phone (101)")
+        // A trunk caller arrives as the extension at the PBX's own host; match
+        // on the bare user so the directory name still wins.
+        XCTAssertEqual(idx.name(forURI: "sip:101@10.18.0.5;transport=udp"), "SIP phone (101)")
+        XCTAssertEqual(idx.name(forURI: "\"whatever\" <sip:201@dialler;transport=tls>"), "Matt (201)")
+        // No entry for this caller.
+        XCTAssertNil(idx.name(forURI: "sip:999@asterisk"))
+    }
+
     func testDeltaApplyWithTombstones() {
         var book = AddressBook()
         book.apply(DirectorySync(version: 2, since: 0, contacts: [contact("a", "Zed", version: 1), contact("b", "Amy", version: 2)]))

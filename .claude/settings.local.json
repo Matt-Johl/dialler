@@ -57,7 +57,26 @@
       "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIRECTION=out KEEP=1 sh harness/trunk_test.sh)",
       "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIRECTION=in KEEP=1 sh harness/trunk_test.sh)",
       "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug KEEP=1 DIRECTION=out sh harness/trunk_test.sh)",
-      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIALLER_SIP_TRACE=true docker compose -f harness/docker-compose.yml up -d dialler)"
+      "Bash(DIALLER_PUBLIC_HOST=10.18.0.212 DIALLER_LOG_LEVEL=debug DIALLER_SIP_TRACE=true docker compose -f harness/docker-compose.yml up -d dialler)",
+      "WebFetch(domain:formulae.brew.sh)",
+      "WebFetch(domain:eu-central-1-1.aws.cloud2.influxdata.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Read(//Users/matt/Library/Caches/dialler/asterisk-23.5.0/**)",
+      "Bash(export EXTERNALS_CACHE_DIR=/Users/matt/Library/Caches/dialler/externals PKG_CONFIG_PATH=/opt/homebrew/opt/openssl@3/lib/pkgconfig:/opt/homebrew/opt/sqlite/lib/pkgconfig:/opt/homebrew/opt/ncurses/lib/pkgconfig:/opt/homebrew/lib/pkgconfig CFLAGS=\"-I/opt/homebrew/include -I/opt/homebrew/opt/openssl@3/include -I/opt/homebrew/opt/sqlite/include -I/opt/homebrew/opt/ncurses/include\" LDFLAGS=\"-L/opt/homebrew/lib -L/opt/homebrew/opt/openssl@3/lib -L/opt/homebrew/opt/sqlite/lib -L/opt/homebrew/opt/ncurses/lib\")",
+      "Bash(make menuselect.makeopts)",
+      "Bash(menuselect/menuselect --disable CORE-SOUNDS-EN-GSM --disable MOH-OPSOUND-WAV --disable EXTRA-SOUNDS-EN-GSM menuselect.makeopts)",
+      "Bash(make -j10)",
+      "Bash(menuselect/menuselect --disable pbx_lua --disable chan_console --disable cdr_pgsql --disable cel_pgsql --disable res_config_pgsql menuselect.makeopts)",
+      "Bash(echo \"make exit $?\")",
+      "Bash(ASTERISK_HOST=10.18.0.50 make -n dev-server)",
+      "Bash(sed -n '/func firstIPv4/,/^}/p' internal/b2bua/b2bua.go)",
+      "Bash(sed -n '/func \\(p \\\\*pump\\) run/,/^}/p' internal/b2bua/b2bua.go)",
+      "Bash(export GOFLAGS=-mod=vendor GOPATH=/Users/matt/Library/Caches/dialler-go GOMODCACHE=/Users/matt/Library/Caches/dialler-go/pkg/mod)",
+      "Bash(GOFLAGS=-mod=vendor GOPATH=/Users/matt/Library/Caches/dialler-go GOMODCACHE=/Users/matt/Library/Caches/dialler-go/pkg/mod go build -o ../bin/dialler-server ./cmd/dialler-server)",
+      "Bash(../bin/dialler-server -h)",
+      "Bash(GOFLAGS=-mod=vendor GOPATH=/Users/matt/Library/Caches/dialler-go GOMODCACHE=/Users/matt/Library/Caches/dialler-go/pkg/mod go test ./internal/b2bua/ ./internal/directory/)",
+      "Bash(awk '/swift-test-sandboxed/{p=1} p{print} p&&/^$/{c++; if\\(c>0 && NF==0\\) exit}' Makefile)"
     ]
   },
   "sandbox": {

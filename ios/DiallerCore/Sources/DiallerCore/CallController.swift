@@ -116,6 +116,13 @@ public final class CallController {
     /// The app is told when a transfer it asked for was refused.
     public var onTransferFailed: ((String) -> Void)?
 
+    /// Resolves the friendly name to show for an incoming caller. The app
+    /// layer sets this to look the caller up in the directory (which it owns);
+    /// it is given the caller's URI and any display name the wake carried, and
+    /// returns the name to display, or nil to keep the wake's own. Left nil,
+    /// the caller's own display name (then the URI's user) is used.
+    public var resolveDisplayName: ((_ uri: String, _ provided: String?) -> String?)?
+
     /// Blind transfer of an answered call to `target` (number, user or URI).
     /// On success the server ends our call once the target answers.
     public func transfer(callID: String, to target: String) {
@@ -305,7 +312,8 @@ public final class CallController {
             log("wake \(w.callID) already expired; ignoring")
             return .expired
         }
-        let name = w.from.displayName?.isEmpty == false ? w.from.displayName! : w.from.uri
+        let provided = w.from.displayName?.isEmpty == false ? w.from.displayName : nil
+        let name = resolveDisplayName?(w.from.uri, provided) ?? provided ?? Self.numberPart(of: w.from.uri)
         log("incoming call \(w.callID) from \(name)")
         ui.reportIncoming(callID: w.callID, displayName: name, handle: w.from.uri) { [weak self] err in
             guard let self else { return }
@@ -358,6 +366,15 @@ public final class CallController {
         for p in ["sips:", "sip:"] where s.hasPrefix(p) { s.removeFirst(p.count) }
         if let semi = s.firstIndex(of: ";") { s = String(s[..<semi]) }
         return s
+    }
+
+    /// The bare number/extension shown when there is no name: the user token
+    /// before the host. "\"Alice\" <sip:1001@pbx>" → "1001"; "201" → "201".
+    /// Unlike `userPart` this drops the host, so it is for display only, never
+    /// for registering the SIP user (which needs the domain).
+    public static func numberPart(of uri: String) -> String {
+        let up = userPart(of: uri) // "1001@pbx" or "1001"
+        return up.split(separator: "@").first.map(String.init) ?? up
     }
 
     private func end(callID: String, reason: CallEndReason) {

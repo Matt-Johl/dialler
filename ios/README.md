@@ -62,6 +62,25 @@ the phone and the docker phones reach the relay at that address. The wake's
 SIP target must show that address in the app log ("registering 201@dialler
 to 10.x.x.x:5061"); if it says `dialler`, the server was started without it.
 
+### Before shipping: export compliance and attribution
+
+The app links OpenSSL, so every App Store submission has to answer the
+encryption question. Set `ITSAppUsesNonExemptEncryption` in `Info.plist` to
+avoid being asked on each upload. Using TLS/SRTP for a VoIP app's own calls
+normally falls under the standard exemption for encryption limited to
+authentication and secure communication, in which case the key is `false`;
+confirm that against Apple's current wording, and if the exemption does not
+apply a self-classification report (and, historically, a French declaration)
+may be required. This is a distribution question, not a licence one.
+
+Separately, the vendored stack is all permissive — OpenSSL 3.3 is Apache-2.0,
+Opus 1.5, libre and baresip 3.15 are BSD-3 (verified from the licence files in
+`ios/vendor/src`, SPEC §8) — but binary redistribution under both licences
+still requires reproducing the copyright notices, licence texts and warranty
+disclaimers. The app has no acknowledgements screen yet; add one, or bundle a
+licence file, before release. The BSD no-endorsement clause also means the
+baresip/Xiph/contributor names must not be used to promote the app.
+
 ### Headless engine test (no phone)
 
 The same stack builds for macOS, and `engine-probe` drives the real

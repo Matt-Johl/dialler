@@ -195,6 +195,24 @@ final class CallControllerTests: XCTestCase {
         return (c, ui, engine, tr)
     }
 
+    func testResolveDisplayNameNamesIncomingCaller() {
+        let (c, ui, _, _) = make()
+        // The app layer resolves a known caller to its directory name.
+        c.resolveDisplayName = { uri, provided in
+            uri.contains("100") ? "SIP phone (101)" : provided
+        }
+        c.handle(.wake(wake("c1"))) // from sip:100@pbx, wake display name "Reception"
+        XCTAssertEqual(ui.reported.first?.1, "SIP phone (101)", "directory name overrides the wake's own")
+    }
+
+    func testFallsBackToProvidedDisplayNameWhenNotInDirectory() {
+        let (c, ui, _, _) = make()
+        // Resolver models a directory that does not contain this caller.
+        c.resolveDisplayName = { _, provided in provided }
+        c.handle(.wake(wake("c1"))) // From display name "Reception", no directory match
+        XCTAssertEqual(ui.reported.first?.1, "Reception", "middle tier: the caller's own display name")
+    }
+
     func testWakeRingsThenAcksThenAnswerRegistersSIP() {
         let (c, ui, engine, tr) = make()
         c.handle(.wake(wake("c1")))
@@ -292,9 +310,15 @@ final class CallControllerTests: XCTestCase {
         XCTAssertEqual(ui.ended.map { $0.0 }, ["c1"])
     }
 
-    func testDisplayNameFallsBackToURI() {
+    func testDisplayNameFallsBackToNumber() {
         let (c, ui, _, _) = make()
         c.handle(.wake(wake("c3", name: nil)))
-        XCTAssertEqual(ui.reported.first?.1, "sip:100@pbx")
+        XCTAssertEqual(ui.reported.first?.1, "100", "no name, no directory match → the bare number, not user@host or the raw URI")
+    }
+
+    func testNumberPartStripsSchemeParamsAndHost() {
+        XCTAssertEqual(CallController.numberPart(of: "\"Alice\" <sip:1001@pbx>"), "1001")
+        XCTAssertEqual(CallController.numberPart(of: "sip:101@10.18.0.5;transport=udp"), "101")
+        XCTAssertEqual(CallController.numberPart(of: "201"), "201")
     }
 }

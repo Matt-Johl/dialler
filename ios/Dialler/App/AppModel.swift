@@ -363,7 +363,7 @@ final class AppModel: ObservableObject {
 /// Fallback engine with no SIP stack; only logs. Kept for the simulator when
 /// the baresip XCFrameworks have not been built.
 final class LoggingCallEngine: CallEngine {
-    var onIncomingCall: ((String) -> Void)?
+    var onIncomingCall: ((String, String?) -> Void)?
     var onCallEnded: ((String) -> Void)?
     var onOutgoingRinging: (() -> Void)?
     var onCallEstablished: (() -> Void)?

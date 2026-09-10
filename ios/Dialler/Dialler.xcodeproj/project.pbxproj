@@ -9,10 +9,10 @@
 /* Begin PBXBuildFile section */
 		D1A11E700000000000000101 /* DiallerCore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000501 /* DiallerCore */; };
 		D1A11E700000000000000102 /* DiallerProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000502 /* DiallerProtocol */; };
-		D1A11E700000000000000106 /* DiallerEngine in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000505 /* DiallerEngine */; };
 		D1A11E700000000000000103 /* DiallerCore in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000503 /* DiallerCore */; };
 		D1A11E700000000000000104 /* DiallerProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000504 /* DiallerProtocol */; };
 		D1A11E700000000000000105 /* PushProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D1A11E700000000000000202 /* PushProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		D1A11E700000000000000106 /* DiallerEngine in Frameworks */ = {isa = PBXBuildFile; productRef = D1A11E700000000000000505 /* DiallerEngine */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -319,12 +319,15 @@
 		D1A11E700000000000001003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/Dialler.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 568U7M6YTX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vPhone;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -340,12 +343,15 @@
 		D1A11E700000000000001004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/Dialler.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 568U7M6YTX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = vPhone;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

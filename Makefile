@@ -66,7 +66,9 @@ harness-wake:
 	sh harness/wake_test.sh
 
 # PBX leg: the server as Asterisk's SIP trunk peer, both directions, asserted
-# on recorded audio (app → desk phone, desk phone → app).
+# on recorded audio (app → desk phone, desk phone → app), plus a transfer of
+# the desk phone to a PBX extension that the server must hand to Asterisk
+# and drop out of (DIRECTION=out|in|transfer for one of them).
 harness-trunk:
 	sh harness/trunk_test.sh
 
@@ -158,15 +160,17 @@ audio-probe:
 #   OUTBOUND=echo make sim-call      # full mic→server→speaker loop (server echo)
 #   HOLD_MS=3000 make sim-call       # hold/resume mid-call, asserts media stops and restarts
 #   TRANSFER=echo make sim-call      # blind transfer of the caller to echo (REFER handled server-side)
+#   DECLINE=1 make sim-call          # reject from the banner; asserts phone-b is told 486 Busy Here, not 480
 #   GATEWAY=no make sim-call         # no wake ever arrives; rings from the INVITE
 #   SERVER=native make sim-call      # against `make dev-server` on this Mac
 sim-call:
 	sh harness/sim_call.sh
 
-# The outbound + incoming pair every call-path change must pass.
+# The incoming, outbound and decline trio every call-path change must pass.
 sim-call-all:
 	OUTBOUND=202 sh harness/sim_call.sh
 	CALLS=2 sh harness/sim_call.sh
+	DECLINE=1 sh harness/sim_call.sh
 
 SIM ?= iPhone 16
 audio-probe-sim:

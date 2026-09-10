@@ -21,6 +21,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -117,6 +118,56 @@ type Server struct {
 	log    *slog.Logger
 	dg     *diago.Diago
 	tl     *sip.TransportLayer
+
+	// Calls waiting for a woken app to register, by call id, so a decline or
+	// busy wake_ack can end the wait at once instead of at the ring timeout.
+	waitMu  sync.Mutex
+	waiting map[string]context.CancelCauseFunc
+}
+
+// Why a woken callee's wait ended early: the device answered the wake with
+// a refusal. The caller is told 486 (see wakeAndWaitFrom).
+var (
+	errWakeDeclined = errors.New("callee declined")
+	errWakeBusy     = errors.New("callee busy")
+)
+
+// HandleWakeAck is the gateway's wake_ack hook: a decline or busy from the
+// woken device ends that call's wait immediately. will_answer is not an
+// event here; the registration that follows it is what the wait is for.
+func (s *Server) HandleWakeAck(_ string, ack wire.WakeAck) {
+	var cause error
+	switch ack.Action {
+	case wire.WakeDecline:
+		cause = errWakeDeclined
+	case wire.WakeBusy:
+		cause = errWakeBusy
+	default:
+		return
+	}
+	s.waitMu.Lock()
+	cancel := s.waiting[ack.CallID]
+	s.waitMu.Unlock()
+	if cancel != nil {
+		cancel(cause)
+	}
+}
+
+// trackWait makes a call's wake-wait cancellable by HandleWakeAck; the
+// returned func removes it and must be deferred by the waiter.
+func (s *Server) trackWait(callID string, cancel context.CancelCauseFunc) func() {
+	s.waitMu.Lock()
+	if s.waiting == nil {
+		s.waiting = map[string]context.CancelCauseFunc{}
+	}
+	s.waiting[callID] = cancel
+	s.waitMu.Unlock()
+	return func() {
+		s.waitMu.Lock()
+		delete(s.waiting, callID)
+		s.waitMu.Unlock()
+		cancel(nil)
+	}
 }
 
 // New builds the server. waker may be nil (no wake path; unregistered users
@@ -480,8 +531,23 @@ func (s *Server) wakeAndWaitFrom(ctx context.Context, log *slog.Logger, in *diag
 	}
 	log.Info("invite: woke callee device", "device", ep.DeviceID, "connections", delivered)
 
-	woken, err := s.reg.WaitRegistered(ctx, ep.User)
+	// The wait can be cut short by the device's own answer to the wake: a
+	// decline or busy wake_ack (HandleWakeAck) cancels it with that cause.
+	wctx, cancel := context.WithCancelCause(ctx)
+	defer s.trackWait(callID, cancel)()
+
+	woken, err := s.reg.WaitRegistered(wctx, ep.User)
 	if err != nil {
+		cause := context.Cause(wctx)
+		if cause == errWakeDeclined || cause == errWakeBusy {
+			// The user refused the call. Tell the caller 486 so the PBX
+			// applies its busy rule (busy tone / forward-on-busy), not 480,
+			// which reads as "nobody there". The device has already stopped
+			// ringing, so no wake_cancel is needed.
+			log.Info("invite: callee refused the wake", "cause", cause)
+			respond(486, "Busy Here")
+			return ep, cause
+		}
 		reason := wire.CancelTimeout
 		if ctx.Err() != nil && (in == nil || in.Context().Err() != nil) {
 			reason = wire.CancelCallerHangup
@@ -540,6 +606,32 @@ var trunkCodecs = []media.Codec{media.CodecAudioUlaw, media.CodecAudioAlaw}
 // the callee is offered G.711 only so the negotiated codec is one both legs
 // share (the relay does not transcode); app↔app keeps the full set.
 func callTouchesTrunk(l legs) bool { return l.callerTrunk || l.calleeTrunk }
+
+// callerStatus is the final response the caller gets when the callee leg
+// fails. A deliberate refusal by the callee — 486 Busy Here (what baresip
+// and desk phones send on reject), 600 Busy Everywhere, 603 Decline — is
+// relayed unchanged so the PBX applies its busy rule. Anything else (no
+// answer, timeout, transport failure, cancelled wait) is 480 Temporarily
+// Unavailable: nobody could be reached. diago surfaces the callee's final
+// response as sipgo.ErrDialogResponse, by value or by pointer depending on
+// the path, so both are checked.
+func callerStatus(err error) (int, string) {
+	var res *sip.Response
+	var byVal sipgo.ErrDialogResponse
+	var byPtr *sipgo.ErrDialogResponse
+	if errors.As(err, &byVal) {
+		res = byVal.Res
+	} else if errors.As(err, &byPtr) && byPtr != nil {
+		res = byPtr.Res
+	}
+	if res != nil {
+		switch res.StatusCode {
+		case 486, 600, 603:
+			return int(res.StatusCode), res.Reason
+		}
+	}
+	return 480, "Temporarily Unavailable"
+}
 
 // legNAT is the symmetric-RTP setting for a leg: the trunk always learns
 // (a PBX behind NAT is normal); app legs follow the deployment flag.
@@ -656,10 +748,12 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		_ = out.Hangup(out.Context())
 		out.Close()
 		if in.Context().Err() == nil {
-			// Callee did not answer (timeout, decline, failure); the caller
-			// is still ringing, so tell it. A cancelled caller is already
-			// answered (487) by the stack.
-			_ = in.Respond(480, "Temporarily Unavailable", nil)
+			// The caller is still ringing, so tell it what happened: a
+			// refusal by the callee (486/600/603) is relayed as-is so the
+			// PBX applies its busy rule; anything else is 480. A cancelled
+			// caller is already answered (487) by the stack.
+			code, reason := callerStatus(err)
+			_ = in.Respond(code, reason, nil)
 		}
 		return err
 	}

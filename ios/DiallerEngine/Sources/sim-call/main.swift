@@ -58,6 +58,11 @@ let holdMs = args.count > 11 ? (Int(args[11]) ?? 0) : 0
 /// and expect our call to end with "Call transfered" (the server connected
 /// the other party and released us).
 let transferTo: String? = args.count > 12 && !args[12].isEmpty ? args[12] : nil
+/// Decline test: reject each call from the (scripted) CallKit banner after
+/// `answerDelayMs` of ringing instead of answering it — the red button. The
+/// caller must then get 486 Busy Here, which sim_call.sh asserts on phone-b's
+/// log; here we assert the call rang, was never established, and ended.
+let declineMode = args.count > 13 && args[13] == "decline"
 
 /// RTP received on the current call so far (cumulative).
 func rtpReceived() -> UInt32 {
@@ -100,6 +105,7 @@ engine.onStateChange = { s in
 /// Scripted CallKit: report → (user taps) answer → (CallKit) didActivate.
 final class ScriptedCallKit: CallUI {
     var onAnswer: (String) -> Void = { _ in }
+    var onDecline: (String) -> Void = { _ in }
     /// Calls reported so far and the one in progress, so the main loop can
     /// wait for the NEXT call rather than react to the previous one's end.
     var reported = 0
@@ -108,6 +114,17 @@ final class ScriptedCallKit: CallUI {
         out("callkit: reporting \(callID) from \(displayName)")
         lock.lock(); reported += 1; current = callID; ended = false; lock.unlock()
         completion(nil)
+        if declineMode {
+            // The user taps the red button while it rings: CallKit's end
+            // action → controller.userEnded → wake_ack{decline} on the wire
+            // channel and a 486 on the SIP leg. No answer, no audio session.
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(answerDelayMs)) {
+                out("callkit: end action for \(callID) while ringing (declined after \(answerDelayMs)ms)")
+                self.onDecline(callID)
+                lock.lock(); if self.current == callID { ended = true }; lock.unlock()
+            }
+            return
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(answerDelayMs)) {
             out("callkit: answer action for \(callID) (after \(answerDelayMs)ms ringing)")
             self.onAnswer(callID) // → controller.userAnswered → engine answers → fulfill
@@ -147,6 +164,17 @@ struct CallResult {
     var index: Int
     var best: BaresipCallEngine.AudioVerdict?
     var established: Bool
+    /// Decline mode: the call rang and then ended without being answered.
+    var declined: Bool = false
+}
+
+func judge(_ r: CallResult) -> (String, Bool) {
+    if declineMode {
+        if r.established { return ("FAIL: call was answered, not declined", false) }
+        if !r.declined { return ("FAIL: decline never took effect (still ringing at the deadline)", false) }
+        return ("PASS: rang, declined from the banner, never established (phone-b must show 486 Busy Here)", true)
+    }
+    return judge(r.best, established: r.established)
 }
 
 func judge(_ v: BaresipCallEngine.AudioVerdict?, established: Bool) -> (String, Bool) {
@@ -167,6 +195,7 @@ func judge(_ v: BaresipCallEngine.AudioVerdict?, established: Bool) -> (String, 
 let callKit = ScriptedCallKit()
 let controller = CallController(ui: callKit, engine: engine, log: { print("  \($0)") })
 callKit.onAnswer = { controller.userAnswered(callID: $0) }
+callKit.onDecline = { controller.userEnded(callID: $0) }
 callKit.onStart = { controller.userStarted(callID: $0) }
 
 let cfg = AppConfig(gateway: GatewayEndpoint(host: host, port: port, acceptAnyCertificate: true), deviceID: deviceID, token: token)
@@ -190,7 +219,7 @@ let eventTask = Task {
         }
     }
 }
-out("connecting to \(host):\(port) as \(deviceID); activation delay \(activateDelayMs)ms; answer after \(answerDelayMs)ms; source \(sourceOverride ?? "microphone"); calls \(callsWanted)\(noGateway ? "; NO gateway (INVITE-only path)" : "")")
+out("connecting to \(host):\(port) as \(deviceID); activation delay \(activateDelayMs)ms; \(declineMode ? "DECLINE" : "answer") after \(answerDelayMs)ms; source \(sourceOverride ?? "microphone"); calls \(callsWanted)\(noGateway ? "; NO gateway (INVITE-only path)" : "")")
 if noGateway {
     // The gateway's welcome normally names the SIP account; without it,
     // register the harness account directly. The controller then rings
@@ -233,6 +262,13 @@ for index in 1...callsWanted {
     var transferResult: String?
     while Date() < deadline {
         Thread.sleep(forTimeInterval: 0.25)
+        if declineMode {
+            // Nothing to measure: the call is over once the decline fires.
+            lock.lock(); let done = ended; let failed = engineFailed; lock.unlock()
+            if failed != nil { fatal = failed; break }
+            if done { sawVerdict = true; break }
+            continue
+        }
         if let target = transferTo, !transferAsked, let v = engine.audioVerdicts.first(where: { $0.seconds == 2 }), v.rtpRx > 0 {
             transferAsked = true
             lock.lock(); let id = callKit.current ?? ""; lock.unlock()
@@ -285,8 +321,10 @@ for index in 1...callsWanted {
     // The caller's tone is a short file, so RTP may have stopped by 5 s;
     // judge on the window that saw the most.
     let best = verdicts.max { ($0.rtpRx, $0.playEnergy) < ($1.rtpRx, $1.playEnergy) }
-    results.append(CallResult(index: index, best: best, established: established))
-    let (line, _) = judge(best, established: established)
+    lock.lock(); let wasDeclined = ended; lock.unlock()
+    let res = CallResult(index: index, best: best, established: established, declined: wasDeclined)
+    results.append(res)
+    let (line, _) = judge(res)
     out("call \(index): \(line)")
     if fatal != nil || Date() >= deadline { break }
     if index < callsWanted {
@@ -307,8 +345,9 @@ func result() -> (String, Int32) {
     if !wasRegistered { return ("FAIL: never registered", 1) }
     if results.count < callsWanted { return ("FAIL: only \(results.count) of \(callsWanted) calls happened before the deadline", 1) }
     var allOK = true
-    for r in results where !judge(r.best, established: r.established).1 { allOK = false }
+    for r in results where !judge(r).1 { allOK = false }
     if !allOK { return ("FAIL: see per-call lines above", 1) }
+    if declineMode { return ("PASS: \(callsWanted) call(s) declined from the banner", 0) }
     return ("PASS: \(callsWanted) call(s) received and rendered", 0)
 }
 let (line, code) = result()

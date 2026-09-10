@@ -24,7 +24,7 @@ public final class BaresipCallEngine: CallEngine {
         case idle, starting, registering, registered, ringing, dialing, inCall, failed(String)
     }
 
-    public var onIncomingCall: ((String) -> Void)?
+    public var onIncomingCall: ((String, String?) -> Void)?
     public var onCallEnded: ((String) -> Void)?
     public var onOutgoingRinging: (() -> Void)?
     public var onCallEstablished: (() -> Void)?
@@ -344,12 +344,15 @@ public final class BaresipCallEngine: CallEngine {
             log("engine: registration failed: \(text)")
         case CB_EVENT_CALL_INCOMING:
             state = .ringing
-            log("engine: INVITE from \(peer)")
+            // For this event the shim passes the caller's From display name
+            // as `text` ("" when the caller sent none).
+            let displayName = text.isEmpty ? nil : text
+            log("engine: INVITE from \(peer)\(displayName.map { " (\"\($0)\")" } ?? "")")
             let answerNow: Bool = lock.withLock { incomingPending = true; return answerWhenRinging }
             if answerNow {
                 answerPending()
             } else {
-                onIncomingCall?(peer)
+                onIncomingCall?(peer, displayName)
             }
         case CB_EVENT_CALL_OUTGOING:
             state = .dialing

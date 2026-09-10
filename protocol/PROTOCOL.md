@@ -50,7 +50,7 @@ requires bumping `v`.
 |---|---|---|
 | `hello` | `device_id`, `token`, `client` (`"app"` \| `"extension"`), `app_version`, `capabilities[]` | First frame on every connection. Authenticates the device. |
 | `ping` | — | Liveness. Server answers `pong`. |
-| `wake_ack` | `call_id`, `action` (`"will_answer"` \| `"decline"` \| `"busy"`) | Client has surfaced the call to CallKit (or cannot). |
+| `wake_ack` | `call_id`, `action` (`"will_answer"` \| `"decline"` \| `"busy"`) | Client has surfaced the call to CallKit (`will_answer`), or the user refused it / the device is busy — the server then answers the caller 486 Busy Here at once (§6 step 6). |
 
 ### Server → client
 
@@ -110,9 +110,15 @@ client                                   server
    legs (B2BUA). The `call_id` in the wake equals the `X-Dialler-Call-ID`
    header the server places on the app-leg INVITE, so the app can match them.
 5. If the caller hangs up first, server sends `wake_cancel{caller_hangup}`.
-6. If no SIP registration arrives by `expires_at`, server sends
-   `wake_cancel{timeout}` and releases the caller leg (busy / voicemail per
-   trunk policy).
+6. If the client replies `wake_ack{decline}` or `wake_ack{busy}`, the server
+   ends the caller leg immediately with **486 Busy Here**, so the PBX applies
+   its busy rule (busy tone / forward-on-busy), and sends no `wake_cancel`
+   (the device has already stopped ringing). Likewise an app that was
+   reached by INVITE and rejects it with 486/600/603 has that status relayed
+   to the caller unchanged. 480 is reserved for "nobody could be reached".
+7. If no SIP registration arrives by `expires_at`, server sends
+   `wake_cancel{timeout}` and releases the caller leg with 480 (busy /
+   voicemail per trunk policy).
 
 `wake` is **idempotent** per `call_id`: a client that reconnects may receive the
 same wake again and MUST NOT ring twice.

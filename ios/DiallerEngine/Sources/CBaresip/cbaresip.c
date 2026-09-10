@@ -136,7 +136,9 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
         break;
     case UA_EVENT_CALL_INCOMING:
         g.call = call;
-        emit(CB_EVENT_CALL_INCOMING, peer, txt);
+        /* text = the caller's From display name (may be empty), not the
+         * event text: the app names the call from it (directory first). */
+        emit(CB_EVENT_CALL_INCOMING, peer, call ? call_peername(call) : "");
         break;
     case UA_EVENT_CALL_OUTGOING:
         g.call = call;

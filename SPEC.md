@@ -12,7 +12,7 @@ when the app is backgrounded/killed and even when the site has no internet
 access. It interoperates with existing PBXs **and can also place calls directly
 between app instances on different devices through the light server with no PBX
 present**, maintains a server-synced address book, and supports hold/transfer.
-Video and IM are planned later phases.
+Off-prem (remote) users, video and IM are not scheduled — see §6 "Much later".
 
 ## 2. Core mechanism (the load-bearing decision)
 
@@ -24,11 +24,13 @@ Apple-sanctioned wakeup that does not route through APNS.
 
 ### Hard constraints this imposes
 - **Wi-Fi-network-bound.** The push provider only runs while the device is
-  joined to a designated Wi-Fi SSID (`matchSSIDs`). Off that network there are
-  no LPC wakeups. This matches the on-prem goal ("works even if internet is
-  down, as long as local Wi-Fi is up") but means it is **not** whole-world
-  coverage. Remote users (cellular / home Wi-Fi) are Phase 4b via an
-  APNS/PushKit sibling transport — see §4.6.
+  joined to a designated Wi-Fi SSID (`matchSSIDs`, a list, so multi-SSID
+  sites are fine). Off that network there are no wakeups and the phone is
+  unreachable for incoming calls: this is the accepted product scope, not a
+  bug. It matches the on-prem goal ("works even if internet is down, as long
+  as local Wi-Fi is up"). Remote reach (cellular / home Wi-Fi) is unscheduled
+  — see §6 "Much later". LPC is the **only** wake path; there is no APNS
+  fallback (§9 risk 1).
 - **App Store distribution.** SSID configuration is done in-app through
   `NEAppPushManager` (no MDM). Requires the Network Extension entitlement
   (`com.apple.developer.networking.networkextension` → `app-push-provider`).
@@ -59,12 +61,12 @@ lets ~everything be validated with no device (see §7).
 | SIP + media stack | **baresip / libre / librem** (BSD-3), **Opus** (BSD) — fully permissive, commercializable, no license fee |
 | PBX target | **Asterisk** for dev/test; compatible with **Cisco CUCM** and general SIP exchanges → server is a standard SIP element, PBX-agnostic. **PBX is optional** — the server also routes app↔app calls directly with no PBX present |
 | Exchange model | **Own exchange.** The light server is the call controller. Any PBX is a SIP trunk peer only. The app never registers to a PBX, in dev or prod (§4.4) |
-| App↔server leg | **SIP (baresip) under a strict private profile** (§4.4). Reversible to WebRTC media + wire-protocol signalling at Phase 5 without touching trunk, wake, or directory (§4.5) |
+| App↔server leg | **SIP (baresip) under a strict private profile** (§4.4). This is the long-term design (§4.5); the `CallEngine` seam remains as ordinary structure, no replacement is scheduled |
 | Wire framing | **Length-prefixed JSON over TLS 1.3** (port 7443) for every signal transport: foreground LAN socket, LPC extension socket, public edge. No WebSocket — raw TLS is the natural `NWConnection` fit for the extension. Frozen in [protocol/PROTOCOL.md](protocol/PROTOCOL.md) with golden fixtures shared by Go and Swift |
 | Server language | **Go**, standard library only (no external modules) |
-| Coverage | **Wi-Fi-only (LPC)** initially; **remote app users** (cellular / home Wi-Fi) is a planned phase (4b) via APNS wake + a public server edge (§4.6). Wake transport abstracted so this adds a sibling, not a rework |
+| Coverage | **Wi-Fi-only (LPC).** Remote app users (cellular / home Wi-Fi) are **unscheduled** (§6 "Much later"). The wake transport stays abstracted so an APNS sibling could be added without a rework, but none is planned |
 | Distribution | **Public App Store**, in-app LPC configuration |
-| Video / IM | Designed-for, out of early scope (WebRTC/BSD for video; SIP MESSAGE/SIMPLE or XMPP for IM) |
+| Video / IM | **Not scheduled** (§6 "Much later") |
 
 ## 4. Architecture
 
@@ -83,10 +85,7 @@ lets ~everything be validated with no device (see §7).
                                        ▼
                     ┌─────────────────────────────────────┐
                     │  Light Server (on-prem, Go or Rust)  │
-                    │  ├─ Wake gateway (LPC conns; APNS    │
-                    │  │   adapter Phase 4b)               │
-                    │  ├─ Public edge (SIP/TLS + relay;    │
-                    │  │   remote phase)                   │
+                    │  ├─ Wake gateway (LPC conns)         │
                     │  ├─ SIP B2BUA / registrar  ◄── core  │
                     │  ├─ Media relay (app-leg RTP)        │
                     │  ├─ local routing (app↔app, no PBX)  │
@@ -108,8 +107,8 @@ The light server is a full SIP element in its own right, so it can route calls
   wake-routable identity for offline ones).
 - An outbound call to another known user is routed by the server itself: if the
   callee's app is online it forwards the INVITE; if offline it fires a **wake**
-  (LPC now, APNS from Phase 4b), waits for the app to register, then bridges
-  the legs as a B2BUA — the same wake path used for PBX-originated calls.
+  (LPC), waits for the app to register, then bridges the legs as a B2BUA — the
+  same wake path used for PBX-originated calls.
 - The PBX is therefore **optional**. With no PBX configured, the server is a
   self-contained on-prem call controller for the app fleet. With a PBX
   configured, the server additionally trunks/registers to it for external reach.
@@ -144,7 +143,10 @@ from the app.)
 The app↔server leg is SIP, but **not generic SIP**. It is a private profile
 between two components we own. These are MUST rules from Phase 0; each is cheap
 now and expensive to retrofit once a B2BUA has shipped with UDP or direct-media
-assumptions baked in.
+assumptions baked in. Several were originally justified by remote users (§6
+"Much later"); they stand on their own for a shared office Wi-Fi, where TLS-only
+signalling, relayed media and SRTP are the right answer regardless, and they
+are already implemented — do not remove them because remote reach is deferred.
 
 1. The app registers **only to the light server**. Never to a PBX — including
    Asterisk in dev.
@@ -154,48 +156,41 @@ assumptions baked in.
    later as an optimisation; the relay path is the baseline and must exist from
    Phase 0.
 4. **SRTP mandatory.** Codecs: Opus primary, G.711 fallback.
-5. Wake, directory, presence, and later IM travel on the **wire-protocol
-   channel**. SIP carries call setup and media only.
-6. **REFER (transfer) is handled by the server** as B2BUA, never passed through
-   to the far leg.
+5. Wake, directory and presence travel on the **wire-protocol channel**.
+   SIP carries call setup and media only.
+6. **REFER (transfer) is handled by the server** as B2BUA, never proxied
+   through to the far leg. When the remaining party and the target are both
+   on the PBX, the server re-issues the transfer to the PBX (its own REFER
+   on the trunk leg) so the PBX completes it and this server leaves the
+   media path; if the PBX refuses, the server completes the transfer
+   itself. The app's leg is unaffected either way.
 7. The `PBXAdapter` speaks **trunk SIP and nothing else**. AMI/ESL remain
    dev-only.
 
-### 4.5 Why SIP on the app leg, and when to replace it
+### 4.5 Why SIP on the app leg
 SIP is kept on the app leg because baresip supplies SDP negotiation, codecs,
 SRTP, jitter buffer, hold, and transfer for free; because the headless
 baresip ↔ server ↔ baresip harness (§7.2) depends on both ends speaking SIP;
 and because the B2BUA stays symmetric — one SIP stack for both legs.
 
-It is reversible because the app sees the leg only through the `CallEngine`
-protocol and the server terminates it in the B2BUA. Swapping to WebRTC media
-with signalling on the wire protocol changes those two components only. The
-PBX trunk, wake path, directory, and CallKit layer do not change.
+This is the **long-term design**. The two events that would once have
+prompted a switch to WebRTC — video (libwebrtc arriving anyway) and remote
+users' Wi-Fi → cellular handoff quality — are both unscheduled (§6 "Much
+later"), so no replacement is planned. The app still sees the leg only through
+the `CallEngine` protocol and the server terminates it in the B2BUA; that seam
+stays as ordinary good structure, not as a migration path.
 
-Known weakness: mid-call Wi-Fi → cellular handoff uses re-register + re-INVITE
-with the new media address, which is clunkier than a WebRTC ICE restart and
-drops a second or two of audio.
-
-Switch triggers: **(a)** Phase 5 video, when libwebrtc arrives anyway and can
-carry audio too, removing baresip entirely; **(b)** handoff quality proves
-unacceptable to remote users before then (measured in Phase 4b).
+Consequence: baresip plus the vendored `audiounit` driver patches
+(`ios/vendor/patches/`, full-file replacements that implement the CallKit
+manual-audio contract) are permanent, maintained code. Those patches are
+fragile against upstream baresip changes, so a baresip upgrade is a deliberate
+task (re-apply, rebuild, re-run `make audio-probe-sim` and `make sim-call`),
+never a routine bump.
 
 ### 4.6 Remote users (off-prem app users)
-Remote users are staff away from the site — on cellular or home Wi-Fi — who
-must still receive and place calls. This is Phase 4b. Each addition maps to an
-existing seam; none changes the call logic.
-
-- **Wake:** `APNSTransport` (PushKit VoIP push). Must report to CallKit
-  immediately on receipt or iOS penalises the app. Carries the same
-  wire-protocol payload as LPC.
-- **Public edge:** a SIP/TLS listener + media relay exposed to the internet —
-  a session-border-controller role in the same binary. The PBX stays behind
-  it and is **never** exposed.
-- **Device auth:** a per-device credential issued at enrolment (token or client
-  cert), with revocation. LAN trust is not sufficient.
-- **Reconnect / resume:** the wire protocol carries session resume so a device
-  leaving the SSID re-attaches over cellular; SIP re-registers and re-INVITEs
-  for in-progress calls.
+Deferred, unscheduled — see §6 "Much later", which keeps the design notes. The
+per-device enrolment credential that section calls for already exists for the
+wire-protocol gateway (`server/internal/enroll`).
 
 ## 5. Test-first component contracts
 
@@ -218,10 +213,11 @@ real LPC, or a real PBX. Built and verified in dependency order:
 
 Key abstractions to keep future-proofing cheap (see §7 for how each is tested
 without a device):
-- `SignalTransport` protocol with three impls: `LANSocketTransport` (foreground
-  LAN socket + automated-test sibling), `LPCTransport` (`NEAppPushProvider`,
-  background survival), and `APNSTransport` (Phase 4b). The app/server treat a
-  delivered message identically regardless of impl.
+- `SignalTransport` protocol with two impls: `LANSocketTransport` (foreground
+  LAN socket + automated-test sibling) and `LPCTransport` (`NEAppPushProvider`,
+  background survival). The app/server treat a delivered message identically
+  regardless of impl; an `APNSTransport` sibling is the much-later addition the
+  seam permits (§6).
 - `CallEngine` protocol isolates `libbaresip` so the stack is swappable and
   mockable.
 - `AudioIO` seam: the iOS CoreAudio/`AVAudioSession` backend has a non-Apple
@@ -282,19 +278,69 @@ on by config — see §7.4.
   headless). Blind transfer done: REFER is consumed by the server, the
   target routed like a fresh call (local, wake, trunk, echo), the remaining
   party re-bridged, the transferor released with a final NOTIFY; asserted
-  headless. Echo self-test destinations: `echo` (server) and `600` (PBX).
+  headless. *2026-09-09:* a transfer whose remaining party and target are
+  both on the PBX is handed to the PBX (REFER offload on the trunk leg,
+  server-side fallback if refused), so the server drops out of the media
+  path instead of hairpinning the PBX; `make harness-trunk` asserts it.
+  Echo self-test destinations: `echo` (server) and `600` (PBX).
   Remaining in Phase 2: attended transfer; codec renegotiation when an
   Opus app call is transferred to the G.711 trunk; ring-back or hold music
   for the party waiting during a transfer.
-- **Phase 3** — Address book store + server-driven directory sync.
+- **Phase 3** — Address book store + server-driven directory sync. *Built:*
+  delta sync with tombstones (`DirectoryClient` / `AddressBook`), server-side
+  de-duplication by URI (a re-seeded directory collapses duplicates), and
+  incoming-caller naming from the directory (directory name → caller's own
+  display name → bare number; a synchronous in-memory lookup, no call delay).
 - **Phase 4** — `LPCTransport`: device-verify against the transport conformance
-  suite, then flip background wakes to LPC.
-- **Phase 4b** — **Remote users** (§4.6): `APNSTransport` via the same
-  `SignalTransport` seam + public edge + enrolment auth + session resume.
-  Measure Wi-Fi → cellular handoff quality here (§4.5 trigger b).
-- **Phase 5** — Video (WebRTC/BSD, VideoToolbox). Decision point for moving
-  audio to libwebrtc too (§4.5 trigger a).
-- **Phase 6** — IM (SIP MESSAGE/SIMPLE or XMPP).
+  suite, then flip background wakes to LPC. *Proven on device 2026-09-07:*
+  killed-app wake through the `NEAppPushProvider` extension and answer from
+  the lock screen.
+- **Remaining near-term (on-prem softphone completion)**, in rough priority:
+  1. **App-leg REGISTER authentication.** The registrar accepts any REGISTER
+     on the SIP/TLS port with no Digest (a Phase 0 shortcut that was tracked
+     "before the public edge"). On a shared office Wi-Fi anyone reaching the
+     port can register as any user and take their calls; deferring remote
+     users must not defer this. Bind REGISTER to the enrolled device (Digest
+     with the device credential, or a client certificate). See §9 risk 2.
+  2. Codec renegotiation when an Opus app call is transferred to the G.711
+     trunk (currently refused with 488); attended transfer; ring-back or hold
+     music for the party waiting during a transfer.
+  3. Real PBX interop beyond Asterisk (CUCM third-party SIP device
+     provisioning, §9 risk 4).
+  4. Before release: third-party acknowledgements screen and the App Store
+     export-compliance declaration (see `ios/README.md`).
+  5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
+     tuning (parked 2026-09-07).
+
+### Much later (not scheduled)
+
+Kept here so the design intent is not lost and so existing references to the
+old phase labels still resolve. None of this is on the roadmap.
+
+- **Remote users (was Phase 4b).** Staff away from the site, on cellular or
+  home Wi-Fi. Each item maps to an existing seam; none changes the call logic:
+  - *Wake:* `APNSTransport` (PushKit VoIP push) via the `SignalTransport`
+    seam. Must report to CallKit immediately on receipt or iOS penalises the
+    app. Same wire-protocol payload as LPC.
+  - *Public edge:* a SIP/TLS listener + media relay exposed to the internet —
+    a session-border-controller role in the same binary. The PBX stays behind
+    it and is never exposed. Needs rate limiting, auth-before-INVITE, no UDP.
+  - *Device auth:* the per-device enrolment credential already used by the
+    gateway, extended to the SIP leg (which near-term item 1 delivers anyway).
+  - *Reconnect / resume:* a `resume_token` in `welcome` (PROTOCOL.md §7, v1.1
+    additive) so a device leaving the SSID re-attaches over cellular; SIP
+    re-registers and re-INVITEs for in-progress calls.
+  - *Known weakness to measure first:* mid-call Wi-Fi → cellular handoff on
+    the SIP leg is re-register + re-INVITE, clunkier than a WebRTC ICE
+    restart, and drops a second or two of audio. If unacceptable, that is the
+    one reason to revisit §4.5.
+  - The APNS sibling would also have to pass the §7.1 transport conformance
+    suite on-device.
+- **Video (was Phase 5).** WebRTC/BSD + VideoToolbox. If it ever happens,
+  libwebrtc could carry audio too and retire baresip; that is the second
+  reason to revisit §4.5.
+- **IM (was Phase 6).** SIP MESSAGE/SIMPLE or XMPP, riding the wire-protocol
+  channel like presence does.
 
 ## 7. Validation strategy: maximise automation, bound the human touch
 
@@ -331,7 +377,6 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    app on answer.
 3. Real bidirectional audio + route changes (earpiece/speaker/Bluetooth/CarPlay).
 4. `LPCTransport` passes the transport conformance suite on-device.
-5. *(Phase 4b)* the APNS sibling passes the same conformance suite on-device.
 
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".
@@ -348,14 +393,20 @@ open-ended "test the app".
 
 | Component | License | Notes |
 |---|---|---|
-| baresip / libre / librem | BSD-3 | SIP + RTP, modular C, production-grade |
-| Opus | BSD | primary audio codec |
+| baresip / libre 3.15 | BSD-3 | SIP + RTP, modular C, production-grade (verified from the licence files in `ios/vendor/src`) |
+| Opus 1.5 | BSD-3 | primary audio codec; royalty-free IPR declarations at the IETF |
+| OpenSSL 3.3 | Apache-2.0 | TLS + SRTP crypto; the largest licence surface in the app (3.x only — 1.x carried the old OpenSSL/SSLeay licence) |
 | G.711 / G.722 | royalty-free | interop fallback |
 | G.729 | patents expired (~2017) | optional |
-| WebRTC / libwebrtc (video, later) | BSD-3 | SRTP, ICE, codecs; VP8/VP9/AV1 royalty-free |
-| Server runtime (Go or Rust) | permissive stdlib + deps | — |
-| FreeSWITCH (candidate embedded engine) | MPL 1.1 | commercial on-prem distribution permitted; Phase 0 spike |
-| sipgo / diago (candidate Go SIP) | MIT (verify) | maturity for transfer + CUCM unproven; Phase 0 spike |
+| sipgo / diago (server) | BSD-2 / MPL-2.0 | **decided** in Phase 0; vendored, builds with `CGO_ENABLED=0` |
+| Server runtime (Go) | permissive stdlib + vendored deps | — |
+| WebRTC / libwebrtc | BSD-3 | video, **much later** (§6) |
+
+All permissive and fine to link statically into a closed-source App Store app.
+Both BSD and Apache-2.0 still require the copyright notices, licence texts and
+warranty disclaimers to be reproduced in a binary distribution: an
+acknowledgements screen (or bundled licence file) is pending — see
+`ios/README.md`, which also covers the export-compliance declaration.
 
 Explicitly avoided: PJSIP / Linphone (GPL-or-paid; GPL conflicts with closed
 App Store distribution). Kamailio, rtpengine, and Asterisk as *embedded*
@@ -364,16 +415,25 @@ it is neither linked nor redistributed.
 
 ## 9. Top risks to validate early
 
-1. **LPC entitlement + App Review** for a public App Store app — confirm
-   `app-push-provider` is grantable for this use case and survives review.
-2. **Extension longevity/resource limits** holding a persistent connection.
-3. **CUCM SIP interop** quirks vs. Asterisk (third-party SIP device
-   provisioning, registration behavior) — isolate behind `PBXAdapter`.
-4. **baresip ↔ CallKit ↔ AVAudioSession** lifecycle on answer (cold launch from
-   extension) — the trickiest integration seam.
-5. **B2BUA build cost.** Attended transfer across two legs, re-INVITE glare,
-   CUCM quirks. Mitigated by the Phase 0 engine spike.
-6. **Wi-Fi → cellular handoff on the SIP leg.** Measure in Phase 4b; it is the
-   trigger for replacing the app leg (§4.5).
-7. **Public edge exposure.** SIP/TLS on the internet attracts scanners. Rate
-   limiting, auth-before-INVITE, and no UDP (§4.4, §4.6).
+1. **LPC entitlement + App Review — now the single, unmitigated dependency.**
+   LPC is the only wake path (APNS is unscheduled, §6 "Much later"), so an
+   ungranted or rejected `app-push-provider` entitlement has no fallback.
+   Validate earliest: request the entitlement and put an external TestFlight
+   build through review before investing further in the on-device flow.
+2. **Unauthenticated REGISTER on the app leg.** On a shared office Wi-Fi any
+   host reaching the SIP/TLS port can register as any user (§6 near-term
+   item 1). This was deferred to "before the public edge"; that deadline is
+   gone, the exposure is not.
+3. **Extension longevity/resource limits** holding a persistent connection.
+4. **CUCM SIP interop** quirks vs. Asterisk (third-party SIP device
+   provisioning, registration behaviour) — isolate behind `PBXAdapter`. Now on
+   the core path: the PBX leg is the product, not an edge case.
+5. **baresip ↔ CallKit ↔ AVAudioSession** lifecycle on answer (cold launch from
+   extension) — resolved on device 2026-09-07 via the vendored audiounit
+   patches (§4.5); the residual risk is keeping those patches working across
+   baresip upgrades.
+6. **B2BUA completeness.** Attended transfer across two legs, re-INVITE glare,
+   transfer-to-trunk codec renegotiation (§6 near-term item 2).
+
+Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
+the SIP leg, and public-edge exposure to internet scanners.

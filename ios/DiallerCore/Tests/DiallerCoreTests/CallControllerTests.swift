@@ -4,6 +4,7 @@ import DiallerProtocol
 
 final class FakeCallUI: CallUI {
     var reported: [(String, String)] = []
+    var updated: [(String, String)] = []
     var ended: [(String, CallEndReason)] = []
     var refuse: Error?
     var started: [(String, String, String)] = []
@@ -13,6 +14,7 @@ final class FakeCallUI: CallUI {
         reported.append((callID, displayName))
         completion(refuse)
     }
+    func updateIncoming(callID: String, displayName: String) { updated.append((callID, displayName)) }
     func end(callID: String, reason: CallEndReason) { ended.append((callID, reason)) }
     func startOutgoing(callID: String, handle: String, displayName: String) { started.append((callID, handle, displayName)) }
     func outgoingConnecting(callID: String) { connecting.append(callID) }
@@ -20,7 +22,7 @@ final class FakeCallUI: CallUI {
 }
 
 final class FakeEngine: CallEngine {
-    var onIncomingCall: ((String) -> Void)?
+    var onIncomingCall: ((String, String?) -> Void)?
     var onCallEnded: ((String) -> Void)?
     var onOutgoingRinging: (() -> Void)?
     var onCallEstablished: (() -> Void)?
@@ -281,9 +283,9 @@ final class CallControllerTests: XCTestCase {
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
         XCTAssertEqual(engine.registered, ["201@dialler"])
 
-        engine.onIncomingCall?("sip:202@dialler")
+        engine.onIncomingCall?("sip:202@dialler", nil)
         XCTAssertEqual(ui.reported.count, 1)
-        XCTAssertEqual(ui.reported.first?.1, "sip:202@dialler")
+        XCTAssertEqual(ui.reported.first?.1, "202", "no name, no directory → bare number, never the raw URI")
         XCTAssertTrue(tr.sent.isEmpty, "no wake → nothing to ack")
         let id = ui.reported.first!.0
 
@@ -303,11 +305,68 @@ final class CallControllerTests: XCTestCase {
         let (c, ui, engine, _) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
         c.handle(.wake(wake("c1")))
-        engine.onIncomingCall?("sip:100@pbx")
+        engine.onIncomingCall?("sip:100@pbx", nil)
         XCTAssertEqual(ui.reported.count, 1, "wake + INVITE for one call ring once")
         XCTAssertEqual(c.activeCalls.first?.sipArrived, true)
         engine.onCallEnded?("caller hung up")
         XCTAssertEqual(ui.ended.map { $0.0 }, ["c1"])
+    }
+
+    // The INVITE-first path (registered app, INVITE beats the wake) must name
+    // the call exactly like the wake path: directory → caller's display name
+    // → bare number. It used to report the raw peer URI.
+
+    func testInviteFirstResolvesNameLikeTheWakePath() {
+        let (c, ui, engine, _) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        c.resolveDisplayName = { uri, provided in uri.contains("101") ? "SIP phone (101)" : provided }
+        engine.onIncomingCall?("sip:101@10.18.0.5", nil)
+        XCTAssertEqual(ui.reported.first?.1, "SIP phone (101)", "INVITE-first banner uses the directory, not the raw URI")
+    }
+
+    func testInviteFirstUsesCallerDisplayNameWhenNotInDirectory() {
+        let (c, ui, engine, _) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        engine.onIncomingCall?("sip:101@10.18.0.5", "SIP phone")
+        XCTAssertEqual(ui.reported.first?.1, "SIP phone", "middle tier: the From display name baresip supplied")
+        XCTAssertEqual(c.activeCalls.first?.wake.from.displayName, "SIP phone", "kept for the in-call title")
+    }
+
+    // Declining: the server only knows call ids it issued in a wake. An
+    // INVITE-only call gets no ack (its 486 is the answer); a call the wake
+    // caught up with is acked under the wake's id, not the synthetic one.
+
+    func testDecliningAnInviteOnlyCallSendsNoWakeAck() {
+        let (c, ui, engine, tr) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        engine.onIncomingCall?("sip:100@pbx", nil)
+        let id = ui.reported.first!.0
+        c.userEnded(callID: id)
+        XCTAssertTrue(tr.sent.isEmpty, "no wake was issued for \(id); an ack would be refused as unknown_call")
+        XCTAssertEqual(engine.hungUp, [id], "the engine rejects the INVITE (486)")
+    }
+
+    func testDecliningAfterALateWakeAcksTheWakeId() {
+        let (c, ui, engine, tr) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        engine.onIncomingCall?("sip:100@pbx", nil)   // rings as sip-1
+        c.handle(.wake(wake("late")))                 // the server's id for the same call
+        let id = ui.reported.first!.0
+        c.userEnded(callID: id)
+        XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "late", action: .decline)), "acked under the server's id")
+    }
+
+    func testLateWakeCorrectsTheBannerName() {
+        let (c, ui, engine, _) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        engine.onIncomingCall?("sip:100@pbx", nil) // INVITE wins the race: only the URI is known
+        XCTAssertEqual(ui.reported.first?.1, "100")
+        let id = ui.reported.first!.0
+        c.handle(.wake(wake("late"))) // the wake knows the caller is "Reception"
+        XCTAssertEqual(ui.reported.count, 1, "still one call")
+        XCTAssertEqual(ui.updated.map { $0.0 }, [id])
+        XCTAssertEqual(ui.updated.first?.1, "Reception", "banner corrected mid-ring")
+        XCTAssertEqual(c.activeCalls.first?.wake.from.displayName, "Reception")
     }
 
     func testDisplayNameFallsBackToNumber() {

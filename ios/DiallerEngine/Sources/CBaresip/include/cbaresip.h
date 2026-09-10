@@ -30,7 +30,9 @@ typedef enum {
 } cb_event_t;
 
 /// Event callback. `peer` is the remote URI for call events ("" otherwise);
-/// `text` is baresip's event text (reason, error) or "".
+/// `text` is baresip's event text (reason, error) or "" — except for
+/// CB_EVENT_CALL_INCOMING, where it is the caller's From display name ("" if
+/// the caller sent none), so the app can name the call from it.
 typedef void (*cb_event_cb)(void *ctx, cb_event_t event, const char *peer, const char *text);
 
 /// Initialise libre + baresip with the given config text (baresip `config`

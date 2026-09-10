@@ -14,7 +14,7 @@ sip_transports          @TRANSPORT@
 
 # Audio: WAV in, WAV out (SPEC §7.1 automated audio sibling)
 audio_player            aufile,/media/out-@SIP_USER@.wav
-audio_source            aufile,/media/in.wav
+audio_source            @AUDIO_SOURCE@
 audio_alert             none
 audio_srate             48000
 audio_channels          1

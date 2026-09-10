@@ -111,7 +111,12 @@ SIGNAL_PORT="${SIGNAL_PORT:-${DIALLER_SIGNAL_HOSTPORT:-7443}}"
 # caller (phone-b) to "echo"; our call must end as transferred, and phone-b's
 # recording must then contain audio it did not get from us (its own echo).
 if [ -n "${TRANSFER:-}" ]; then SOURCE=""; fi   # silent phone, so any audio phone-b records is the echo
-xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-a tok_dev_a_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" > "$OUT" 2>&1 &
+# DECLINE=1: the simulated phone rejects each call from the CallKit banner
+# (the red button) after ANSWER_MS of ringing. Asserts the caller (phone-b)
+# is told 486 Busy Here — not 480, which PBXs and phones show as "no
+# response" — and that our side never established the call.
+if [ -n "${DECLINE:-}" ]; then SOURCE=""; fi
+xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-a tok_dev_a_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}" > "$OUT" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
 
@@ -166,6 +171,18 @@ if [ -n "${TRANSFER:-}" ]; then
   echo "== transfer: did phone-b hear the echo after being transferred?"
   sleep 3
   python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-202.wav" || { echo "FAIL: phone-b heard nothing after the transfer"; exit 1; }
+fi
+if [ -n "${DECLINE:-}" ]; then
+  echo "== decline: what was the caller (phone-b) told?"
+  sleep 1
+  closed="$($C logs --no-log-prefix --since 120s baresip-b 2>&1 | grep -E 'session closed' | tail -n "$CALLS")"
+  echo "$closed" | sed 's/^/   /'
+  got="$(printf '%s\n' "$closed" | grep -c '486 Busy Here' || true)"
+  if [ "$got" -lt "$CALLS" ]; then
+    echo "FAIL: phone-b was not told 486 Busy Here for every declined call (a 480 here is the old 'Call failed: NO RESPONSE' behaviour)"
+    exit 1
+  fi
+  echo "   PASS: caller received 486 Busy Here for $CALLS declined call(s)"
 fi
 if [ "$SERVER" = native ]; then
   echo "== server: native; its relay lines are in the dev-server terminal"

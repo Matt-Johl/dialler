@@ -8,12 +8,18 @@
 #   in:   desk phone 100 dials 201 → Asterisk dial plan → PJSIP/201@dialler →
 #         server's trunk listener → app 201 (registered). Asserts the app
 #         recorded the desk phone's tone.
+#   transfer: desk phone 100 dials 201, then the app transfers it to 600
+#         (Asterisk's Echo()). Both parties are on the PBX, so the server
+#         must hand the transfer to Asterisk (REFER on the trunk leg) and
+#         drop out: its call ends at once, the app sees the transfer
+#         complete, and the desk phone — with the app silent — records its
+#         own tone coming back from the PBX.
 #
 # Both legs run G.711 (the trunk is offered PCMU/PCMA only and the app is
 # answered with the codec the trunk took), so the raw relay never transcodes.
 #
-#   make harness-trunk              # both directions
-#   DIRECTION=out make harness-trunk
+#   make harness-trunk              # all three
+#   DIRECTION=out|in|transfer make harness-trunk
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -25,6 +31,13 @@ CALL_SECONDS="${CALL_SECONDS:-8}"
 KEEP="${KEEP:-0}"
 
 python3 harness/baresip/media/gen_tone.py "$MEDIA_DIR/in.wav" >/dev/null
+# A silent source for the transfer scenario (same format as the tone).
+python3 - "$MEDIA_DIR/silence.wav" <<'EOF'
+import sys, wave
+with wave.open(sys.argv[1], "wb") as w:
+    w.setnchannels(2); w.setsampwidth(2); w.setframerate(48000)
+    w.writeframes(b"\0" * (48000 * 2 * 2 * 20))
+EOF
 rm -f "$MEDIA_DIR"/out-*.wav
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
@@ -86,6 +99,41 @@ if [ "$DIRECTION" = in ] || [ "$DIRECTION" = both ]; then
   else
     echo "FAIL in"; fail=1
     $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialler|201|error|warn" | tail -8 | sed 's/^/   asterisk: /'
+  fi
+fi
+
+if [ "$DIRECTION" = transfer ] || [ "$DIRECTION" = both ]; then
+  echo "== transfer: desk phone 100 dials 201; the app transfers it to 600 (PBX echo) — the server must drop out"
+  # The app is silent for this one, so any audio the desk phone records is
+  # its own tone coming back from Asterisk's Echo(): proof the PBX completed
+  # the transfer and carries the audio itself.
+  AUDIO_SOURCE="aufile,/media/silence.wav" $COMPOSE up -d --no-deps --force-recreate baresip-a >/dev/null 2>&1
+  sleep 5
+  rm -f "$MEDIA_DIR/out-100.wav"
+  MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ctl baresip-c '{"command":"dial","params":"201@asterisk"}'
+  sleep 4
+  ctl baresip-a '{"command":"transfer","params":"600"}'
+  sleep 3
+  # While the desk phone is still on the (transferred) call, the server's
+  # part of it must already be over.
+  early="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+  sleep 5
+  ctl baresip-c '{"command":"hangup"}'
+  sleep 2
+  echo "$early" | grep -E 'transfer|call ended|level=(ERROR|WARN)' | tail -8 | sed 's/^/   /'
+  ok=1
+  echo "$early" | grep -q 'transfer: offloaded to PBX' || { echo "   FAIL: the server did not hand the transfer to the PBX"; ok=0; }
+  echo "$early" | grep -q 'call ended' || { echo "   FAIL: the server was still on the call 3 s after the transfer"; ok=0; }
+  $COMPOSE logs --no-log-prefix --since "$MARK" baresip-a 2>&1 | grep -qi 'transfer' || { echo "   FAIL: the app did not see the transfer complete (no NOTIFY 200)"; ok=0; }
+  if python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-100.wav"; then
+    [ "$ok" = 1 ] && echo "PASS transfer: the PBX completed it; the desk phone heard the echo with the server out of the path"
+  else
+    echo "   FAIL: the desk phone heard nothing after the transfer"; ok=0
+  fi
+  if [ "$ok" != 1 ]; then
+    echo "FAIL transfer"; fail=1
+    $COMPOSE logs --no-log-prefix --since "$MARK" asterisk 2>&1 | grep -iE "refer|transfer|600|error|warn" | tail -10 | sed 's/^/   asterisk: /'
   fi
 fi
 

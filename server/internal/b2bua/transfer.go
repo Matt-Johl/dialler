@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/emiago/diago"
 	"github.com/emiago/diago/media"
+	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
 	"dialler/server/internal/routing"
@@ -41,6 +43,11 @@ type bridgedCall struct {
 	cancel context.CancelFunc
 	// swapped wakes the wait loop so it watches the new leg's context.
 	swapped chan struct{}
+	// offload is non-nil while the PBX is completing a transfer for us and
+	// closed when that attempt is over; offloaded says it succeeded, i.e.
+	// finishOffload released both legs and wait() must not hang up either.
+	offload   chan struct{}
+	offloaded bool
 }
 
 func newBridgedCall(s *Server, log *slog.Logger, callID string, a, b *callLeg) *bridgedCall {
@@ -96,15 +103,26 @@ func (c *bridgedCall) wait() {
 		if b != nil {
 			bDone = b.sess.Context().Done()
 		}
+		aEnded := false
 		select {
 		case <-a.sess.Context().Done():
+			aEnded = true
+		case <-bDone:
+		case <-c.swapped:
+			continue
+		}
+		// A transfer the PBX is completing ends the legs on its own terms:
+		// let finishOffload do the orderly release (final NOTIFY to the
+		// referrer first) rather than racing it with a plain BYE.
+		if c.awaitOffload() {
+			break
+		}
+		if aEnded {
 			if b != nil {
 				_ = b.sess.Hangup(b.sess.Context())
 			}
-		case <-bDone:
+		} else {
 			_ = a.sess.Hangup(a.sess.Context())
-		case <-c.swapped:
-			continue
 		}
 		break
 	}
@@ -151,6 +169,21 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 	d := c.s.router.Resolve(target)
 	ctx, cancel := context.WithTimeout(other.sess.Context(), c.s.cfg.RingTimeout)
 	defer cancel()
+
+	if shouldOffload(other, d.Target) {
+		// Both parties are on the PBX: let it complete the transfer itself
+		// and get this server out of the media path (SPEC §4.4 rule 6).
+		err := c.offloadToPBX(ctx, log, from, other, d.User)
+		var refused *offloadRefused
+		switch {
+		case err == nil:
+			return nil
+		case errors.As(err, &refused):
+			log.Info("transfer: PBX declined the REFER; handling it here", "why", refused.why)
+		default:
+			return err
+		}
+	}
 
 	var newLeg *callLeg
 	switch d.Target {
@@ -221,15 +254,29 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 	}
 	log.Info("transfer: bridged", "remaining", other.name, "to", target)
 
-	// Final NOTIFY (200 OK, subscription terminated) then release the
-	// referrer. baresip ends its call on the 200 NOTIFY by itself.
+	c.releaseReferrer(ctx, log, from)
+	return nil
+}
+
+// How long the referrer gets to hang up on its own after the final NOTIFY.
+const referrerByeGrace = 1500 * time.Millisecond
+
+// releaseReferrer reports success to the party that asked for the transfer
+// and lets it end its own call: baresip, like any RFC 3515 client, sends
+// BYE on the final NOTIFY, so hanging it up ourselves in the same instant
+// makes the two BYEs cross and one is answered 481. Give it a moment, then
+// hang up only if it is still there.
+func (c *bridgedCall) releaseReferrer(ctx context.Context, log *slog.Logger, from *callLeg) {
 	notify := referNotify(remoteTarget(from.sess), 200, "OK")
 	if _, err := from.sess.Do(ctx, notify); err != nil {
-		log.Info("transfer: final NOTIFY failed", "err", err)
+		log.Info("transfer: final NOTIFY to the referrer failed", "err", err)
 	}
-	_ = from.sess.Hangup(from.sess.Context())
+	select {
+	case <-from.sess.Context().Done(): // it hung up on the NOTIFY, as expected
+	case <-time.After(referrerByeGrace):
+		_ = from.sess.Hangup(ctx)
+	}
 	from.sess.Close()
-	return nil
 }
 
 // transferDestination resolves a routed transfer target to a dial URI,
@@ -300,6 +347,177 @@ func referNotify(remote sip.Uri, code int, reason string) *sip.Request {
 	req.AppendHeader(sip.NewHeader("Content-Type", "message/sipfrag;version=2.0"))
 	req.SetBody([]byte(fmt.Sprintf("SIP/2.0 %d %s", code, reason)))
 	return req
+}
+
+// ---- transfer offload to the PBX --------------------------------------------
+
+// shouldOffload: when the party that stays on the call is on the PBX trunk
+// and the transfer target is a PBX destination too, the PBX can complete
+// the transfer itself and this server leaves the media path entirely.
+// Anything involving an app leg, or the server's own echo, stays here.
+func shouldOffload(remaining *callLeg, target routing.Target) bool {
+	return remaining != nil && remaining.trunk && target == routing.Trunk
+}
+
+// offloadRefused: the PBX did not complete the transfer (REFER rejected, a
+// failure NOTIFY, or no answer); the server does the transfer itself.
+type offloadRefused struct{ why string }
+
+func (e *offloadRefused) Error() string { return "PBX declined the transfer: " + e.why }
+
+// referOutcome classifies a NOTIFY status about our REFER: not final yet
+// (1xx), success (2xx), or a refusal.
+func referOutcome(code int) (final, success bool) {
+	switch {
+	case code < 200:
+		return false, false
+	case code < 300:
+		return true, true
+	default:
+		return true, false
+	}
+}
+
+// responseStatus is the SIP status inside a sipgo dialog error, or 0.
+func responseStatus(err error) int {
+	var byVal sipgo.ErrDialogResponse
+	var byPtr *sipgo.ErrDialogResponse
+	if errors.As(err, &byVal) && byVal.Res != nil {
+		return byVal.Res.StatusCode
+	}
+	if errors.As(err, &byPtr) && byPtr != nil && byPtr.Res != nil {
+		return byPtr.Res.StatusCode
+	}
+	return 0
+}
+
+// How long to wait for the PBX to report the transfer's outcome.
+const referOutcomeTimeout = 10 * time.Second
+
+// offloadToPBX re-issues the app's transfer to the PBX: our own REFER on
+// the remaining party's trunk leg, Refer-To the target as the PBX knows
+// it. The PBX moves its endpoint (the phone) to the target, reports the
+// outcome in a NOTIFY and hangs our leg up. On success both of our legs
+// are released and the referrer gets its final NOTIFY 200; the audio then
+// runs phone ↔ PBX ↔ target with this server gone. Returns offloadRefused
+// when the PBX would not do it, so transfer() falls back to dialling.
+func (c *bridgedCall) offloadToPBX(ctx context.Context, log *slog.Logger, from, remaining *callLeg, user string) error {
+	if c.s.cfg.Trunk == nil {
+		return &offloadRefused{"no trunk configured"}
+	}
+	var referTo sip.Uri
+	if err := sip.ParseUri(c.s.cfg.Trunk.URI(user), &referTo); err != nil {
+		return err
+	}
+	outcome := make(chan int, 8)
+	onNotify := func(code int) {
+		select {
+		case outcome <- code:
+		default:
+		}
+	}
+	var err error
+	switch sess := remaining.sess.(type) {
+	case *diago.DialogServerSession: // the PBX called us
+		err = sess.ReferOptions(ctx, referTo, diago.ReferServerOptions{OnNotify: onNotify})
+	case *diago.DialogClientSession: // we called the PBX
+		err = sess.ReferOptions(ctx, referTo, diago.ReferClientOptions{OnNotify: onNotify})
+	default:
+		return &offloadRefused{"leg cannot send REFER"}
+	}
+	if err != nil {
+		if code := responseStatus(err); code != 0 {
+			return &offloadRefused{fmt.Sprintf("REFER rejected with %d", code)}
+		}
+		return &offloadRefused{"REFER failed: " + err.Error()}
+	}
+	log.Info("transfer: REFER accepted by the PBX; waiting for its outcome", "refer_to", referTo.String())
+	c.beginOffload()
+
+	timeout := time.NewTimer(referOutcomeTimeout)
+	defer timeout.Stop()
+	for {
+		select {
+		case code := <-outcome:
+			final, ok := referOutcome(code)
+			if !final {
+				continue
+			}
+			if !ok {
+				c.endOffload(false)
+				return &offloadRefused{fmt.Sprintf("PBX reported %d", code)}
+			}
+			c.finishOffload(log, from, remaining, user)
+			return nil
+		case <-remaining.sess.Context().Done():
+			// The PBX moved the phone and hung our leg up before (or
+			// instead of) a final NOTIFY: same outcome.
+			c.finishOffload(log, from, remaining, user)
+			return nil
+		case <-timeout.C:
+			c.endOffload(false)
+			return &offloadRefused{"no final NOTIFY from the PBX"}
+		}
+	}
+}
+
+func (c *bridgedCall) beginOffload() {
+	c.mu.Lock()
+	c.offload = make(chan struct{})
+	c.mu.Unlock()
+}
+
+// endOffload records the attempt's result and releases wait() if it is
+// holding for it.
+func (c *bridgedCall) endOffload(succeeded bool) {
+	c.mu.Lock()
+	c.offloaded = succeeded
+	ch := c.offload
+	c.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+}
+
+// awaitOffload is wait()'s side: if a PBX-side transfer is in progress,
+// block until it is decided, then report whether the legs were already
+// released by finishOffload.
+func (c *bridgedCall) awaitOffload() bool {
+	c.mu.Lock()
+	ch := c.offload
+	c.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	<-ch
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.offloaded
+}
+
+// finishOffload stops relaying, tells the referrer the transfer succeeded
+// (baresip ends its call as "transferred" on that NOTIFY), and releases
+// both legs. Uses its own context: the legs' contexts may already be over.
+func (c *bridgedCall) finishOffload(log *slog.Logger, from, remaining *callLeg, user string) {
+	c.mu.Lock()
+	if c.cancel != nil {
+		c.cancel() // no more relaying: the PBX carries the audio now
+	}
+	summary := make([]string, 0, len(c.pumps))
+	for _, p := range c.pumps {
+		summary = append(summary, p.String())
+	}
+	c.mu.Unlock()
+	log.Info("transfer: offloaded to PBX", "remaining", remaining.name, "to", user, "relayed_until_now", strings.Join(summary, " | "))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c.releaseReferrer(ctx, log, from)
+	if remaining.sess.Context().Err() == nil {
+		_ = remaining.sess.Hangup(ctx)
+	}
+	remaining.sess.Close()
+	c.endOffload(true)
 }
 
 // Errors carrying a SIP status for diago's failure NOTIFY.

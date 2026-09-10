@@ -100,6 +100,9 @@ services:
     environment:
       SIP_USER: "201"
       SIP_DOMAIN: dialler
+      # The trunk transfer test recreates this phone silent, so the desk
+      # phone's recording can only contain audio the PBX sent it.
+      AUDIO_SOURCE: ${AUDIO_SOURCE:-aufile,/media/in.wav}
     volumes:
       - ./baresip/media:/media
 

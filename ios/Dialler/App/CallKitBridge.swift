@@ -185,6 +185,22 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         }
     }
 
+    /// A better caller name learned while the call is still ringing (the
+    /// wake arrived after the INVITE had rung it with only the peer URI).
+    func updateIncoming(callID: String, displayName: String) {
+        DispatchQueue.main.async { [self] in
+            guard let uuid = uuids[callID] else {
+                onLog("callkit: name update for \(callID): no CallKit call")
+                return
+            }
+            let update = lastUpdate[uuid] ?? CXCallUpdate()
+            update.localizedCallerName = displayName
+            lastUpdate[uuid] = update
+            provider.reportCall(with: uuid, updated: update)
+            onLog("callkit: \(callID) caller name updated to \(displayName)")
+        }
+    }
+
     /// A PushKit delivery for a call that is already ringing. iOS requires
     /// every VoIP push to be answered with `reportNewIncomingCall`; doing so
     /// again with the same UUID is refused (already exists) but satisfies

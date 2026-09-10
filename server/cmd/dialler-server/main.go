@@ -192,10 +192,6 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	gw.OnPresence(func(ev gateway.PresenceEvent) {
 		log.Info("presence", "device", ev.DeviceID, "kind", ev.Kind, "online", ev.Online)
 	})
-	gw.OnWakeAck(func(deviceID string, ack wire.WakeAck) { // replaced by the call controller
-		log.Info("wake_ack", "device", deviceID, "call", ack.CallID, "action", ack.Action)
-	})
-
 	// App-leg SIP element: registrar + call controller + media bridge (diago).
 	calls, err := b2bua.New(b2bua.Config{
 		BindHost:              sipHost,
@@ -217,6 +213,12 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if err != nil {
 		return err
 	}
+	// A wake_ack of decline/busy ends that call's wait for a registration at
+	// once (the caller gets 486) instead of at the ring timeout.
+	gw.OnWakeAck(func(deviceID string, ack wire.WakeAck) {
+		log.Info("wake_ack", "device", deviceID, "call", ack.CallID, "action", ack.Action)
+		calls.HandleWakeAck(deviceID, ack)
+	})
 
 	// HTTP: directory + admin.
 	mux := http.NewServeMux()

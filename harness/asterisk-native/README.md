@@ -40,6 +40,18 @@ endpoints` lists 101 as Avail once the phone has registered, and the
 `dialler` endpoint as Avail once `make dev-server` is up on the Mac (it is
 qualified every 10 s).
 
+## Transfers
+
+When the app transfers a PBX phone to another PBX extension (say 101 is
+talking to the app and the app transfers it to 600), the light server hands
+the transfer to Asterisk with a REFER on the trunk leg and drops out: the
+audio then runs phone ↔ Asterisk ↔ 600 without the server. That needs
+`allow_transfer=yes` on the `dialler` endpoint (pjsip's default, stated in
+`pjsip.conf`) and the target reachable in the `from-dialler` context. If a
+PBX refuses the REFER, the server completes the transfer itself as before,
+which keeps it in the media path; on a CUCM trunk, enable REFER on the
+trunk profile to get the offload.
+
 ## Ports
 
 Ubuntu box: 5060/udp (SIP), 10000–10200/udp (RTP, `rtp.conf`).

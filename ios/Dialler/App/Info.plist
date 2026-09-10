@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Dialler</string>
+	<string>vPhone</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -36,6 +36,6 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dialler needs the microphone for phone calls.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Dialler connects to your organisation's on-premises call server.</string>
+	<string>Dialler connects to your organisation&apos;s on-premises call server.</string>
 </dict>
 </plist>

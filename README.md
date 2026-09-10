@@ -89,5 +89,6 @@ against `make harness-up`; `make harness-ring-sim` rings it.
   → audio through the server's relay.
 - Killed-app wake through the Local Push extension (SPEC §7.3.1–2).
 - Ring-back before the callee answers (diago answers the caller first).
-- SIP Digest on the app leg before the public edge (Phase 4b).
+- App-leg REGISTER authentication (LAN exposure on shared Wi-Fi; no longer
+  gated on the public edge, which is unscheduled — SPEC §6, §9 risk 2).
 - Trunk-side listener for the PBX leg (Phase 2).

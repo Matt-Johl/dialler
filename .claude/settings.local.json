@@ -76,7 +76,21 @@
       "Bash(GOFLAGS=-mod=vendor GOPATH=/Users/matt/Library/Caches/dialler-go GOMODCACHE=/Users/matt/Library/Caches/dialler-go/pkg/mod go build -o ../bin/dialler-server ./cmd/dialler-server)",
       "Bash(../bin/dialler-server -h)",
       "Bash(GOFLAGS=-mod=vendor GOPATH=/Users/matt/Library/Caches/dialler-go GOMODCACHE=/Users/matt/Library/Caches/dialler-go/pkg/mod go test ./internal/b2bua/ ./internal/directory/)",
-      "Bash(awk '/swift-test-sandboxed/{p=1} p{print} p&&/^$/{c++; if\\(c>0 && NF==0\\) exit}' Makefile)"
+      "Bash(awk '/swift-test-sandboxed/{p=1} p{print} p&&/^$/{c++; if\\(c>0 && NF==0\\) exit}' Makefile)",
+      "Bash(awk 'length > 80 && $0 !~ /^\\\\|/ && $0 !~ /│/ {print FILENAME\":\"NR\": \"length\" cols\"}' SPEC.md)",
+      "Bash(awk -F: '{ line=$0; sub\\(/^[0-9]+:/, \"\", line\\); n=length\\(line\\); print $1\": \"n }')",
+      "Bash(awk 'NR==370 || NR==381 {print NR\": \"$0}' SPEC.md)",
+      "Bash(awk '/^func \\\\\\(s \\\\*Server\\\\\\) wakeAndWaitFrom/,/^}/' internal/b2bua/b2bua.go)",
+      "Bash(awk '/inet /{print $2}')",
+      "Bash(lsof -nP -iTCP -sTCP:LISTEN)",
+      "Bash(ps -o lstart= -p 47911)",
+      "Bash(ps -o command= -p 47911)",
+      "Bash(awk '/^func \\\\\\(d \\\\*DialogClientSession\\\\\\) Invite\\\\\\(/,/^}/' vendor/github.com/emiago/diago/dialog_client_session.go)",
+      "Bash(awk '/^  baresip-a:/,/^  [a-z-]+:$/' harness/docker-compose.yml)",
+      "Bash(sed -n '/^  baresip-a:/,/^  baresip-b:/p' harness/docker-compose.yml)",
+      "Bash(sed -n '/^  baresip-c:/,/^  [a-z]*:$/p' harness/docker-compose.yml)",
+      "Bash(sh -n ../harness/trunk_test.sh)",
+      "Bash(sh -n ../harness/baresip/entrypoint.sh)"
     ]
   },
   "sandbox": {

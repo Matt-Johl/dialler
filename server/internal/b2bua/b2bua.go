@@ -33,6 +33,7 @@ import (
 	"dialler/server/internal/pbx"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
+	"dialler/server/internal/sipauth"
 	"dialler/server/internal/wire"
 )
 
@@ -44,6 +45,8 @@ const CallIDHeader = "X-Dialler-Call-ID"
 type Waker interface {
 	Wake(deviceID string, w wire.Wake) int
 	CancelWake(deviceID, callID string, reason wire.CancelReason)
+	// ForgetWake drops a pending wake silently once its call is over.
+	ForgetWake(deviceID, callID string)
 }
 
 // Config configures the B2BUA.
@@ -85,6 +88,11 @@ type Config struct {
 	MinExpires        int
 	MaxExpires        int
 	Logger            *slog.Logger
+	// Auth challenges every app-leg REGISTER and initial INVITE with SIP
+	// Digest against the device enrolment store and refuses a SIP user
+	// other than the device's enrolled one (SPEC §4.4 rule 2). nil = no
+	// authentication (unit tests only).
+	Auth *sipauth.Authenticator
 }
 
 func (c Config) withDefaults() Config {
@@ -201,6 +209,7 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 	opts := []diago.DiagoOption{
 		diago.WithServer(srv),
 		diago.WithLogger(cfg.Logger),
+		diago.WithServerRequestMiddleware(s.authMiddleware),
 	}
 	if cfg.Trunk != nil {
 		host, port, err := trunkBind(cfg.TrunkBind, cfg.Trunk)
@@ -293,6 +302,12 @@ func (s *Server) onRegister(req *sip.Request, tx sip.ServerTransaction) {
 		_ = tx.Respond(sip.NewResponseFromRequest(req, 403, "Forbidden", nil))
 		return
 	}
+	if s.cfg.Auth != nil {
+		enrolled, err := s.cfg.Auth.Verify(req)
+		if !s.authorized(req, tx, enrolled, user, err) {
+			return
+		}
+	}
 
 	contact := req.Contact()
 	if contact == nil {
@@ -348,6 +363,60 @@ func (s *Server) onRegister(req *sip.Request, tx sip.ServerTransaction) {
 	res.AppendHeader(sip.NewHeader("Contact", fmt.Sprintf("<%s>;expires=%d", uri, expires)))
 	res.AppendHeader(sip.NewHeader("Expires", strconv.Itoa(expires)))
 	_ = tx.Respond(res)
+}
+
+// authorized applies the app-leg Digest verdict for a request whose SIP
+// user is sipUser: a request with no or stale credentials is challenged
+// (401), bad credentials or an unknown device are refused (403), and so is
+// a SIP user other than the one the authenticated device is enrolled for —
+// the check that stops one enrolled phone registering or calling as
+// another. Returns true when the request may proceed.
+func (s *Server) authorized(req *sip.Request, tx sip.ServerTransaction, enrolledUser, sipUser string, err error) bool {
+	switch {
+	case err == nil:
+		if !strings.EqualFold(enrolledUser, sipUser) {
+			s.log.Warn("app leg: device is not enrolled for this user", "method", req.Method, "enrolled_user", enrolledUser, "sip_user", sipUser, "src", req.Source())
+			_ = tx.Respond(sip.NewResponseFromRequest(req, 403, "Forbidden", nil))
+			return false
+		}
+		return true
+	case errors.Is(err, sipauth.ErrNoCredentials), errors.Is(err, sipauth.ErrStale):
+		_ = tx.Respond(s.cfg.Auth.Challenge(req, errors.Is(err, sipauth.ErrStale)))
+		return false
+	default:
+		s.log.Warn("app leg: authentication refused", "method", req.Method, "sip_user", sipUser, "src", req.Source(), "err", err)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 403, "Forbidden", nil))
+		return false
+	}
+}
+
+// authMiddleware gates initial INVITEs on the app leg with the same Digest
+// check as REGISTER, requiring the From user to be the device's enrolled
+// user (no caller-identity spoofing). In-dialog requests ride a dialog that
+// was authenticated when it was set up, and trunk requests are trusted by
+// address (SPEC §4.4 rule 7), so neither is challenged.
+func (s *Server) authMiddleware(next sipgo.RequestHandler) sipgo.RequestHandler {
+	return func(req *sip.Request, tx sip.ServerTransaction) {
+		if s.cfg.Auth != nil && req.Method == sip.INVITE && !inDialog(req) &&
+			!isTrunkSource(req.Transport(), req.Source(), s.cfg.Trunk) {
+			sipUser := ""
+			if from := req.From(); from != nil {
+				sipUser = from.Address.User
+			}
+			enrolled, err := s.cfg.Auth.Verify(req)
+			if !s.authorized(req, tx, enrolled, sipUser, err) {
+				return
+			}
+		}
+		next(req, tx)
+	}
+}
+
+// inDialog: a To tag means the request belongs to an existing dialog
+// (re-INVITE for hold, BYE, ...), not a new call.
+func inDialog(req *sip.Request) bool {
+	to := req.To()
+	return to != nil && to.Params.Has("tag")
 }
 
 // flowAlive reports whether the TLS connection a rewritten registration
@@ -476,6 +545,13 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 			reason = wire.CancelCallerHangup
 		}
 		s.waker.CancelWake(ep.DeviceID, callID, reason)
+	} else if wakeable {
+		// Answered and over. The wake is kept pending through the ring so a
+		// client reconnecting mid-ring is rung again; from here a reconnect
+		// must not replay a call that is finished (it rang the app for a
+		// dead call, and the app's answer then armed it to take the next
+		// INVITE unrung).
+		s.waker.ForgetWake(ep.DeviceID, callID)
 	}
 }
 
@@ -800,11 +876,29 @@ type pump struct {
 	written    atomic.Int64 // frames written to the destination leg
 	writeErrs  atomic.Int64
 	lastReadAt atomic.Int64 // unix ms of the last successful read
+
+	// Packet path (nil = byte copy through io.Writer); see forward.
+	rr    *media.RTPPacketReader
+	rw    *media.RTPPacketWriter
+	codec media.Codec // destination: payload type and RTP clock
+	// Source timeline → ours (only touched by the relay goroutine).
+	haveSrc  bool
+	srcSSRC  uint32
+	tsOffset uint32
+	wroteAny bool
+	lastOut  uint32
+	t0       time.Time
+	ts0      uint32
+	// Arrival skew of the source against its own timeline, for the log.
+	skewMs     atomic.Int64
+	earlyMaxMs atomic.Int64
+	lateMaxMs  atomic.Int64
 }
 
 type mediaEnd interface {
 	AudioReader(...diago.AudioReaderOption) (io.Reader, error)
 	AudioWriter(...diago.AudioWriterOption) (io.Writer, error)
+	MediaSession() *media.MediaSession
 }
 
 func newPump(from, to mediaEnd) (*pump, error) {
@@ -816,11 +910,89 @@ func newPump(from, to mediaEnd) (*pump, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &pump{r: r, w: w}, nil
+	p := &pump{r: r, w: w}
+	// Packet-level forwarding needs the RTP reader and writer themselves
+	// (for the headers) and the destination's codec; anything else falls
+	// back to the byte copy through io.Writer.
+	rr, okR := r.(*media.RTPPacketReader)
+	rw, okW := w.(*media.RTPPacketWriter)
+	if okR && okW {
+		if ms := to.MediaSession(); ms != nil {
+			p.setPacketPath(rr, rw, media.CodecAudioFromSession(ms))
+		}
+	}
+	return p, nil
+}
+
+func (p *pump) setPacketPath(rr *media.RTPPacketReader, rw *media.RTPPacketWriter, dst media.Codec) {
+	p.rr, p.rw, p.codec = rr, rw, dst
 }
 
 func (p *pump) String() string {
-	return fmt.Sprintf("read=%d written=%d write_errs=%d", p.read.Load(), p.written.Load(), p.writeErrs.Load())
+	return fmt.Sprintf("read=%d written=%d write_errs=%d early_max_ms=%d late_max_ms=%d",
+		p.read.Load(), p.written.Load(), p.writeErrs.Load(), p.earlyMaxMs.Load(), p.lateMaxMs.Load())
+}
+
+// forward sends one payload to the destination leg at once, carrying the
+// source packet's own timing.
+//
+// The library's io.Writer path stamps packets with its own clock and then
+// BLOCKS for one packet time (20 ms) per write: it is a player's pacer, and
+// a relay built on it can never forward faster than the nominal rate. Any
+// packets that queue behind it — the ones that arrived before the relay
+// started, or a burst after a network stall — are forwarded at exactly the
+// rate new ones arrive, so the queue never drains and every burst becomes
+// permanent delay for the rest of the call (the "audio 0–2 s late, varying
+// per call" symptom on the app). WriteSamples has no clock; we write
+// immediately and force each timestamp to the source's, rebased onto our
+// stream, so silence gaps stay gaps and the far end's jitter buffer deals
+// with the bursts, as it is designed to.
+func (p *pump) forward(payload []byte) error {
+	if p.rr == nil {
+		_, err := p.w.Write(payload)
+		return err
+	}
+	hdr := p.rr.PacketHeader
+	now := time.Now()
+	newStream := !p.haveSrc || hdr.SSRC != p.srcSSRC
+	if newStream {
+		// Rebase this source's timeline onto ours, continuing right after
+		// what we last sent so the far end sees one monotonic stream.
+		start := p.rw.InitTimestamp()
+		if p.haveSrc {
+			start = p.lastOut + p.codec.SampleTimestamp()
+		}
+		p.tsOffset = start - hdr.Timestamp
+		p.srcSSRC, p.haveSrc = hdr.SSRC, true
+		p.t0, p.ts0 = now, hdr.Timestamp
+	} else {
+		// Arrival skew against the source's own timeline since its first
+		// packet: negative = early (a burst / backlog draining), positive =
+		// late (a stall). Both are what the far end's jitter buffer absorbs.
+		elapsed := now.Sub(p.t0)
+		expected := time.Duration(hdr.Timestamp-p.ts0) * time.Second / time.Duration(p.codec.SampleRate)
+		skew := (elapsed - expected).Milliseconds()
+		p.skewMs.Store(skew)
+		if -skew > p.earlyMaxMs.Load() {
+			p.earlyMaxMs.Store(-skew)
+		}
+		if skew > p.lateMaxMs.Load() {
+			p.lateMaxMs.Store(skew)
+		}
+	}
+	// The writer's next timestamp is where it left off (we never let it
+	// advance on its own); move it to where this packet belongs.
+	want := hdr.Timestamp + p.tsOffset
+	cur := p.rw.InitTimestamp()
+	if p.wroteAny {
+		cur = p.lastOut
+	}
+	p.rw.DelayTimestamp(want - cur)
+	_, err := p.rw.WriteSamples(payload, 0, hdr.Marker || newStream, p.codec.PayloadType)
+	if err == nil {
+		p.lastOut, p.wroteAny = want, true
+	}
+	return err
 }
 
 // run relays until the source leg's reader ends (its session closed) or
@@ -844,7 +1016,7 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 			if n > 0 {
 				p.read.Add(1)
 				p.lastReadAt.Store(time.Now().UnixMilli())
-				if _, werr := p.w.Write(buf[:n]); werr != nil {
+				if werr := p.forward(buf[:n]); werr != nil {
 					if p.writeErrs.Add(1) <= 3 {
 						log.Warn("relay write failed", "err", werr, "after", p.String())
 					}
@@ -876,7 +1048,8 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 		case <-ticker.C:
 			r, w := p.read.Load(), p.written.Load()
 			log.Info("relay", "read", r, "written", w, "write_errs", p.writeErrs.Load(),
-				"read_2s", r-lastRead, "written_2s", w-lastWritten)
+				"read_2s", r-lastRead, "written_2s", w-lastWritten,
+				"skew_ms", p.skewMs.Load(), "early_max_ms", p.earlyMaxMs.Load(), "late_max_ms", p.lateMaxMs.Load())
 			lastRead, lastWritten = r, w
 		}
 	}

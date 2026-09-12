@@ -45,9 +45,18 @@ public protocol CallEngine: AnyObject {
     /// A transfer we asked for was refused; `reason` is the SIP status. The
     /// call continues.
     var onTransferFailed: ((_ reason: String) -> Void)? { get set }
+    /// The device's enrolment credential, presented as SIP Digest username /
+    /// password on the app leg (username = device id, password = token). The
+    /// server refuses registrations and calls without it.
+    func setCredentials(username: String, password: String)
     /// Register `user` (e.g. "201@dialler") to `sip` and stay registered, so
     /// calls reach this app directly while it runs. Idempotent.
     func register(user: String, sip: SIPTarget)
+    /// Drop the current registration and its connection so the next
+    /// `register` starts a fresh one: the gateway session came back after a
+    /// drop, and the SIP connection died in the same suspension. A no-op
+    /// during a call.
+    func resetRegistration()
     /// The user accepted a call: make sure we are registered and answer the
     /// INVITE (now if it has already arrived, else as soon as it does).
     func prepareForIncomingCall(callID: String, user: String, sip: SIPTarget)
@@ -69,6 +78,8 @@ public protocol CallEngine: AnyObject {
 }
 
 public extension CallEngine {
+    func setCredentials(username _: String, password _: String) {}
+    func resetRegistration() {}
     func audioSessionActivated() {}
     func audioSessionDeactivated() {}
     func setMuted(_: Bool) {}
@@ -308,6 +319,14 @@ public final class CallController {
         case .wakeCancel(let c):
             end(callID: c.callID, reason: c.reason == .answeredElsewhere ? .answeredElsewhere : (c.reason == .timeout ? .unanswered : .remoteEnded))
         default:
+            // A gateway drop (.disconnected) is deliberately NOT a call
+            // event. A ringing wake does not depend on the session that
+            // carried it: the extension's session may have delivered it
+            // (PushKit), and the INVITE comes from the SIP registration the
+            // engine makes on answer. Ending wake-only calls here killed the
+            // background wake — the app's own stale session reports its
+            // drop as it resumes for the PushKit wake, before the user has
+            // answered (testSessionDropDoesNotEndAnExtensionDeliveredWake).
             break
         }
     }

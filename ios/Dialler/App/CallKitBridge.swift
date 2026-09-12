@@ -159,7 +159,17 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     // (gateway socket, PushKit, libre loop); CallKit wants the main thread.
 
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
-        DispatchQueue.main.async { [self] in
+        // PushKit's contract (iOS 13+): reportNewIncomingCall must be called
+        // BEFORE the push delegate returns. The registry delivers on the main
+        // queue, so when we are already there the report is made inline. It
+        // used to be dispatched asynchronously, which let the delegate return
+        // first; iOS then killed the app (0xBAADCA11) every time it had been
+        // resumed from suspension for the push, while a cold launch survived
+        // only by timing (console log 2026-09-11 16:11–16:13). Other threads
+        // (gateway socket, SIP loop) still hop asynchronously: a synchronous
+        // hop from the SIP loop could deadlock against a main thread waiting
+        // on that loop in run_op.
+        let report = { [self] in
             configureAudioSession()
             let uuid = UUID()
             uuids[callID] = uuid
@@ -183,6 +193,7 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
                 completion(error)
             }
         }
+        if Thread.isMainThread { report() } else { DispatchQueue.main.async(execute: report) }
     }
 
     /// A better caller name learned while the call is still ringing (the
@@ -205,17 +216,25 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     /// every VoIP push to be answered with `reportNewIncomingCall`; doing so
     /// again with the same UUID is refused (already exists) but satisfies
     /// that requirement, and leaves the ringing call untouched.
-    func reaffirm(callID: String) {
-        DispatchQueue.main.async { [self] in
-            guard let uuid = uuids[callID] else {
-                onLog("callkit: reaffirm of \(callID): no CallKit call to reaffirm")
-                return
-            }
-            let update = lastUpdate[uuid] ?? CXCallUpdate()
-            provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
-                self?.onLog("callkit: reaffirmed \(callID) (\(error.map { $0.localizedDescription } ?? "accepted"))")
-            }
+    ///
+    /// Returns false when CallKit has no such call, in which case NOTHING has
+    /// been reported and the caller must report the call itself: returning
+    /// silently here got the app killed by iOS (0xBAADCA11, "no call
+    /// reported for a VoIP push") on a wake to a suspended app. Main thread
+    /// only: the PushKit registry delivers on the main queue and `uuids` is
+    /// only touched there.
+    @discardableResult
+    func reaffirm(callID: String) -> Bool {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard let uuid = uuids[callID] else {
+            onLog("callkit: reaffirm of \(callID): no CallKit call to reaffirm")
+            return false
         }
+        let update = lastUpdate[uuid] ?? CXCallUpdate()
+        provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
+            self?.onLog("callkit: reaffirmed \(callID) (\(error.map { $0.localizedDescription } ?? "accepted"))")
+        }
+        return true
     }
 
     func end(callID: String, reason: CallEndReason) {
@@ -244,7 +263,12 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+            // Bluetooth headsets over HFP, the hands-free profile that carries
+            // a microphone. `.allowBluetooth` was renamed to say which profile
+            // it means; the new name is available on every iOS we target
+            // (the SDK back-deploys the rename, same underlying option).
+            // `.voiceChat` implies it, but the intent is worth stating.
+            try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP])
             // What baresip's audiounit module (VoiceProcessingIO) is configured
             // for: 48 kHz, 20 ms frames. Preferences only; iOS may adjust.
             try session.setPreferredSampleRate(48000)

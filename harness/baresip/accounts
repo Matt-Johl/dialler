@@ -1,8 +1,9 @@
-# One account. App-leg phones register over TLS to the light server with no
-# Digest password (transport-authenticated app leg; auth_pass is a
-# placeholder). A desk phone registers over UDP to the harness PBX with the
-# PBX's Digest credentials (AUTH_USER/AUTH_PASS) and G.711 only, like a
-# real desk phone.
+# One account. App-leg phones register over TLS to the light server with
+# SIP Digest using their enrolled device's id and token as AUTH_USER /
+# AUTH_PASS (the server refuses a registration without them, or for a user
+# the device is not enrolled for). A desk phone registers over UDP to the
+# harness PBX with the PBX's Digest credentials and G.711 only, like a real
+# desk phone.
 # @REGINT@ is the registration interval; 0 = start unregistered (the wake test
 # registers on demand via ctrl_tcp, as the woken app would).
 # @OUTBOUND@ (optional) is an outbound proxy by address, like a real phone

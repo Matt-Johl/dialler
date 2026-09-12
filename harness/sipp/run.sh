@@ -40,6 +40,10 @@ run register_tls     || { status=1; tls_ok=0; }
 run invite_offline_480 || status=1
 run invite_unknown_404 || status=1
 run unregister_tls   || status=1
+# App-leg authentication (SPEC §4.4 rule 2): a credential for another user
+# and no credential at all are both refused after the Digest challenge.
+run register_wrong_device_403 || status=1
+run register_unenrolled_403   || status=1
 
 # Plain TCP must be refused outright: the app leg is TLS-only (SPEC §4.4).
 # Only meaningful if TLS itself works, otherwise "refused" proves nothing.

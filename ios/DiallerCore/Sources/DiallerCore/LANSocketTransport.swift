@@ -45,7 +45,14 @@ public final class LANSocketTransport: SignalTransport {
     // MARK: - Internals (all on `queue`)
 
     private func open(hello: Hello) {
-        close(reason: "reconnect")
+        // Only a connection that existed can be "disconnected": a first
+        // connect must not emit a spurious drop (a reconnecting wrapper
+        // would act on it).
+        if connection != nil {
+            close(reason: "reconnect")
+        } else {
+            teardown()
+        }
         machine = SessionMachine()
         decoder = FrameDecoder()
         pendingHello = hello

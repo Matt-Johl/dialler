@@ -312,6 +312,46 @@ final class CallControllerTests: XCTestCase {
         XCTAssertEqual(ui.ended.map { $0.0 }, ["c1"])
     }
 
+    // Background wake (SPEC §2): the extension delivers the wake through
+    // PushKit while the app is suspended. When the app resumes, its own
+    // gateway session reports the drop it suffered during the suspension
+    // (ECONNABORTED). That drop must not touch the ringing call: the INVITE
+    // comes from the SIP registration the engine makes on answer, not from
+    // the gateway session, and the extension's session is the one that acks.
+
+    func testSessionDropDoesNotEndAnExtensionDeliveredWake() {
+        let (c, ui, engine, _) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        XCTAssertEqual(c.handle(wake: wake("c1")), .rang) // via PushKit, not the socket
+        c.handle(.disconnected(reason: "read failed: ECONNABORTED"))
+        XCTAssertTrue(ui.ended.isEmpty, "the stale app session's drop must not end the ringing wake")
+        c.userAnswered(callID: "c1")
+        XCTAssertEqual(engine.prepared.map { $0.0 }, ["c1"], "answer arms the engine and registers")
+        engine.onIncomingCall?("sip:100@pbx", nil)
+        XCTAssertEqual(ui.reported.count, 1, "the INVITE joins the ringing call; nothing rings twice")
+        XCTAssertEqual(c.activeCalls.first?.sipArrived, true)
+        XCTAssertTrue(engine.hungUp.isEmpty)
+    }
+
+    // The same holds for a wake that came over the app's own socket and for a
+    // call whose INVITE has arrived: a drop is not a call event. (A stale
+    // wake replayed for a finished call is the server's to prevent — it
+    // forgets a wake once its call is over — not the client's to guess at.)
+
+    func testSessionDropLeavesSocketDeliveredAndEstablishedCallsAlone() {
+        let (c, ui, engine, _) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        c.handle(.wake(wake("c1")))
+        c.userAnswered(callID: "c1")
+        c.handle(.disconnected(reason: "server closed"))
+        XCTAssertTrue(ui.ended.isEmpty, "answered, INVITE pending: the registration will bring it")
+        engine.onIncomingCall?("sip:100@pbx", nil)
+        c.handle(.disconnected(reason: "server closed"))
+        XCTAssertTrue(ui.ended.isEmpty, "the call lives on its SIP dialog, not the session")
+        XCTAssertTrue(engine.hungUp.isEmpty)
+        XCTAssertEqual(ui.reported.count, 1)
+    }
+
     // The INVITE-first path (registered app, INVITE beats the wake) must name
     // the call exactly like the wake path: directory → caller's display name
     // → bare number. It used to report the raw peer URI.

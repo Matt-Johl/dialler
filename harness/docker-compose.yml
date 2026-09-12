@@ -100,6 +100,10 @@ services:
     environment:
       SIP_USER: "201"
       SIP_DOMAIN: dialler
+      # App-leg SIP Digest: the enrolled device's id and fixed dev token
+      # (harness/provision.sh).
+      AUTH_USER: dev-a
+      AUTH_PASS: tok_dev_a_harness_fixed
       # The trunk transfer test recreates this phone silent, so the desk
       # phone's recording can only contain audio the PBX sent it.
       AUDIO_SOURCE: ${AUDIO_SOURCE:-aufile,/media/in.wav}
@@ -113,6 +117,8 @@ services:
     environment:
       SIP_USER: "202"
       SIP_DOMAIN: dialler
+      AUTH_USER: dev-b
+      AUTH_PASS: tok_dev_b_harness_fixed
       REGINT: "${BARESIP_B_REGINT:-300}" # 0 → starts unregistered (wake test)
       # Set to <mac-ip>:5061 to register with a server running natively on
       # the Mac instead of the dialler container (harness/ring_native.sh).

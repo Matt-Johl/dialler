@@ -96,7 +96,7 @@ TRUNK_FLAGS = $(if $(ASTERISK_HOST),-trunk "sip:$(ASTERISK_HOST):5060;transport=
 dev-server: server tone
 	@echo "native server on $(DIALLER_PUBLIC_HOST); app Settings: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed"
 	@echo "trunk: $(if $(ASTERISK_HOST),Asterisk at $(ASTERISK_HOST):5060; trunk listener :5062,none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
-	( sleep 2 && DIALLER_API=http://127.0.0.1:8080 sh harness/provision.sh ) &
+	( sleep 2 && DIALLER_API=https://127.0.0.1:8080 sh harness/provision.sh ) &
 	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
 	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS)
 # e.g. DEV_SERVER_FLAGS="-log-level debug" make dev-server   (shows sipgo's connection reference counting)
@@ -123,9 +123,9 @@ ios-test:
 # restricted sandboxes; the real build is `xcodebuild -scheme Dialler`.
 ios-typecheck:
 	cd ios/DiallerEngine && swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --target DiallerEngine 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
-	cd ios/Dialler && swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" \
+	cd ios/Dialler && swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
 	  -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/Modules" -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/CBaresip.build" App/*.swift
-	cd ios/Dialler && swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" \
+	cd ios/Dialler && swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
 	  -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/Modules" PushProvider/*.swift
 
 # Cross-compile libre/baresip/Opus/OpenSSL for iOS device, simulator and macOS
@@ -161,16 +161,18 @@ audio-probe:
 #   HOLD_MS=3000 make sim-call       # hold/resume mid-call, asserts media stops and restarts
 #   TRANSFER=echo make sim-call      # blind transfer of the caller to echo (REFER handled server-side)
 #   DECLINE=1 make sim-call          # reject from the banner; asserts phone-b is told 486 Busy Here, not 480
+#   RESTART_SERVER=1 make sim-call   # server restarts under the app: it must reconnect, re-register, take the call
 #   GATEWAY=no make sim-call         # no wake ever arrives; rings from the INVITE
 #   SERVER=native make sim-call      # against `make dev-server` on this Mac
 sim-call:
 	sh harness/sim_call.sh
 
-# The incoming, outbound and decline trio every call-path change must pass.
+# The incoming, outbound, decline and reconnect runs every call-path change must pass.
 sim-call-all:
 	OUTBOUND=202 sh harness/sim_call.sh
 	CALLS=2 sh harness/sim_call.sh
 	DECLINE=1 sh harness/sim_call.sh
+	RESTART_SERVER=1 sh harness/sim_call.sh
 
 SIM ?= iPhone 16
 audio-probe-sim:

@@ -16,10 +16,10 @@ import (
 )
 
 // Registrar answers REGISTER and OPTIONS on the app leg and keeps the
-// registry current. Every other request is refused with 501 until the B2BUA
-// exists. The app leg is authenticated at the transport (TLS + enrolled
-// device); SIP Digest is deliberately absent in Phase 0 and is tracked as a
-// follow-up before Phase 4b (public edge).
+// registry current. Every other request is refused with 501. This is the
+// Phase 0 fallback/reference registrar: the live one is in internal/b2bua,
+// which also authenticates the app leg with SIP Digest (internal/sipauth);
+// this one has no authentication and is not on the call path.
 type Registrar struct {
 	Registry   *registry.Registry
 	Domain     string        // served domain, e.g. "dialler.example.local"

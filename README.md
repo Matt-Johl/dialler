@@ -31,16 +31,40 @@ them on a normal machine to exercise real forwarding.
 ## Run the server locally
 
 ```sh
-make run           # self-signed TLS on :7443 (signal) and :5061 (SIP), HTTP on 127.0.0.1:8080
+make run           # self-signed TLS on :7443 (signal), :5061 (SIP) and 127.0.0.1:8080 (directory/admin)
 ```
 
-Enrol a device and fetch the directory:
+Enrol a device and fetch the directory (`-k`: the dev certificate is
+self-signed). The token doubles as the SIP Digest password on the app leg,
+with the device id as the username:
 
 ```sh
-curl -s -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' \
-     -d '{"device_id":"dev-a","user":"201"}' http://127.0.0.1:8080/v1/admin/devices
-curl -s -H 'X-Device-ID: dev-a' -H "Authorization: Bearer $TOKEN" 'http://127.0.0.1:8080/v1/directory?since=0'
+curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' \
+     -d '{"device_id":"dev-a","user":"201"}' https://127.0.0.1:8080/v1/admin/devices
+curl -sk -H 'X-Device-ID: dev-a' -H "Authorization: Bearer $TOKEN" 'https://127.0.0.1:8080/v1/directory?since=0'
 ```
+
+### The SIP domain
+
+Users are SIP addresses like `sip:201@dialler`; the part after the `@` is
+the **SIP domain**, set with `-local-domain` (`dialler` in `make dev-server`
+and in the docker harness; unset, it defaults to the server's own address).
+It plays the role a domain plays in an email address, naming who owns those
+identities, and need not be a DNS name. The server uses it for:
+
+- **ownership** — a REGISTER for a user in any other domain is refused, and
+  an address in a foreign domain routes to the PBX rather than to an app;
+- **what apps are told** — the welcome carries each account as user plus
+  domain, and the app builds its address from it;
+- **the Digest realm** — app-leg authentication (SPEC §4.4 rule 2) uses the
+  domain as the realm, and the server stores each device credential only
+  as the MD5 of device id, realm and token.
+
+Because the realm is baked into the stored credential, **renaming the domain
+invalidates every enrolled device** until its credential is re-issued. In
+development this is invisible (`harness/provision.sh` re-issues the fixed
+dev credentials on every start); in production keep the domain fixed, or
+re-enrol devices after a rename. There is no reason to change it.
 
 ## Server packages
 

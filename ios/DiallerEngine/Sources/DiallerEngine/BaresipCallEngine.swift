@@ -43,6 +43,12 @@ public final class BaresipCallEngine: CallEngine {
     private var sessionActive = false
     private var account: String? // the AOR line currently registered (or registering)
     private var domain = ""      // SIP domain of the account, completes bare dial targets
+    /// What `register` was last asked for, so a failed registration can be
+    /// retried on our own initiative (a dead connection after the app was
+    /// suspended) rather than waiting for the next gateway welcome.
+    private var lastRegistration: (user: String, sip: SIPTarget)?
+    private var registerRetries = 0
+    private var retryGeneration = 0 // bumped to cancel a pending retry
     private let acceptAnyCertificate: Bool
     /// Whether libre/baresip are up. Independent of `state`: a failed
     /// registration leaves the stack running (restarting it returns EALREADY).
@@ -57,16 +63,26 @@ public final class BaresipCallEngine: CallEngine {
         self.acceptAnyCertificate = acceptAnyCertificate
     }
 
+    /// SIP Digest credential for the app leg: the device id and enrolment
+    /// token. Goes into the account as auth_user / auth_pass so baresip
+    /// answers the server's 401 on REGISTER and INVITE by itself.
+    private var credentials: (user: String, pass: String)?
+
+    public func setCredentials(username: String, password: String) {
+        lock.withLock { credentials = (username, password) }
+    }
+
     deinit { cb_stop() }
 
     // MARK: CallEngine
 
     public func register(user: String, sip: SIPTarget) {
-        if !stackRunning {
-            start()
-            if !stackRunning { return } // start() logged the reason
+        guard ensureStack() else { return } // start()/stop() logged the reason
+        lock.withLock {
+            lastRegistration = (user, sip)
+            retryGeneration += 1 // an explicit register supersedes a pending retry
         }
-        let aor = Self.aor(user: user, sip: sip)
+        let aor = self.aor(user: user, sip: sip)
         lock.withLock { domain = user.split(separator: "@", maxSplits: 1).count > 1 ? String(user.split(separator: "@", maxSplits: 1)[1]) : sip.host }
         let already: Bool = lock.withLock { account == aor }
         if already, state == .ringing || state == .inCall || state == .dialing {
@@ -77,7 +93,9 @@ public final class BaresipCallEngine: CallEngine {
             // a new gateway session (server restarted → registry empty) or a
             // wake with no INVITE pending (server has no usable route).
             // Our TLS flow may be dead without baresip having noticed yet,
-            // so send a fresh REGISTER now rather than trust the state.
+            // so drop the cached connections (a send on a dead one fails at
+            // once with EPROTO) and send a fresh REGISTER on a new one.
+            _ = cb_reset_transports()
             let rc = cb_ua_register()
             if rc == 0 {
                 state = .registering
@@ -95,8 +113,14 @@ public final class BaresipCallEngine: CallEngine {
         let rc = cb_ua_alloc(aor)
         if rc != 0 {
             lock.withLock { account = nil }
-            state = .failed("ua_alloc \(rc)")
-            log("engine: ua_alloc failed (\(rc))")
+            // rc is -errno straight from the SIP stack: a synchronous
+            // connect() failure on the TLS socket to the server comes back
+            // this way (libre returns the errno of connect() up through
+            // sipreg → ua_register), so name it.
+            let why = String(cString: strerror(-rc))
+            state = .failed("ua_alloc \(rc): \(why)")
+            log("engine: ua_alloc failed (\(rc): \(why)); the REGISTER's connection to \(sip.host):\(sip.port) could not be opened")
+            scheduleRegisterRetry() // e.g. the loop was busy/recovering: try again
         }
     }
 
@@ -273,18 +297,94 @@ public final class BaresipCallEngine: CallEngine {
     public func stop() {
         cb_ua_free()
         cb_stop()
-        lock.withLock { account = nil; answerWhenRinging = false; incomingPending = false }
+        lock.withLock {
+            account = nil; answerWhenRinging = false; incomingPending = false
+            lastRegistration = nil; retryGeneration += 1
+        }
         stackRunning = false
         state = .idle
     }
 
+    /// The gateway session came back after a drop. iOS killed both sockets
+    /// in the same suspension and baresip only learns its one is dead on
+    /// the next send, so drop the registration (and its connection) now and
+    /// let the welcome's `register` start a fresh one. Left alone during a
+    /// call.
+    public func resetRegistration() {
+        switch state {
+        case .ringing, .dialing, .inCall:
+            log("engine: registration reset deferred: a call is in progress")
+            return
+        default:
+            break
+        }
+        if stackRunning && !cb_alive() {
+            // The loop thread died with the connection; a fresh stack is
+            // the only way back, and the welcome's register starts it.
+            log("engine: SIP loop is dead; tearing the stack down for a fresh start")
+            stop()
+            return
+        }
+        lock.withLock {
+            account = nil
+            registerRetries = 0
+            retryGeneration += 1
+        }
+        cb_ua_free()
+        // iOS tore the SIP socket down with the gateway's; libre still has
+        // it cached and would send the next REGISTER on it (EPROTO, seen
+        // as "ua_alloc -100" after every unlock). Rebuild the transports.
+        _ = cb_reset_transports()
+        if stackRunning { state = .idle }
+        log("engine: registration dropped (session came back); transports reset; registering afresh")
+    }
+
+    /// The stack must be running with a live loop thread. libre ends its
+    /// loop on a poll error (seen on Darwin after the SIP connection was
+    /// reset by the peer); a dead stack is torn down and started again.
+    @discardableResult
+    private func ensureStack() -> Bool {
+        if stackRunning && !cb_alive() {
+            log("engine: SIP loop died; restarting the stack")
+            stop()
+        }
+        if !stackRunning { start() }
+        return stackRunning
+    }
+
+    /// A failed registration is retried by us with backoff (2, 4, 8, then
+    /// 15 s) on the last requested account, re-creating the user agent so a
+    /// dead connection is replaced. Cancelled by success, an explicit
+    /// register, a reset, or stop.
+    private func scheduleRegisterRetry() {
+        let (gen, attempt, last): (Int, Int, (user: String, sip: SIPTarget)?) = lock.withLock {
+            retryGeneration += 1
+            registerRetries += 1
+            return (retryGeneration, registerRetries, lastRegistration)
+        }
+        guard let last else { return }
+        let delay = min(15.0, pow(2.0, Double(attempt)))
+        log("engine: retrying registration in \(Int(delay))s (attempt \(attempt))")
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.lock.withLock({ self.retryGeneration == gen }) else { return }
+            // The failed attempt may have gone to a dead cached connection;
+            // start the retry on fresh transports.
+            if self.stackRunning { _ = cb_reset_transports() }
+            self.register(user: last.user, sip: last.sip)
+        }
+    }
+
     // MARK: internals
 
-    static func aor(user: String, sip: SIPTarget) -> String {
+    func aor(user: String, sip: SIPTarget) -> String {
         let parts = user.split(separator: "@", maxSplits: 1)
         let userPart = String(parts[0])
         let domain = parts.count > 1 ? String(parts[1]) : sip.host
-        return "<sip:\(userPart)@\(domain);transport=tls>;outbound=\"sip:\(sip.host):\(sip.port);transport=tls\";regint=300;answermode=manual;audio_codecs=opus/48000/2,PCMU/8000/1"
+        let auth: String = lock.withLock {
+            guard let c = credentials else { return "" }
+            return ";auth_user=\(c.user);auth_pass=\(c.pass)"
+        }
+        return "<sip:\(userPart)@\(domain);transport=tls>\(auth);outbound=\"sip:\(sip.host):\(sip.port);transport=tls\";regint=300;answermode=manual;audio_codecs=opus/48000/2,PCMU/8000/1"
     }
 
     private func answerPending() {
@@ -336,12 +436,17 @@ public final class BaresipCallEngine: CallEngine {
     private func handle(event: cb_event_t, peer: String, text: String) {
         switch event {
         case CB_EVENT_REGISTER_OK:
+            lock.withLock {
+                registerRetries = 0
+                retryGeneration += 1 // cancel any pending retry
+            }
             state = .registered
             log("engine: registered")
         case CB_EVENT_REGISTER_FAIL:
             lock.withLock { account = nil } // allow a fresh attempt
             state = .failed("register: \(text)")
             log("engine: registration failed: \(text)")
+            scheduleRegisterRetry()
         case CB_EVENT_CALL_INCOMING:
             state = .ringing
             // For this event the shim passes the caller's From display name
@@ -379,7 +484,7 @@ public final class BaresipCallEngine: CallEngine {
             onCallEnded?(text)
         case CB_EVENT_LOG:
             logger.info("baresip: \(text, privacy: .public)")
-            if text.contains("register") || text.contains("tls") || text.contains("dns") || text.contains("fail") || text.contains("error") || text.contains("audiounit") || text.contains("rtp") || text.contains("stream:") || text.contains("rtcp") {
+            if text.contains("cbaresip") || text.contains("register") || text.contains("tls") || text.contains("dns") || text.contains("fail") || text.contains("error") || text.contains("audiounit") || text.contains("rtp") || text.contains("stream:") || text.contains("rtcp") {
                 log("baresip: \(text)")
             }
         default:

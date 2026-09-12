@@ -47,6 +47,6 @@ final class AddressBookTests: XCTestCase {
         let h = cfg.hello(kind: .extensionKind)
         XCTAssertEqual(h.deviceID, "dev-a")
         XCTAssertEqual(h.client, .extensionKind)
-        XCTAssertEqual(cfg.httpBase().absoluteString, "http://127.0.0.1:8080")
+        XCTAssertEqual(cfg.httpBase().absoluteString, "https://127.0.0.1:8080", "the directory API is TLS: it carries the device token")
     }
 }

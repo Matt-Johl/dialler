@@ -48,6 +48,10 @@ type bridgedCall struct {
 	// finishOffload released both legs and wait() must not hang up either.
 	offload   chan struct{}
 	offloaded bool
+	// woken lists devices a transfer woke for this call; their pending
+	// wakes are forgotten when the call ends (the invite path does the same
+	// for the callee it woke).
+	woken []string
 }
 
 func newBridgedCall(s *Server, log *slog.Logger, callID string, a, b *callLeg) *bridgedCall {
@@ -134,7 +138,13 @@ func (c *bridgedCall) wait() {
 	for _, p := range c.pumps {
 		summary = append(summary, p.String())
 	}
+	woken := c.woken
 	c.mu.Unlock()
+	if c.s.waker != nil {
+		for _, dev := range woken {
+			c.s.waker.ForgetWake(dev, c.callID)
+		}
+	}
 	c.log.Info("call ended", "relay", strings.Join(summary, " | "))
 }
 
@@ -193,7 +203,7 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 	case routing.Echo:
 		newLeg = nil
 	case routing.Trunk, routing.Local:
-		dst, trunk, err := c.s.transferDestination(ctx, log, c.callID, d, other)
+		dst, trunk, err := c.s.transferDestination(ctx, log, c, d, other)
 		if err != nil {
 			return err
 		}
@@ -281,8 +291,9 @@ func (c *bridgedCall) releaseReferrer(ctx context.Context, log *slog.Logger, fro
 
 // transferDestination resolves a routed transfer target to a dial URI,
 // waking an unregistered local user like a fresh call would.
-func (s *Server) transferDestination(ctx context.Context, log *slog.Logger, callID string, d routing.Decision, other *callLeg) (sip.Uri, bool, error) {
+func (s *Server) transferDestination(ctx context.Context, log *slog.Logger, c *bridgedCall, d routing.Decision, other *callLeg) (sip.Uri, bool, error) {
 	var dst sip.Uri
+	callID := c.callID
 	if d.Target == routing.Trunk {
 		if s.cfg.Trunk == nil {
 			return dst, false, errors.New("no trunk")
@@ -303,6 +314,9 @@ func (s *Server) transferDestination(ctx context.Context, log *slog.Logger, call
 		if err != nil {
 			return dst, false, err
 		}
+		c.mu.Lock()
+		c.woken = append(c.woken, ep.DeviceID)
+		c.mu.Unlock()
 		ep = woken
 	}
 	err := sip.ParseUri(ep.Contact, &dst)

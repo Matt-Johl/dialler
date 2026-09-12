@@ -28,6 +28,7 @@ import (
 	"dialler/server/internal/pbx"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
+	"dialler/server/internal/sipauth"
 	"dialler/server/internal/tlsutil"
 	"dialler/server/internal/wire"
 
@@ -138,6 +139,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if err != nil {
 		return err
 	}
+	// Credentials issued from now on also carry their SIP Digest form for
+	// this realm (the app leg's registrar verifies against it).
+	devices.Realm = o.localDomain
 	dir, err := directory.Open(filepath.Join(o.dataDir, "directory.json"))
 	if err != nil {
 		return err
@@ -208,6 +212,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		TrunkBind:             o.trunkAddr,
 		TrunkExternalHost:     o.trunkExternalHost,
 		RingTimeout:           o.ringTimeout,
+		Auth:                  sipauth.New(o.localDomain, devices),
 		Logger:                log,
 	}, reg, router, gw)
 	if err != nil {
@@ -239,10 +244,16 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if err != nil {
 		return fmt.Errorf("signal listen: %w", err)
 	}
-	httpSrv := &http.Server{Addr: o.httpAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// The directory/admin API carries device and admin tokens, so it is TLS
+	// on the same certificate as the other listeners.
+	httpLn, err := tls.Listen("tcp", o.httpAddr, tlsCfg)
+	if err != nil {
+		return fmt.Errorf("http listen: %w", err)
+	}
+	httpSrv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	log.Info("dialler-server starting",
-		"signal", signalLn.Addr(), "sip", o.sipAddr, "http", o.httpAddr,
+		"signal", signalLn.Addr(), "sip", o.sipAddr, "https", httpLn.Addr(),
 		"public_host", o.publicHost, "local_domain", o.localDomain,
 		"ring_timeout", o.ringTimeout, "rtp_range", fmt.Sprintf("%d-%d", o.rtpMin, o.rtpMax), "data_dir", o.dataDir)
 
@@ -250,7 +261,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	go func() { errc <- gw.Serve(ctx, signalLn) }()
 	go func() { errc <- calls.Serve(ctx) }()
 	go func() {
-		err := httpSrv.ListenAndServe()
+		err := httpSrv.Serve(httpLn)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}

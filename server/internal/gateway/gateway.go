@@ -174,6 +174,19 @@ func (g *Gateway) CancelWake(deviceID, callID string, reason wire.CancelReason) 
 	}
 }
 
+// ForgetWake drops the pending wake without telling anyone: the call it
+// announced has been answered or has ended, so a client reconnecting later
+// must not be rung for it again. (CancelWake would also end the live call
+// in a client that answered it.)
+func (g *Gateway) ForgetWake(deviceID, callID string) {
+	g.mu.Lock()
+	delete(g.pending[deviceID], callID)
+	if len(g.pending[deviceID]) == 0 {
+		delete(g.pending, deviceID)
+	}
+	g.mu.Unlock()
+}
+
 // NotifyDirectory broadcasts a directory_changed to every live connection.
 func (g *Gateway) NotifyDirectory(version int64) {
 	g.mu.Lock()

@@ -29,10 +29,12 @@ import (
 type fakeWaker struct {
 	delivered int
 	cancels   []wire.CancelReason
+	forgotten []string
 }
 
 func (f *fakeWaker) Wake(string, wire.Wake) int                  { return f.delivered }
 func (f *fakeWaker) CancelWake(_, _ string, r wire.CancelReason) { f.cancels = append(f.cancels, r) }
+func (f *fakeWaker) ForgetWake(_, callID string)                 { f.forgotten = append(f.forgotten, callID) }
 
 func newWakeServer(t *testing.T, w Waker) *Server {
 	t.Helper()

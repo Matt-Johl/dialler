@@ -72,6 +72,11 @@ elif docker ps --format '{{.Names}}' | grep -q '^dialler-harness-dialler-1$'; th
 else
   echo "== server advertising $HOST"
   $C up -d dialler baresip-b >/dev/null 2>&1
+  # A server we started has an empty data volume (a previous test's
+  # `down -v` removed it): enrol the dev devices and seed the directory,
+  # or every registration is refused as an unknown device.
+  sleep 2
+  sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 fi
 sleep 2
 
@@ -127,6 +132,26 @@ until grep -q 'sim: registered' "$OUT"; do
   sleep 1
 done
 echo "   registered as 201 (dev-a)"
+
+# RESTART_SERVER=1: restart the server under the registered app. The app
+# must reconnect its gateway session on its own (backoff), get a new
+# welcome, rebuild its SIP registration on a fresh connection, and then
+# take the call as usual. This is the "app came back from suspension and
+# could not dial" case (ECONNABORTED) in headless form.
+if [ -n "${RESTART_SERVER:-}" ]; then
+  [ "$SERVER" = native ] && { echo "FAIL: RESTART_SERVER needs the docker server"; exit 1; }
+  echo "== restarting the server under the registered app"
+  $C restart dialler >/dev/null 2>&1
+  i=0
+  until [ "$(grep -c 'sim: gateway connected' "$OUT")" -ge 2 ] && [ "$(grep -c 'engine: registered' "$OUT")" -ge 2 ]; do
+    i=$((i+1)); [ $i -le 45 ] || { echo "FAIL: the simulated phone did not reconnect and re-register within 45s"; grep -E 'sim:|engine:' "$OUT" | tail -14 | sed 's/^/   /'; exit 1; }
+    sleep 1
+  done
+  echo "   reconnected and re-registered after the restart ($(grep -c 'reconnecting in' "$OUT") backoff notice(s))"
+  # The docker caller lost its connection too; give it a fresh one.
+  $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
+  sleep 4
+fi
 
 [ -n "${OUTBOUND:-}" ] || echo "== phone-b (202) dials 201"
 ctl() {

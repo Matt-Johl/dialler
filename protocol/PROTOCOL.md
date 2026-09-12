@@ -129,8 +129,17 @@ same wake again and MUST NOT ring twice.
   across the `app` and `extension` connections; `call_id` and `id` are the
   correlation keys.
 - On reconnect the client sends a fresh `hello`. The server re-sends any
-  `wake` whose `expires_at` is still in the future. There is no other replay;
-  the directory is re-synced via `directory_version`.
+  `wake` whose `expires_at` is still in the future and whose call is still
+  ringing: a wake is forgotten, silently, once its call has been answered
+  and has ended (a `wake_cancel` would end the live call in a client that
+  answered it). There is no other replay; the directory is re-synced via
+  `directory_version`.
+- A connection drop is not a call event for the client. A ringing `wake`
+  does not depend on the connection that carried it (the extension's
+  connection may have delivered it via PushKit while the app's own socket
+  was dead), and the INVITE arrives through the SIP registration the client
+  makes on answer, not through this channel. A client MUST NOT end or
+  disarm a ringing or answered call because its own connection dropped.
 - There is no session resume in v1. `session_id` is informational (logging,
   support). Resume for cellular hand-off is a v1.1 additive extension
   (Phase 4b) and will be signalled by a `resume_token` field in `welcome`.

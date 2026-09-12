@@ -1,19 +1,17 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
 <!--
-  REGISTER over TLS to the light server. The app leg is Digest-authenticated
-  with the enrolled device's credential (SPEC §4.4 rule 2): the first
-  REGISTER is challenged (401), the second carries the device's response
-  and is accepted (200 with our Contact echoed). dev-a is enrolled for 201,
-  the [service] user run.sh passes.
+  Negative: a host on the Wi-Fi with no enrolment at all tries to register
+  as [service] (201) with made-up credentials. Challenged (401), then
+  refused (403). This is the exposure the app-leg authentication closes.
 -->
-<scenario name="register_tls">
+<scenario name="register_unenrolled_403">
   <send>
     <![CDATA[
       REGISTER sip:dialler SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag00[call_number]
+      From: <sip:[service]@dialler>;tag=[pid]SIPpTag06[call_number]
       To: <sip:[service]@dialler>
       Call-ID: [call_id]
       CSeq: 1 REGISTER
@@ -30,23 +28,16 @@
       REGISTER sip:dialler SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag00[call_number]
+      From: <sip:[service]@dialler>;tag=[pid]SIPpTag06[call_number]
       To: <sip:[service]@dialler>
       Call-ID: [call_id]
       CSeq: 2 REGISTER
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
-      [authentication username=dev-a password=tok_dev_a_harness_fixed]
+      [authentication username=intruder password=guessing_is_not_enrolment]
       User-Agent: sipp-harness
       Content-Length: 0
     ]]>
   </send>
 
-  <recv response="200" timeout="5000">
-    <action>
-      <ereg regexp="expires=300" search_in="hdr" header="Contact:" check_it="true" assign_to="1"/>
-    </action>
-  </recv>
-
-  <!-- SIPp rejects variables that are assigned but never read; this marks $1 as used. -->
-  <Reference variables="1"/>
+  <recv response="403" timeout="5000"/>
 </scenario>

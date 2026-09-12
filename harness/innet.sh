@@ -11,6 +11,6 @@ SCRIPT="$1"; shift
 cd "$(dirname "$0")/.."
 exec docker run --rm --network "$NET" \
   -v "$(pwd):/repo:ro" -w /repo \
-  -e DIALLER_API="${DIALLER_API:-http://dialler:8080}" \
+  -e DIALLER_API="${DIALLER_API:-https://dialler:8080}" \
   -e DIALLER_ADMIN_TOKEN="${DIALLER_ADMIN_TOKEN:-harness}" \
   alpine:3.20 sh "$SCRIPT" "$@"

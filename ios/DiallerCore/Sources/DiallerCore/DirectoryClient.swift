@@ -50,6 +50,30 @@ public struct DirectoryClient {
     }
 }
 
+public extension DirectoryClient {
+    /// A session for the directory API over TLS. The server's certificate is
+    /// self-signed in development; `acceptAnyCertificate` trusts it, the
+    /// same switch the gateway transport honours. Off, the system trust
+    /// store applies.
+    static func session(acceptAnyCertificate: Bool) -> URLSession {
+        guard acceptAnyCertificate else { return .shared }
+        return URLSession(configuration: .default, delegate: AnyCertificateTrust(), delegateQueue: nil)
+    }
+}
+
+/// Accepts any server certificate. Development only.
+final class AnyCertificateTrust: NSObject, URLSessionDelegate {
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+}
+
 /// Thread-safe lookup of a caller's friendly name in the directory, for
 /// naming an incoming call. The call controller resolves names on whatever
 /// thread a wake arrives on, not the main actor, so this holds its own

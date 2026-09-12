@@ -29,7 +29,11 @@ let user = args.count > 2 ? args[2] : "201@dialler"
 let port = args.count > 3 ? Int(args[3]) ?? 5061 : 5061
 let seconds = args.count > 4 ? Int(args[4]) ?? 30 : 30
 
+// Device credential for the app leg's SIP Digest (the harness's fixed dev-a).
+let deviceID = args.count > 5 ? args[5] : "dev-a"
+let token = args.count > 6 ? args[6] : "tok_dev_a_harness_fixed"
 let engine = BaresipCallEngine(acceptAnyCertificate: true)
+engine.setCredentials(username: deviceID, password: token)
 var registered = false
 var established = false
 var closed = false

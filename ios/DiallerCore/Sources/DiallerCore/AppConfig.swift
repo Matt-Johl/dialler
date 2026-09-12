@@ -27,9 +27,11 @@ public struct AppConfig: Equatable, Codable, Sendable {
         Hello(deviceID: deviceID, token: token, client: kind, appVersion: appVersion, capabilities: ["wake", "directory"])
     }
 
-    /// The HTTP base for directory calls, derived from the gateway host.
+    /// The base URL for directory calls, derived from the gateway host. TLS,
+    /// on the same certificate as the gateway: the requests carry the device
+    /// token, which must not cross the LAN in clear.
     public func httpBase(port: UInt16 = 8080) -> URL {
-        URL(string: "http://\(gateway.host):\(port)")!
+        URL(string: "https://\(gateway.host):\(port)")!
     }
 }
 

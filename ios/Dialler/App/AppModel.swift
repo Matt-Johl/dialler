@@ -5,6 +5,7 @@ import DiallerProtocol
 import Foundation
 import NetworkExtension
 import os
+import UIKit
 #if canImport(DiallerEngine)
 import DiallerEngine
 #endif
@@ -51,8 +52,19 @@ final class AppModel: ObservableObject {
     private lazy var controller = CallController(ui: callKit, engine: engine, log: { [weak self] m in
         Task { @MainActor in self?.append(m) }
     })
-    private var transport: LANSocketTransport?
+    /// The gateway session, kept up by `GatewaySession` (reconnects after a
+    /// drop while we are in the foreground).
+    private var session: GatewaySession?
+    /// A session was lost since the last welcome: the SIP registration died
+    /// with it and must be rebuilt when the next welcome arrives.
+    private var sessionDropped = false
     private var eventTask: Task<Void, Never>?
+    /// The saved Local Push configuration, kept loaded so its delegate stays
+    /// attached: iOS hands incoming calls to that delegate whenever this
+    /// process exists (foreground or suspended) and only goes through
+    /// PushKit to launch a dead one. See `LocalPushDelegate`.
+    private var pushManager: NEAppPushManager?
+    private lazy var localPushDelegate = LocalPushDelegate(model: self)
     private var book = AddressBook()
     /// Thread-safe caller-name lookup for incoming calls (the controller
     /// resolves names off the main actor). Kept in step with `contacts`.
@@ -121,6 +133,15 @@ final class AppModel: ObservableObject {
         callKit.onAudioActivated = { [weak self] in self?.engine.audioSessionActivated() }
         callKit.onAudioDeactivated = { [weak self] in self?.engine.audioSessionDeactivated() }
         callKit.onLog = { [weak self] m in Task { @MainActor in self?.append(m) } }
+        // iOS suspends the app (and kills its sockets) in the background;
+        // reconnect the moment we are back, and do not retry while away.
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.appBecameActive() }
+        }
+        nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.session?.setActive(false) }
+        }
         #if canImport(DiallerEngine)
         baresip.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
         baresip.onStateChange = { [weak self] s in Task { @MainActor in self?.engineState = "baresip \(s)" } }
@@ -200,46 +221,88 @@ final class AppModel: ObservableObject {
     // MARK: Connection
 
     func autoConnectIfConfigured() {
+        attachLocalPushDelegate()
         if currentConfig.isComplete { connect() }
+    }
+
+    /// Loads the saved Local Push configuration and attaches our delegate to
+    /// it. Must happen at every launch: the delegate lives on the loaded
+    /// object, not in the saved preferences.
+    private func attachLocalPushDelegate() {
+        NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error { self.append("Local Push: load failed: \(error.localizedDescription)"); return }
+                guard let manager = managers?.first else { return }
+                self.adopt(pushManager: manager)
+            }
+        }
+    }
+
+    private func adopt(pushManager manager: NEAppPushManager) {
+        manager.delegate = localPushDelegate
+        pushManager = manager
+        append("Local Push: delegate attached (enabled=\(manager.isEnabled), ssids=\(manager.matchSSIDs))")
     }
 
     func connect() {
         let cfg = currentConfig
         guard cfg.isComplete else { status = "incomplete settings"; return }
         do { try store.save(cfg) } catch { append("config save failed: \(error)") }
+        // The same enrolment credential authenticates the SIP leg (Digest).
+        engine.setCredentials(username: cfg.deviceID, password: cfg.token)
 
         disconnect()
-        let t = LANSocketTransport(endpoint: cfg.gateway)
-        transport = t
-        controller.attach(transport: t)
+        let s = GatewaySession(endpoint: cfg.gateway)
+        session = s
+        sessionDropped = false
+        controller.attach(transport: s)
         status = "connecting to \(cfg.gateway.host):\(cfg.gateway.port)"
         eventTask = Task { [weak self] in
-            for await ev in t.events {
+            for await ev in s.events {
                 guard let self else { return }
                 await self.handle(ev)
             }
         }
-        t.connect(hello: cfg.hello(kind: .app))
+        s.connect(hello: cfg.hello(kind: .app))
     }
 
     func disconnect() {
         eventTask?.cancel()
         eventTask = nil
-        transport?.disconnect()
-        transport = nil
+        session?.disconnect()
+        session = nil
         status = "disconnected"
         sessionID = ""
+    }
+
+    /// Back in the foreground: a session that dropped while we were away
+    /// reconnects now; with no session at all (never connected, or the
+    /// user disconnected) nothing happens.
+    private func appBecameActive() {
+        session?.setActive(true)
     }
 
     private func handle(_ ev: SignalEvent) async {
         switch ev {
         case .waiting(let reason):
-            status = "waiting for network (\(reason))"
-            append("waiting: \(reason) — allow Local Network access if prompted")
+            if reason.hasPrefix("reconnecting") {
+                status = reason
+                append("gateway: \(reason)")
+            } else {
+                status = "waiting for network (\(reason))"
+                append("waiting: \(reason) — allow Local Network access if prompted")
+            }
         case .connected(let w):
             status = "connected"
             sessionID = w.sessionID
             append("welcome: session \(w.sessionID), heartbeat \(w.heartbeatSeconds)s, directory v\(w.directoryVersion)")
+            if sessionDropped {
+                // The SIP connection died with the old session; start over
+                // rather than refreshing a registration on a dead socket.
+                sessionDropped = false
+                engine.resetRegistration()
+            }
             if let sip = w.sip {
                 // Foreground path (SPEC §2): stay registered while running so
                 // calls reach us directly; wakes are for the background.
@@ -258,6 +321,7 @@ final class AppModel: ObservableObject {
         case .disconnected(let reason):
             status = "disconnected (\(reason))"
             sessionID = ""
+            sessionDropped = true
         }
     }
 
@@ -271,15 +335,22 @@ final class AppModel: ObservableObject {
         append("wake via extension for call \(wake.callID)")
         // Every PushKit delivery must be met with a CallKit report, even when
         // the app's own socket already rang this call (iOS 13+ contract).
+        let name = nameIndex.name(forURI: wake.from.uri) ?? (wake.from.displayName?.isEmpty == false ? wake.from.displayName! : CallController.numberPart(of: wake.from.uri))
         switch controller.handle(wake: wake) {
         case .rang:
             break
         case .duplicate(let id):
             append("wake \(wake.callID) already ringing as \(id); reaffirming with CallKit")
-            callKit.reaffirm(callID: id)
+            if !callKit.reaffirm(callID: id) {
+                // The controller still tracks the call but CallKit has no
+                // entry for it (its report was refused, or it was ended on
+                // the CallKit side alone). Every push must produce a report,
+                // so ring it afresh under the tracked id.
+                append("wake \(wake.callID): CallKit lost call \(id); reporting it again")
+                callKit.reportIncoming(callID: id, displayName: name, handle: wake.from.uri) { _ in }
+            }
         case .expired:
             append("expired wake via extension; reporting and ending \(wake.callID) to satisfy PushKit")
-            let name = nameIndex.name(forURI: wake.from.uri) ?? (wake.from.displayName?.isEmpty == false ? wake.from.displayName! : CallController.numberPart(of: wake.from.uri))
             callKit.reportIncoming(callID: wake.callID, displayName: name, handle: wake.from.uri) { [weak self] err in
                 if err == nil { self?.callKit.end(callID: wake.callID, reason: .unanswered) }
             }
@@ -290,7 +361,8 @@ final class AppModel: ObservableObject {
 
     func syncDirectory() async {
         let cfg = currentConfig
-        let client = DirectoryClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token)
+        let client = DirectoryClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
+                                     session: DirectoryClient.session(acceptAnyCertificate: cfg.gateway.acceptAnyCertificate))
         do {
             let delta = try await client.changes(since: book.version)
             book.apply(delta)
@@ -325,6 +397,7 @@ final class AppModel: ObservableObject {
                         } else {
                             self.localPushStatus = "enabled for SSID \(ssid)"
                             self.append("NEAppPushManager saved for SSID \(ssid)")
+                            self.adopt(pushManager: manager)
                         }
                     }
                 }
@@ -354,7 +427,11 @@ final class AppModel: ObservableObject {
     }
 
     private func append(_ line: String) {
-        logger.info("\(line, privacy: .public)")
+        // notice, not info: iOS keeps info-level entries in memory only, so
+        // after a kill (0xBAADCA11 for an unreported push) the lines that
+        // explain it were gone. notice is persisted and shows in Console.app,
+        // sysdiagnose and `log show` after the fact.
+        logger.notice("\(line, privacy: .public)")
         log.append(line)
         if log.count > 200 { log.removeFirst(log.count - 200) }
     }
@@ -380,5 +457,29 @@ final class LoggingCallEngine: CallEngine {
     }
     func hangup(callID: String) {
         log("engine: hangup \(callID)")
+    }
+}
+
+/// Receives incoming calls from the Local Push provider while this process
+/// exists. Local Push Connectivity has two delivery paths: when the app is
+/// not running, iOS launches it with a VoIP push (PushKit,
+/// `AppDelegate.pushRegistry(_:didReceiveIncomingPushWith:...)`); when the
+/// process exists — foreground or suspended — iOS calls this delegate on the
+/// main queue instead. Without it the call reached nobody and callservicesd
+/// killed the app (0xBAADCA11) on every wake to a suspended process, while
+/// cold launches worked (device console, 2026-09-11). Both paths end in the
+/// same handler, which reports to CallKit synchronously.
+final class LocalPushDelegate: NSObject, NEAppPushDelegate {
+    private weak var model: AppModel?
+
+    init(model: AppModel) {
+        self.model = model
+    }
+
+    func appPushManager(_ manager: NEAppPushManager, didReceiveIncomingCallWithUserInfo userInfo: [AnyHashable: Any]) {
+        // Documented as delivered on the main queue; the model is main-actor.
+        MainActor.assumeIsolated {
+            model?.handleExtensionWake(userInfo: userInfo)
+        }
     }
 }

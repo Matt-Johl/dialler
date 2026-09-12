@@ -16,7 +16,7 @@ MEDIA_DIR=harness/baresip/media
 CALL_SECONDS="${CALL_SECONDS:-8}"
 # On wake the fake app creates phone-b's user agent, which registers at once
 # (a UA started with regint=0 has no registration objects, so uareg is a no-op).
-ACCOUNT_B='<sip:202@dialler;transport=tls>;auth_pass=unused;regint=300;answermode=auto;audio_codecs=opus/48000/2,PCMU/8000/1'
+ACCOUNT_B='<sip:202@dialler;transport=tls>;auth_user=dev-b;auth_pass=tok_dev_b_harness_fixed;regint=300;answermode=auto;audio_codecs=opus/48000/2,PCMU/8000/1'
 WAKE_CMD="${WAKE_CMD:-{\"command\":\"uanew\",\"params\":\"$ACCOUNT_B\"}}"
 KEEP="${KEEP:-0}"
 
@@ -41,7 +41,13 @@ fi
 
 echo "== fake-app connects as dev-b and waits for a wake"
 WAKE_OUT="$(mktemp)"
-$COMPOSE run --rm -T --entrypoint /fake-app dialler \
+# The dialler service pins its address on the compose network (Asterisk's
+# resolver needs a fixed one), so a second container of that service
+# (`compose run`) cannot start: run the fake app from the same image
+# directly on the network instead.
+IMG="$($COMPOSE images -q dialler 2>/dev/null | head -n1)"
+[ -n "$IMG" ] || IMG="$(docker inspect --format '{{.Image}}' dialler-harness-dialler-1)"
+docker run --rm --network "$NET" --entrypoint /fake-app "$IMG" \
     -server dialler:7443 -device dev-b -token "$TOKEN_B" -kind extension \
     -phone-ctl baresip-b:4444 -wake-cmd "$WAKE_CMD" -timeout 40s -hold 20s \
     > "$WAKE_OUT" 2>"$WAKE_OUT.err" &

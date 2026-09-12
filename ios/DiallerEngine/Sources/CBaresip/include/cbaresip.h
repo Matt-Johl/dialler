@@ -42,6 +42,10 @@ int cb_start(const char *config, cb_event_cb cb, void *ctx);
 
 /// Stop the main loop, tear everything down. Safe to call twice.
 void cb_stop(void);
+/// True while the stack runs AND its loop thread is alive. libre ends the
+/// loop on a poll error (seen on Darwin after a connection reset); then
+/// every op fails with -ENOTCONN and the engine must cb_stop()+cb_start().
+bool cb_alive(void);
 
 /// Create the user agent for `aor` (baresip account line, e.g.
 /// "<sip:201@dialler;transport=tls>;outbound=\"sip:10.0.0.5:5061;transport=tls\";regint=300;answermode=manual")
@@ -78,6 +82,16 @@ void cb_hangup(void);
 
 /// Unregister and free the user agent.
 void cb_ua_free(void);
+
+/// Drop every cached SIP TCP/TLS connection and rebuild the transports on
+/// the current local addresses (baresip's network-change reset, without
+/// re-registering). Call it whenever the SIP flow may be dead without the
+/// stack having noticed — after iOS suspended the app, on a new gateway
+/// session — since a send on a dead cached connection fails at once
+/// (EPROTO, "ua_alloc -100") and nothing else evicts it. Not while a call
+/// is up: it drops the call's signalling connection too. Returns 0 or a
+/// negative errno.
+int cb_reset_transports(void);
 
 /// Whether the UA holds a live registration.
 bool cb_registered(void);

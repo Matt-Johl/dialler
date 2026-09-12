@@ -281,6 +281,28 @@ func TestPendingWakeReplayedOnConnect(t *testing.T) {
 	c.expectSilence() // the expired wake was not replayed
 }
 
+// A wake survives its will_answer ack (a client reconnecting mid-ring is
+// rung again), but once the B2BUA forgets it — the call was answered and is
+// over — a later connect must not replay it: it rang the app for a dead
+// call, and the app's answer then armed it to take the next INVITE unrung.
+func TestForgottenWakeIsNotReplayed(t *testing.T) {
+	h := start(t, Config{})
+	app := h.dial(t)
+	app.hello(wire.ClientApp)
+	h.g.Wake("dev1", wakeAt(time.Now().Add(30*time.Second)))
+	app.expect(wire.TypeWake)
+	app.send(wire.TypeWakeAck, wire.WakeAck{CallID: "call1", Action: wire.WakeWillAnswer})
+	app.send(wire.TypePing, nil)
+	app.expect(wire.TypePong) // the ack was processed
+
+	h.g.ForgetWake("dev1", "call1")
+	app.expectSilence() // forgetting is silent: the live call must not be ended
+
+	again := h.dial(t)
+	again.hello(wire.ClientApp)
+	again.expectSilence() // nothing to replay
+}
+
 func TestSupersedeSameKind(t *testing.T) {
 	h := start(t, Config{})
 	var mu sync.Mutex

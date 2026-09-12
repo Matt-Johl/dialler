@@ -10,7 +10,8 @@
 # `down -v` / `harness-up`) keeps the same credentials and the app does not
 # need re-entering. Override with DEV_A_TOKEN / DEV_B_TOKEN. Not for prod.
 set -eu
-API="${DIALLER_API:-http://127.0.0.1:8080}"
+# TLS on the server's (self-signed in dev) certificate, hence -k below.
+API="${DIALLER_API:-https://127.0.0.1:8080}"
 TOKEN="${DIALLER_ADMIN_TOKEN:-harness}"
 DEV_A_TOKEN="${DEV_A_TOKEN:-tok_dev_a_harness_fixed}"
 DEV_B_TOKEN="${DEV_B_TOKEN:-tok_dev_b_harness_fixed}"
@@ -19,7 +20,7 @@ DEV_B_TOKEN="${DEV_B_TOKEN:-tok_dev_b_harness_fixed}"
 # shows the server's explanation instead of a bare exit code.
 post() {
   if command -v curl >/dev/null 2>&1; then
-    out="$(curl -sS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    out="$(curl -sSk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
                 -X POST "$API$1" -d "$2" -w '\n%{http_code}')"
     code="${out##*
 }"
@@ -31,7 +32,7 @@ post() {
     esac
   else
     # busybox wget: non-2xx exits non-zero and reports on stderr
-    if ! body="$(wget -q -O- --header="Authorization: Bearer $TOKEN" \
+    if ! body="$(wget -q -O- --no-check-certificate --header="Authorization: Bearer $TOKEN" \
                   --header='Content-Type: application/json' \
                   --post-data="$2" "$API$1" 2>&1)"; then
       echo "POST $1 failed: $body" >&2; return 1

@@ -71,14 +71,18 @@ func rtpReceived() -> UInt32 {
     return m.rx_packets
 }
 
-func out(_ s: String) { print("sim: \(s)") }
+let t0 = Date()
+/// Lines carry seconds since start so a stall shows as a gap.
+func stamp() -> String { String(format: "%7.3f", Date().timeIntervalSince(t0)) }
+func out(_ s: String) { print("\(stamp()) sim: \(s)") }
 
 let engine = BaresipCallEngine(acceptAnyCertificate: true)
+engine.setCredentials(username: deviceID, password: token) // SIP Digest on the app leg
 engine.audioSourceOverride = sourceOverride
 var lastCloseReason = ""
 engine.onCallEnded = nil // set by the controller below; we observe through the log instead
 let engineLog: (String) -> Void = { line in
-    print("  \(line)")
+    print("\(stamp())   \(line)")
     if line.hasPrefix("engine: call closed (") {
         lastCloseReason = String(line.dropFirst("engine: call closed (".count).dropLast())
     }
@@ -193,20 +197,29 @@ func judge(_ v: BaresipCallEngine.AudioVerdict?, established: Bool) -> (String, 
 }
 
 let callKit = ScriptedCallKit()
-let controller = CallController(ui: callKit, engine: engine, log: { print("  \($0)") })
+let controller = CallController(ui: callKit, engine: engine, log: { print("\(stamp())   \($0)") })
 callKit.onAnswer = { controller.userAnswered(callID: $0) }
 callKit.onDecline = { controller.userEnded(callID: $0) }
 callKit.onStart = { controller.userStarted(callID: $0) }
 
 let cfg = AppConfig(gateway: GatewayEndpoint(host: host, port: port, acceptAnyCertificate: true), deviceID: deviceID, token: token)
-let transport = LANSocketTransport(endpoint: cfg.gateway)
+// The same session keeper as the app: reconnects after a drop, so a server
+// restart mid-run (sim_call.sh RESTART_SERVER=1) must be survived.
+let transport = GatewaySession(endpoint: cfg.gateway)
 controller.attach(transport: transport)
+var welcomes = 0
 let eventTask = Task {
     for await ev in transport.events {
         switch ev {
         case .waiting(let r): out("gateway waiting: \(r)")
         case .connected(let w):
             out("gateway connected: session \(w.sessionID)")
+            welcomes += 1
+            if welcomes > 1 {
+                // As the app does: the SIP connection died with the old
+                // session, so register afresh rather than refresh on it.
+                engine.resetRegistration()
+            }
             if let sip = w.sip {
                 controller.setAccount(user: "\(sip.user)@\(sip.domain)", sip: SIPTarget(host: sip.host, port: sip.port, transport: sip.transport))
             } else {

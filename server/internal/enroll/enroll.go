@@ -19,6 +19,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"dialler/server/internal/sipauth"
 )
 
 // Device is the public view of an enrolled device.
@@ -32,6 +34,10 @@ type Device struct {
 type record struct {
 	User      string    `json:"user"`
 	TokenHash string    `json:"token_hash"` // hex sha256
+	// HA1 is the SIP Digest form of the same token, MD5(device:realm:token)
+	// (sipauth.HA1): what the app-leg registrar verifies against. Empty for
+	// credentials issued before a realm was configured; re-issue those.
+	HA1 string `json:"ha1,omitempty"`
 	IssuedAt  time.Time `json:"issued_at"`
 	Revoked   bool      `json:"revoked"`
 }
@@ -42,6 +48,9 @@ type Store struct {
 	path    string // "" → memory only
 	devices map[string]*record
 	now     func() time.Time
+	// Realm is the SIP Digest realm (the server's SIP domain) that HA1 is
+	// computed for at issue time. Set it before issuing credentials.
+	Realm string
 }
 
 // ErrInvalid is returned for empty device ids or users.
@@ -98,7 +107,11 @@ func (s *Store) IssueToken(deviceID, user, token string) (string, error) {
 		return "", ErrInvalid
 	}
 	s.mu.Lock()
-	s.devices[deviceID] = &record{User: user, TokenHash: hashToken(tok), IssuedAt: s.now()}
+	rec := &record{User: user, TokenHash: hashToken(tok), IssuedAt: s.now()}
+	if s.Realm != "" {
+		rec.HA1 = sipauth.HA1(deviceID, s.Realm, tok)
+	}
+	s.devices[deviceID] = rec
 	err := s.saveLocked()
 	s.mu.Unlock()
 	if err != nil {
@@ -141,6 +154,19 @@ func (s *Store) UserFor(deviceID string) (string, bool) {
 		return "", false
 	}
 	return r.User, true
+}
+
+// DigestSecret satisfies sipauth.Secrets: the SIP Digest H(A1) and enrolled
+// user of a live device. ok is false for unknown or revoked devices and for
+// credentials issued before a realm was configured.
+func (s *Store) DigestSecret(deviceID string) (ha1, user string, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, found := s.devices[deviceID]
+	if !found || r.Revoked || r.HA1 == "" {
+		return "", "", false
+	}
+	return r.HA1, r.User, true
 }
 
 // Devices lists every record, sorted by device id.

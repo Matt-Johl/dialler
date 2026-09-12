@@ -51,3 +51,19 @@ lands after the new REGISTER, so the server ends up with no binding
 existing client (`sipreg_send`) instead; the engine uses it whenever it
 needs a fresh registration on a live account (new gateway session, wake
 with no INVITE pending).
+
+## Not a patch: libre's context is bound to the initialising thread
+
+Recorded here because it looked like a libre bug and nearly became a
+patch. `libre_init()` binds the libre context to the calling thread
+(thread-local, freed by a thread-exit destructor, and `re_global` for
+every other thread). Initialising on the caller's thread and only running
+`re_main()` on the loop thread works until the caller is a GCD worker
+thread: libdispatch retires those when idle, the destructor frees the
+context the loop is polling, and `re_main()` returns "unasked" — `EINVAL`
+from `kevent`, or `0` with `re_unlock error` — seconds after a (re)start
+from a dispatch queue. From then on every shim call times out (`ua_alloc
+failed (-60)`, `-60` being `ETIMEDOUT` from the shim's own wait). The
+shim (`ios/DiallerEngine/Sources/CBaresip/cbaresip.c`) now creates, runs
+and tears down the stack on its loop thread; found and verified by
+`RESTART_SERVER=1 make sim-call`.

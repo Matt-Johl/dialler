@@ -48,7 +48,7 @@ the Mac. This is the bug that reached a real phone on 2026-09-06.
 
 `make harness-up` advertises this Mac's en0 address (`DIALLER_PUBLIC_HOST`)
 to phones for SIP and media, and publishes 7443 (signal), 5061 (SIP/TLS),
-8080 (HTTP) and UDP 20000–20100 (relayed media) on the host. The docker
+8080 (HTTPS, directory/admin) and UDP 20000–20100 (relayed media) on the host. The docker
 phones reach the relay through the same published ports, so one setting
 serves both real devices and the container tests.
 

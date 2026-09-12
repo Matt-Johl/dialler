@@ -347,6 +347,9 @@ func (d *DialogServerSession) ReInvite(ctx context.Context) error {
 			Res: res,
 		}
 	}
+	if err := d.applyReInviteAnswer(res); err != nil {
+		return err
+	}
 
 	cont := res.Contact()
 	if cont == nil {

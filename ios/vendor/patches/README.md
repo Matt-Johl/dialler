@@ -52,6 +52,66 @@ existing client (`sipreg_send`) instead; the engine uses it whenever it
 needs a fresh registration on a live account (new gateway session, wake
 with no INVITE pending).
 
+## apply-baresip.sh — packet-loss concealment on the receive path
+
+baresip 3.15's `aurecv_receive()` (`src/aureceiver.c`) is handed the
+number of frames lost before each packet and discards it — the call to the
+codec's PLC handler sits commented out under a "TODO: what if lostc > 1".
+So a lost packet was 20 ms of silence whatever the codec: Opus's own
+concealment and its in-band FEC were never used. Measured on the impaired
+echo path (2 % loss, 30 ± 10 ms jitter): one audible gap per lost packet,
+nine drops → nine gaps.
+
+The patch conceals each lost frame before decoding the packet that
+arrived: the frame right before it gets that packet, so `opus_decode_pkloss`
+can decode the FEC it carries; earlier ones get a NULL packet (plain PLC);
+at most five frames (100 ms) are concealed per hole; concealed frames take
+evenly spaced timestamps across the hole. Codecs without a PLC handler
+(G.711, G.722 until their own handlers land) are unchanged.
+
+Two configuration facts the patch depends on, both pinned by
+`StackConfigTests`: baresip's Opus module only asks the encoder for FEC
+data and only decodes it when `opus_packet_loss` is set (it drives both
+`OPUS_SET_PACKET_LOSS_PERC` and the decoder's `fec` flag); and Opus must be
+mono (`opus_stereo no`, `opus_sprop_stereo no`) — stereo at 32 kbit/s puts
+libopus in CELT mode, which has no in-band FEC. The harness phone
+(`harness/baresip/Dockerfile`) applies this script too, so the headless
+gates measure the same behaviour as the app.
+
+## g722/ — G.722 without spandsp
+
+Upstream's `modules/g722` codes through spandsp (LGPL), and its CMake
+silently skips the module when spandsp is absent — which is why the app
+had no wideband codec for PBX calls. Linking spandsp statically into the
+XCFramework is ruled out by SPEC §8, so `g722/CMakeLists.txt` and
+`g722/g722.c` replace the upstream files: same module, same 64 kbit/s
+mode, same wire format, coded through the G.722 implementation WebRTC
+carries in `modules/third_party/g722`, vendored under
+`g722/webrtc/modules/third_party/g722/` (the path its own includes use).
+
+Licence gate (checked before the code was written, SPEC §8): the three
+source files carry Steve Underwood's dedication placing the implementation
+in the public domain (with the 1993 CMU notice for the original
+`g722_encode`/`g722_decode` derivation); WebRTC's own edits are under its
+BSD-3 licence (`LICENSE` beside them); Chromium records it as
+`LicenseRef-Public-Domain-SpanDSP` (`README.chromium`). Nothing LGPL.
+
+Provenance: github.com/webrtc-sdk/webrtc, commit
+`5bc7e6574baf2e8b1781b013db7b81f1752685f5`, files
+`modules/third_party/g722/{g722_encode.c,g722_decode.c,g722_enc_dec.h}`.
+SHA-256 of the vendored copies:
+
+- `g722_encode.c` `dde9fe6fc12a9facf2f70c0c8c9eb3151ea3d5a7505fb15aa13dcdacc6a85cd2`
+- `g722_decode.c` `ad930feb5e109d06d9ba047f339926f295da41dae3c4f00cf136aa84fd50e24d`
+- `g722_enc_dec.h` `33606ddc73e46803176e0e5936ced4e8600c2e6e3209776bc224a95a22d5539b`
+
+The RTP clock is 8000 while the audio is 16 kHz (RFC 3551 §4.5.2, an
+error kept for compatibility): the module registers `srate 16000`,
+`crate 8000`, 160 octets per 20 ms. The harness phone builds upstream's
+module against the distro's spandsp shared library instead (an LGPL
+dependency is fine in a test container). Verified by `make harness-trunk`
+(`codec=G722` on both legs of every trunk call, gap-free recordings).
+
 ## Not a patch: libre's context is bound to the initialising thread
 
 Recorded here because it looked like a libre bug and nearly became a

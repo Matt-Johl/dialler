@@ -59,8 +59,14 @@ func main() {
 		trunk       = flag.String("trunk", "", "PBX SIP peer for non-local destinations, e.g. sip:asterisk:5060;transport=tcp (empty: standalone, app↔app only)")
 		trunkAddr   = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5061 for a TLS trunk); transport follows -trunk")
 		trunkExt    = flag.String("trunk-external-host", "", "address the PBX reaches this server at, used in trunk-leg Contact and SDP (default: this host's first address)")
+		trunkCodecs = flag.String("trunk-codecs", "g722,pcmu,pcma", "codecs offered to the PBX in order of preference (g722, pcmu, pcma, opus); the app leg is answered with whichever the PBX takes, never transcoded")
 	)
 	flag.Parse()
+	trunkCodecList, err := b2bua.ParseCodecs(*trunkCodecs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bad -trunk-codecs:", err)
+		os.Exit(2)
+	}
 	sip.SIPDebug = *sipTrace
 
 	var level slog.Level
@@ -89,6 +95,7 @@ func main() {
 		trunk:                 *trunk,
 		trunkAddr:             *trunkAddr,
 		trunkExternalHost:     *trunkExt,
+		trunkCodecs:           trunkCodecList,
 	}); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -107,6 +114,7 @@ type options struct {
 	publicSIPPort                 int
 	trunk, trunkAddr              string
 	trunkExternalHost             string
+	trunkCodecs                   []media.Codec
 }
 
 func run(ctx context.Context, log *slog.Logger, o options) error {
@@ -211,6 +219,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		Trunk:                 trunkCfg,
 		TrunkBind:             o.trunkAddr,
 		TrunkExternalHost:     o.trunkExternalHost,
+		TrunkCodecs:           o.trunkCodecs,
 		RingTimeout:           o.ringTimeout,
 		Auth:                  sipauth.New(o.localDomain, devices),
 		Logger:                log,

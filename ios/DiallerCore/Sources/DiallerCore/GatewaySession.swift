@@ -30,7 +30,10 @@ public struct ReconnectPolicy: Equatable, Sendable {
 /// without this, the app stayed "disconnected" until relaunched — and could
 /// not place calls either, because the SIP registration had died in the
 /// same suspension and only a new welcome re-establishes it.
-public final class GatewaySession: SignalTransport {
+public final class GatewaySession: SignalTransport, @unchecked Sendable {
+    // @unchecked Sendable: every mutable field below is read and written
+    // under `lock`; the transport and continuation are immutable. Hosts
+    // hand the session to Tasks and queues (the extension's event pump).
     public let events: AsyncStream<SignalEvent>
     private let continuation: AsyncStream<SignalEvent>.Continuation
     private let inner: SignalTransport

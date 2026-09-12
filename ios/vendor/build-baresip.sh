@@ -24,7 +24,7 @@ IOS_MIN="${IOS_MIN:-17.0}"
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 8)"
 
 # Modules linked statically into libbaresip. audiounit = iOS CoreAudio.
-BARESIP_MODULES="${BARESIP_MODULES:-account;audiounit;aufile;opus;g711;ice;srtp;auconv;auresamp}"
+BARESIP_MODULES="${BARESIP_MODULES:-account;audiounit;aufile;opus;g722;g711;ice;srtp;auconv;auresamp}"
 
 STAGE="${1:-all}"
 PLATFORMS="${2:-both}"
@@ -83,8 +83,13 @@ fetch() {
 # extracted sources (see patches/README.md). Idempotent.
 apply_patches() {
   [ -d "$ROOT/patches/audiounit" ] || return 0
-  log "patches: audiounit (manual audio for CallKit), ua_refresh_register"
+  log "patches: audiounit (manual audio for CallKit), g722 (no spandsp), aureceiver PLC"
   cp "$ROOT/patches/audiounit/"*.c "$ROOT/patches/audiounit/"*.h "$SRC/baresip/modules/audiounit/"
+  # g722: upstream's module needs spandsp (LGPL) and is silently skipped
+  # without it; ours compiles WebRTC's public-domain G.722 into the module.
+  cp "$ROOT/patches/g722/CMakeLists.txt" "$ROOT/patches/g722/g722.c" "$SRC/baresip/modules/g722/"
+  rm -rf "$SRC/baresip/modules/g722/webrtc"
+  cp -R "$ROOT/patches/g722/webrtc" "$SRC/baresip/modules/g722/webrtc"
   sh "$ROOT/patches/apply-baresip.sh" "$SRC/baresip"
 }
 

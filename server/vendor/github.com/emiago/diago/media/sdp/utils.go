@@ -36,11 +36,13 @@ func GenerateForAudio(originIP net.IP, connectionIP net.IP, rtpPort int, mode st
 			formatsMap = append(formatsMap, "a=rtpmap:0 PCMU/8000")
 		case FORMAT_TYPE_ALAW:
 			formatsMap = append(formatsMap, "a=rtpmap:8 PCMA/8000")
+		case FORMAT_TYPE_G722:
+			formatsMap = append(formatsMap, "a=rtpmap:9 G722/8000") // Dialler vendor patch
 		case FORMAT_TYPE_OPUS:
 			formatsMap = append(formatsMap, "a=rtpmap:96 opus/48000/2")
 			// Providing 0 when FEC cannot be used on the receiving side is RECOMMENDED.
 			// https://datatracker.ietf.org/doc/html/rfc7587
-			formatsMap = append(formatsMap, "a=fmtp:96 useinbandfec=0")
+			formatsMap = append(formatsMap, "a=fmtp:96 "+OpusFmtp)
 		case FORMAT_TYPE_TELEPHONE_EVENT:
 			formatsMap = append(formatsMap, "a=rtpmap:101 telephone-event/8000")
 			formatsMap = append(formatsMap, "a=fmtp:101 0-16")
@@ -90,3 +92,14 @@ func GenerateForAudio(originIP net.IP, connectionIP net.IP, rtpPort int, mode st
 	res := strings.Join(s, "\r\n") + "\r\n"
 	return []byte(res)
 }
+
+// OpusFmtp is what our SDP asks an Opus peer to send us (RFC 7587 fmtp).
+// Dialler vendor patch: upstream emitted a fixed "useinbandfec=0", which
+// tells every phone's encoder to switch FEC OFF — baresip configures its
+// encoder from the peer's fmtp, so no app leg ever carried FEC and every
+// lost packet was an audible gap. The relay copies packets between legs
+// that both speak to this server, so this is the only place the phones'
+// encoders can be told: FEC on (with the phones' own opus_packet_loss the
+// redundancy is real), mono (stereo at this bitrate is CELT mode, which has
+// no FEC), 32 kbit/s. See server/vendor/PATCHES.md.
+var OpusFmtp = "useinbandfec=1;stereo=0;sprop-stereo=0;maxaveragebitrate=32000"

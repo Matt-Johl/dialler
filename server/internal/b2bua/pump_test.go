@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -162,6 +163,37 @@ func TestRelayPreservesSilenceGapsAndRebasesNewStreams(t *testing.T) {
 	}
 	if d := out[31].hdr.Timestamp - out[30].hdr.Timestamp; d != ulawFrame {
 		t.Fatalf("timing after the new stream: step %d", d)
+	}
+}
+
+// The relay counts what the source's own sequence numbers and timing say —
+// loss, reordering, interarrival jitter — so a lossy leg can be placed from
+// the server log without RTCP (audio-quality gates, SPEC §7.2).
+func TestRelayCountsLossReorderingAndJitter(t *testing.T) {
+	src := &fakeSource{delayBefore: map[int]time.Duration{15: 80 * time.Millisecond}}
+	order := []int{0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 11, 13, 14, 15, 16, 17, 18, 19} // 7 lost; 11 late
+	for _, i := range order {
+		src.pkts = append(src.pkts, packet(uint16(i), uint32(i)*ulawFrame, 0x999, false))
+	}
+	sink := &fakeSink{}
+	rr := media.NewRTPPacketReader(src, media.CodecAudioUlaw)
+	rw := media.NewRTPPacketWriter(sink, media.CodecAudioUlaw)
+	p := &pump{r: rr, w: rw}
+	p.setPacketPath(rr, rw, media.CodecAudioUlaw)
+	p.run(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if got := p.lost.Load(); got != 1 {
+		t.Fatalf("lost = %d, want 1 (packet 7; the late 11 must not count)", got)
+	}
+	if got := p.reordered.Load(); got != 1 {
+		t.Fatalf("reordered = %d, want 1 (packet 11 after 12)", got)
+	}
+	// Packets arrive back to back (far faster than their 20 ms spacing) with
+	// one 80 ms stall: the jitter estimate must be clearly non-zero.
+	if j := p.jitterMs(); j <= 1 {
+		t.Fatalf("jitter_ms = %.2f; a burst with a stall should register", j)
+	}
+	if !strings.Contains(p.String(), "lost=1 reordered=1") {
+		t.Fatalf("summary lacks the counters: %s", p.String())
 	}
 }
 

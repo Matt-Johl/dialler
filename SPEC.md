@@ -67,7 +67,7 @@ lets ~everything be validated with no device (see §7).
 
 | Area | Decision |
 |---|---|
-| SIP + media stack | **baresip / libre / librem** (BSD-3), **Opus** (BSD) — fully permissive, commercializable, no license fee |
+| SIP + media stack | **baresip / libre / librem** (BSD-3), **Opus** (BSD) app↔app; **G.722** (public-domain implementation, WebRTC's copy — §8) and **G.711** on PBX calls — fully permissive, commercializable, no license fee |
 | PBX target | **Asterisk** for dev/test; compatible with **Cisco CUCM** and general SIP exchanges → server is a standard SIP element, PBX-agnostic. **PBX is optional** — the server also routes app↔app calls directly with no PBX present |
 | Exchange model | **Own exchange.** The light server is the call controller. Any PBX is a SIP trunk peer only. The app never registers to a PBX, in dev or prod (§4.4) |
 | App↔server leg | **SIP (baresip) under a strict private profile** (§4.4). This is the long-term design (§4.5); the `CallEngine` seam remains as ordinary structure, no replacement is scheduled |
@@ -87,7 +87,7 @@ lets ~everything be validated with no device (see §7).
 │  ├─ CallKit control               ├─ reports incoming call → CallKit          │
 │  ├─ AddressBookStore              └─ foregrounds main app on answer           │
 │  ├─ DirectorySync                                                             │
-│  └─ AudioSession (Opus/G.711)     Shared framework (App Group):              │
+│  └─ AudioSession (Opus/G.722/G.711) Shared framework (App Group):            │
 │                                    protocol models, keychain, config          │
 └─────────────────────────────────────┬────────────────────────────────────────┘
                                        │ TLS, transport-agnostic wake/signal
@@ -171,7 +171,11 @@ are already implemented — do not remove them because remote reach is deferred.
 3. App-leg media **always relays through the server**. ICE/TURN may be added
    later as an optimisation; the relay path is the baseline and must exist from
    Phase 0.
-4. **SRTP mandatory.** Codecs: Opus primary, G.711 fallback.
+4. **SRTP mandatory.** Codecs: Opus primary app↔app; G.722 primary and
+   G.711 fallback when a leg is the PBX trunk. Both legs of a call always
+   share one codec — the relay copies encoded audio and never transcodes;
+   a transfer whose new far leg takes another codec moves the remaining
+   leg to it by re-INVITE.
 5. Wake, directory and presence travel on the **wire-protocol channel**.
    SIP carries call setup and media only.
 6. **REFER (transfer) is handled by the server** as B2BUA, never proxied
@@ -224,7 +228,7 @@ real LPC, or a real PBX. Built and verified in dependency order:
 | 6 | **`CallEngine`** (Swift) | `register / dial / answer / hold / transfer / events` | mock for unit tests; dockerized Asterisk for integration |
 | 7 | **CallKit layer** | thin adapter over CallEngine/PushTransport | driven by the two mocks |
 | 8 | **`AddressBookStore` + `DirectorySync`** | local store + reconcile | persistence + sync-conflict tests |
-| 9 | **`AudioSession` / media** | Opus/G.711 capture/playback | integration / manual call tests |
+| 9 | **`AudioSession` / media** | Opus/G.722/G.711 capture/playback | integration / manual call tests |
 | 10 | **Device enrolment / auth** (server + Swift) | issue / verify / revoke device credential | HTTP-level + keychain tests |
 
 Key abstractions to keep future-proofing cheap (see §7 for how each is tested
@@ -286,7 +290,7 @@ on by config — see §7.4.
   directory share one dial path (`sip:<target>@<domain>`), CallKit start
   action, in-call screen with mute/speaker/end. PBX leg done: `-trunk`
   makes the server a SIP trunk peer (UDP/TCP/TLS), non-local destinations
-  route to it, G.711 on both legs of a trunk call (no transcoding), both
+  route to it, G.722 (or G.711) on both legs of a trunk call (no transcoding), both
   directions proven headless by `make harness-trunk`. Headless loop for the
   app path: `make sim-call` runs the real engine on the iOS simulator
   against the harness and asserts RTP + rendered audio energy. Hold/resume
@@ -299,9 +303,9 @@ on by config — see §7.4.
   server-side fallback if refused), so the server drops out of the media
   path instead of hairpinning the PBX; `make harness-trunk` asserts it.
   Echo self-test destinations: `echo` (server) and `600` (PBX).
-  Remaining in Phase 2: attended transfer; codec renegotiation when an
-  Opus app call is transferred to the G.711 trunk; ring-back or hold music
-  for the party waiting during a transfer.
+  Remaining in Phase 2: attended transfer; ring-back or hold music for the
+  party waiting during a transfer (codec renegotiation on transfer to the
+  trunk done 2026-09-12, near-term item 2).
 - **Phase 3** — Address book store + server-driven directory sync. *Built:*
   delta sync with tombstones (`DirectoryClient` / `AddressBook`), server-side
   de-duplication by URI (a re-seeded directory collapses duplicates), and
@@ -347,9 +351,13 @@ on by config — see §7.4.
      token no longer crosses the LAN in clear). Harness phones, SIPp, the
      wake test and the simulator loop carry the fixed dev credentials, and
      `make harness-test` includes a refused unenrolled registration.
-  2. Codec renegotiation when an Opus app call is transferred to the G.711
-     trunk (currently refused with 488); attended transfer; ring-back or hold
-     music for the party waiting during a transfer.
+  2. *Done 2026-09-12:* codec renegotiation when an Opus app call is
+     transferred to the trunk — the remaining app leg is moved to the codec
+     the trunk took (G.722) by re-INVITE (`renegotiateCodec` in
+     `internal/b2bua/transfer.go`; the vendored diago `ReInvite` now applies
+     the answer's SDP), 488 only if the remaining party refuses; proven by
+     `DIRECTION=xfer-app make harness-trunk`. Still open: attended transfer;
+     ring-back or hold music for the party waiting during a transfer.
   3. Real PBX interop beyond Asterisk (CUCM third-party SIP device
      provisioning, §9 risk 4).
   4. Before release: third-party acknowledgements screen and the App Store
@@ -364,7 +372,50 @@ on by config — see §7.4.
      and its 2 s log line reports arrival skew (`early_max_ms` /
      `late_max_ms`) so the delay is visible numerically. Unit tests drive a
      50-packet burst through the real reader/writer in <1 ms (was 1.0 s).
-     Jitter-buffer tuning on the app remains parked.
+     *2026-09-12 (audio-quality plan, phases B and A done):* measured
+     first. The harness now reports mouth-to-ear delay and gaps
+     (`assert_audio.py --reference`, §7.2) and can impair the server's
+     egress (2 % loss, 30 ± 10 ms jitter). Baseline in docker: 120 ms on
+     both echo paths, no gaps; impaired: 160 ms and one audible gap per
+     lost packet. Three defects behind that, all fixed: baresip 3.15 never
+     called the codec's concealment on receive (vendored patch in
+     `ios/vendor/patches/apply-baresip.sh`, applied in the harness phone
+     too); the server's SDP told every phone `useinbandfec=0` (vendored
+     diago patch, `sdp.OpusFmtp`: FEC on, mono, 32 kbit/s); and baresip's
+     Opus module only produces or decodes FEC with `opus_packet_loss` set.
+     App profile (`BaresipCallEngine.stackConfig`, pinned by
+     `StackConfigTests`, mirrored in `harness/baresip/config`): adaptive
+     jitter buffer 40–160 ms, play buffer 40–160 ms adaptive, Opus voip /
+     FEC / 32 kbit/s mono / complexity 6, RTP stats on, dead-media timeout
+     30 s, EF marking. Result on the impaired server echo: 120–130 ms,
+     single losses recovered from FEC, at most one 20–40 ms gap per call
+     from a double loss (the jitter buffer withholds the next packet after
+     a loss until it refills; concealing at the missed slot rather than on
+     the next arrival would close it — plan Phase D). Two gotchas worth
+     keeping: mono Opus is listed as `opus/48000/1` in the account
+     (baresip names it by audio channels; `/2` silently falls back to
+     PCMU), and Opus stereo at this bitrate is CELT mode, which has no FEC.
+     *2026-09-12 (Phase C done):* G.722 wideband end to end on PBX calls,
+     never transcoded. The trunk is offered `g722,pcmu,pcma` (server flag
+     `-trunk-codecs`; `pcmu,pcma` for a narrowband-only PBX) and the app
+     leg Opus, G.722, G.711, so a call that touches the trunk lands on
+     G.722 on both legs and app↔app stays Opus. The app's `g722` module is
+     built from WebRTC's public-domain G.722 (baresip's own needs spandsp,
+     LGPL — `ios/vendor/patches/g722`, provenance in §8); the vendored
+     server SDP knows static PT 9; Asterisk allows g722 first. Asserted by
+     `make harness-trunk` (`codec=G722` on both legs, both directions, gap-
+     free recordings) and the app↔app→trunk transfer above. Fallback is
+     proven too: `NARROWBAND=1 make harness-trunk` builds the harness PBX
+     with ulaw/alaw only and every scenario must land on PCMU. That test
+     exists because the first device run failed: the vendored diago
+     narrowed a bridged callee's offer to the caller's *first* common codec
+     (fine while that was always PCMU), so a G.711-only PBX was offered
+     G.722 alone and the INVITE failed — the offer now carries every common
+     codec, in the caller's order (`server/vendor/PATCHES.md`).
+     Escalation if concealment on G.722/G.711 (Phase D) cannot meet the
+     loss target on the real WLAN: an app-leg Opus transcoder in the
+     server, kept out on purpose (latency, tandem coding, breaks the
+     copy-relay and the std-lib-only server).
 
 ### Much later (not scheduled)
 
@@ -417,7 +468,15 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
   (+ Asterisk for the PBX leg) in docker-compose; place calls, hold/transfer,
   and validate RTP/Opus by playing a known WAV from A and asserting on B's
   recording. The iOS app wraps the *same* `libbaresip`; only the audio backend
-  differs (seam #2).
+  differs (seam #2). *Audio-quality gates (2026-09-12):* the WAV is an
+  aperiodic tone pattern, so a recording can be correlated against it —
+  `harness/spike/assert_audio.py --reference` reports the mouth-to-ear delay
+  of the path and every gap inside a tone burst. `make harness-echo` bounds
+  both (≤ 150 ms on the server echo, ≤ 200 ms through the PBX, no gaps);
+  `IMPAIR=1` adds 2 % loss and 30 ± 10 ms jitter to everything the server
+  sends (`harness/netem`) and judges what the phone's decoder conceals. The
+  relay logs `lost`/`reordered`/`jitter_ms` per leg from the sequence numbers
+  and timing it sees, and `sim-call` fails on any loss in a clean run.
 - `LANSocketTransport` end-to-end: server wake → transport → the exact app code
   path that handles an incoming call.
 - Swift logic modules via `swift test` (CI; or locally if the sandbox grant is
@@ -450,7 +509,8 @@ open-ended "test the app".
 | baresip / libre 3.15 | BSD-3 | SIP + RTP, modular C, production-grade (verified from the licence files in `ios/vendor/src`) |
 | Opus 1.5 | BSD-3 | primary audio codec; royalty-free IPR declarations at the IETF |
 | OpenSSL 3.3 | Apache-2.0 | TLS + SRTP crypto; the largest licence surface in the app (3.x only — 1.x carried the old OpenSSL/SSLeay licence) |
-| G.711 / G.722 | royalty-free | interop fallback |
+| G.722 (WebRTC's copy of Steve Underwood's implementation) | public domain; WebRTC's edits BSD-3 | wideband codec on PBX calls, compiled into the app's `g722` module instead of spandsp (LGPL, which baresip's upstream module needs). Source revision, licence check and SHA-256 recorded in `ios/vendor/patches/README.md` |
+| G.711 | royalty-free (baresip's own module) | narrowband fallback |
 | G.729 | patents expired (~2017) | optional |
 | sipgo / diago (server) | BSD-2 / MPL-2.0 | **decided** in Phase 0; vendored, builds with `CGO_ENABLED=0` |
 | Server runtime (Go) | permissive stdlib + vendored deps | — |

@@ -31,3 +31,49 @@ if ! grep -q 'ua_refresh_register' "$SRC/include/baresip.h"; then
   grep -q 'ua_refresh_register' "$SRC/include/baresip.h" || { echo "patch: baresip.h anchor not found"; exit 1; }
 fi
 echo "   baresip: ua_refresh_register patch present"
+
+# Packet-loss concealment on the receive path. baresip 3.15's aurecv_receive
+# discards the lost-frame count it is given ("TODO: what if lostc > 1") and
+# never calls the codec's PLC handler, so every lost packet is 20 ms of
+# silence whatever the codec — Opus's own concealment and its in-band FEC
+# were never used (measured: 2 % loss → one audible gap per lost packet).
+# Now each lost frame is concealed before the arriving packet is decoded:
+# the frame right before it gets the packet, so Opus can decode the FEC it
+# carries; earlier ones get plain PLC (a NULL packet). Concealed frames
+# take their own timestamps, spaced evenly across the hole. Codecs without
+# a PLC handler (G.711 until ios/vendor/patches adds one) are unchanged.
+if ! grep -q 'Dialler: conceal lost frames' "$SRC/src/aureceiver.c"; then
+  PLC_NEW="$(mktemp)"
+  cat > "$PLC_NEW" <<'EOF'
+	/* Dialler: conceal lost frames before decoding this packet (see
+	 * ios/vendor/patches/apply-baresip.sh). The codec's PLC handler makes
+	 * one frame per call; the frame right before this packet gets the
+	 * packet itself, so Opus decodes its in-band FEC, the rest get PLC. */
+	if (lostc && ar->ac && ar->ac->plch) {
+		struct mbuf empty;
+		uint32_t step;
+		unsigned i, n = lostc > 5 ? 5 : lostc;
+
+		mbuf_init(&empty);
+		step = (hdr->ts - prev_ts) / (lostc + 1);
+		for (i = lostc - n; i < lostc; i++) {
+			struct rtp_header lh = *hdr;
+			lh.ts = hdr->ts - step * (lostc - i);
+			lh.m  = false;
+			(void)aurecv_stream_decode(ar, &lh,
+						   i + 1 == lostc ? mb : &empty,
+						   1, drop);
+		}
+	}
+
+	(void)aurecv_stream_decode(ar, hdr, mb, 0, drop);
+EOF
+  PLC_NEW="$PLC_NEW" perl -0pi -e 'BEGIN { local $/; open my $f, "<", $ENV{PLC_NEW} or die; $new = <$f>; close $f }
+    s/\t\/\* TODO:  what if lostc > 1 \?\*\/.*?\t\(void\)aurecv_stream_decode\(ar, hdr, mb, 0, drop\);\n/$new/s;
+    s/\tint wrap;\n\t\(void\) lostc;\n/\tint wrap;\n\tuint32_t prev_ts;\n/;
+    s/(\twrap = timestamp_wrap\(hdr->ts, ar->ts_recv\.last\);\n)/\tprev_ts = ar->ts_recv.last;\n$1/;' "$SRC/src/aureceiver.c"
+  rm -f "$PLC_NEW"
+  grep -q 'Dialler: conceal lost frames' "$SRC/src/aureceiver.c" || { echo "patch: aureceiver.c anchor not found"; exit 1; }
+  grep -q 'prev_ts = ar->ts_recv.last' "$SRC/src/aureceiver.c" || { echo "patch: aureceiver.c prev_ts anchor not found"; exit 1; }
+fi
+echo "   baresip: receive-path PLC/FEC patch present"

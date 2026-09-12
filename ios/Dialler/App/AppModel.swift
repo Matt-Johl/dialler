@@ -3,7 +3,11 @@ import Combine
 import DiallerCore
 import DiallerProtocol
 import Foundation
-import NetworkExtension
+// @preconcurrency: NetworkExtension's classes (NEAppPushManager) are not yet
+// marked Sendable, and its completion handlers are @Sendable. We only touch
+// the manager after hopping back to the main actor inside those handlers,
+// so the capture is safe; this silences the false Sendable warnings.
+@preconcurrency import NetworkExtension
 import os
 import UIKit
 #if canImport(DiallerEngine)

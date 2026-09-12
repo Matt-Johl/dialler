@@ -191,10 +191,19 @@ func judge(_ v: BaresipCallEngine.AudioVerdict?, established: Bool) -> (String, 
     // and nothing to send is the norm here; reported, not failed.
     let mic = v.recFrames > 0 ? "mic captured \(v.recFrames) frames, rtp tx=\(v.rtpTx)" : "rtp tx=\(v.rtpTx) (file source; no mic under simctl spawn)"
     if v.rxLost > 0 || v.jbUnderflow > 0 || v.jbLate > 0 {
-        return ("PASS with GAPS: tone rendered; lost=\(v.rxLost) late=\(v.jbLate) underflow=\(v.jbUnderflow); \(mic)", true)
+        // On a clean network any loss or late packet is a defect somewhere
+        // in the path (audio-quality gate, SPEC §7.2). Under deliberate
+        // impairment (IMPAIR=1 → IMPAIRED=1 in our environment) it is the
+        // expected input and the decoder's concealment is what is judged —
+        // by the recording-based gates, not here.
+        let detail = "lost=\(v.rxLost) late=\(v.jbLate) underflow=\(v.jbUnderflow); \(mic)"
+        if impaired { return ("PASS under impairment: tone rendered; \(detail)", true) }
+        return ("FAIL: tone rendered but the path lost or delayed packets on a clean network; \(detail)", false)
     }
     return ("PASS: tone received and rendered, no loss; \(mic)", true)
 }
+/// IMPAIR=1 runs export IMPAIRED=1 into the simulator process.
+let impaired = ProcessInfo.processInfo.environment["IMPAIRED"] == "1"
 
 let callKit = ScriptedCallKit()
 let controller = CallController(ui: callKit, engine: engine, log: { print("\(stamp())   \($0)") })
@@ -238,7 +247,7 @@ if noGateway {
     // register the harness account directly. The controller then rings
     // every INVITE as a synthetic "sip-N" call, exactly as the app does
     // when a wake fails to arrive.
-    controller.setAccount(user: "201@dialler", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
+    controller.setAccount(user: "203@dialler", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
 } else {
     transport.connect(hello: cfg.hello(kind: .app))
 }
@@ -331,9 +340,12 @@ for index in 1...callsWanted {
     for v in verdicts {
         out("call \(index) verdict @\(v.seconds)s: \(v.verdict) play=\(v.playFrames) rec=\(v.recFrames) energy/frame=\(v.playEnergy / max(v.playFrames, 1)) rtp tx=\(v.rtpTx) rx=\(v.rtpRx) lost=\(v.rxLost) jitter=\(v.jitterMs)ms jbuf late=\(v.jbLate) underflow=\(v.jbUnderflow)")
     }
-    // The caller's tone is a short file, so RTP may have stopped by 5 s;
-    // judge on the window that saw the most.
-    let best = verdicts.max { ($0.rtpRx, $0.playEnergy) < ($1.rtpRx, $1.playEnergy) }
+    // Judge the LAST window: a call that degrades late must show it. The
+    // hold test is the exception — its last window is the held stretch,
+    // where silence is the expected result — so it keeps the best window.
+    let best = holdMs > 0
+        ? verdicts.max { ($0.rtpRx, $0.playEnergy) < ($1.rtpRx, $1.playEnergy) }
+        : verdicts.last
     lock.lock(); let wasDeclined = ended; lock.unlock()
     let res = CallResult(index: index, best: best, established: established, declined: wasDeclined)
     results.append(res)

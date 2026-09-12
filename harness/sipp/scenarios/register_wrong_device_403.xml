@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
 <!--
-  Negative: a valid device credential for the WRONG user. dev-b is enrolled
-  for 202; here it tries to register as [service] (201). The Digest verifies,
+  Negative: a valid device credential for the WRONG user. dev-hb is enrolled
+  for 212; here it tries to register as [service] (211). The Digest verifies,
   but the server must refuse (403): an enrolled phone cannot register as, or
   take the calls of, another user.
 -->
@@ -34,7 +34,7 @@
       Call-ID: [call_id]
       CSeq: 2 REGISTER
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
-      [authentication username=dev-b password=tok_dev_b_harness_fixed]
+      [authentication username=dev-hb password=tok_dev_hb_harness_fixed]
       User-Agent: sipp-harness
       Content-Length: 0
     ]]>

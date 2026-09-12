@@ -784,6 +784,17 @@ func (s *MediaSession) CommonCodecs() []Codec {
 	return s.filterCodecs
 }
 
+// SetCodecs (Dialler patch) replaces the local codec list and forgets the
+// negotiated one, so the next LocalSDP() offers exactly these — the offer of
+// a re-INVITE that moves an established leg onto another codec. The answer,
+// applied through RemoteSDP, negotiates afresh against this list.
+// NOTE: Not thread safe; the caller holds the dialog's media lock or is the
+// only user of the session.
+func (s *MediaSession) SetCodecs(codecs []Codec) {
+	s.Codecs = slices.Clone(codecs)
+	s.filterCodecs = nil
+}
+
 // Listen creates listeners instead
 func (s *MediaSession) createListeners(laddr *net.UDPAddr) error {
 	// var err error
@@ -1205,11 +1216,13 @@ func generateSDPForAudio(sessionID uint64, sessionVersion uint64, rtpProfile str
 			formatsMap = append(formatsMap, "a=rtpmap:0 PCMU/8000")
 		case CodecAudioAlaw.PayloadType:
 			formatsMap = append(formatsMap, "a=rtpmap:8 PCMA/8000")
+		case CodecAudioG722.PayloadType:
+			formatsMap = append(formatsMap, "a=rtpmap:9 G722/8000") // Dialler vendor patch
 		case CodecAudioOpus.PayloadType:
 			formatsMap = append(formatsMap, "a=rtpmap:96 opus/48000/2")
 			// Providing 0 when FEC cannot be used on the receiving side is RECOMMENDED.
 			// https://datatracker.ietf.org/doc/html/rfc7587
-			formatsMap = append(formatsMap, "a=fmtp:96 useinbandfec=0")
+			formatsMap = append(formatsMap, "a=fmtp:96 "+sdp.OpusFmtp)
 		case CodecTelephoneEvent8000.PayloadType:
 			formatsMap = append(formatsMap, "a=rtpmap:101 telephone-event/8000")
 			formatsMap = append(formatsMap, "a=fmtp:101 0-16")

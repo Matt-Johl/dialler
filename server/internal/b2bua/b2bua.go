@@ -60,6 +60,10 @@ type Config struct {
 	// deployment publish/firewall exactly these UDP ports. 0 → ephemeral.
 	RTPPortStart int
 	RTPPortEnd   int
+	// TrunkCodecs is what a PBX trunk is offered, in order of preference
+	// (default DefaultTrunkCodecs: G.722, PCMU, PCMA). A PBX that must stay
+	// narrowband gets "pcmu,pcma" via -trunk-codecs.
+	TrunkCodecs []media.Codec
 	// KeepAdvertisedContact disables the route rewrite below (registrations
 	// are reached by dialling their advertised Contact). Only for proving
 	// in the harness that the rewrite is what makes NAT'd phones reachable.
@@ -254,7 +258,9 @@ func mediaOptions(cfg Config) []diago.DiagoOption {
 			RewriteContact: true,
 		}),
 		diago.WithMediaConfig(diago.MediaConfig{
-			Codecs: []media.Codec{media.CodecAudioOpus, media.CodecAudioUlaw, media.CodecAudioAlaw},
+			// The app leg's offer: Opus for app↔app, G.722 for wideband PBX
+			// calls, G.711 as the fallback everything speaks.
+			Codecs: []media.Codec{media.CodecAudioOpus, media.CodecAudioG722, media.CodecAudioUlaw, media.CodecAudioAlaw},
 		}),
 	}
 }
@@ -673,10 +679,47 @@ type legs struct {
 	calleeTrunk bool
 }
 
-// trunkCodecs is what a PBX trunk gets offered: G.711 only. Apps get the
-// full set (Opus first). Because the relay copies encoded audio between
-// the legs, the caller is always answered with the codec the callee took.
-var trunkCodecs = []media.Codec{media.CodecAudioUlaw, media.CodecAudioAlaw}
+// DefaultTrunkCodecs is what a PBX trunk gets offered unless configured:
+// G.722 wideband first (what enterprise handsets speak to their PBX), then
+// G.711. Apps get the full set (Opus first). Because the relay copies
+// encoded audio between the legs, the caller is always answered with the
+// codec the callee took, so a call that touches the trunk is G.722 or
+// G.711 end to end and never transcoded (SPEC §4.4 rule 4).
+var DefaultTrunkCodecs = []media.Codec{media.CodecAudioG722, media.CodecAudioUlaw, media.CodecAudioAlaw}
+
+// trunkCodecs is the configured trunk offer, or the default.
+func (c Config) trunkCodecs() []media.Codec {
+	if len(c.TrunkCodecs) == 0 {
+		return DefaultTrunkCodecs
+	}
+	return c.TrunkCodecs
+}
+
+// ParseCodecs turns a flag value like "g722,pcmu,pcma" into codecs, in that
+// order of preference. Names are case-insensitive; PCMU/PCMA/G722/opus.
+func ParseCodecs(list string) ([]media.Codec, error) {
+	var out []media.Codec
+	for _, name := range strings.Split(list, ",") {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "":
+			continue
+		case "g722":
+			out = append(out, media.CodecAudioG722)
+		case "pcmu", "ulaw", "g711u":
+			out = append(out, media.CodecAudioUlaw)
+		case "pcma", "alaw", "g711a":
+			out = append(out, media.CodecAudioAlaw)
+		case "opus":
+			out = append(out, media.CodecAudioOpus)
+		default:
+			return nil, fmt.Errorf("unknown codec %q (want g722, pcmu, pcma or opus)", strings.TrimSpace(name))
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("no codecs")
+	}
+	return out, nil
+}
 
 // callTouchesTrunk reports whether either leg is the PBX trunk. When it is,
 // the callee is offered G.711 only so the negotiated codec is one both legs
@@ -799,15 +842,17 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	}
 	calleeNAT := s.legNAT(l.calleeTrunk)
 	// The relay copies encoded audio between the legs without transcoding, so
-	// both legs must settle on the same codec. A PBX trunk speaks G.711 only.
-	// Constrain the callee's offer to G.711 whenever EITHER leg is the trunk,
-	// not just when the callee is: an app callee reached from a trunk caller,
-	// left with its full set, negotiates Opus, which the G.711-only trunk
-	// caller then cannot be answered with — silence in both directions. A
-	// call that touches the trunk is therefore G.711 end to end (app↔app,
-	// neither trunk, keeps the full set with Opus first).
+	// both legs must settle on the same codec. A PBX trunk speaks G.722 and
+	// G.711. Constrain the callee's offer to the trunk set whenever EITHER
+	// leg is the trunk, not just when the callee is: an app callee reached
+	// from a trunk caller, left with its full set, negotiates Opus, which the
+	// trunk caller then cannot be answered with — silence in both directions.
+	// A call that touches the trunk is therefore G.722 (or G.711) end to end
+	// (app↔app, neither trunk, keeps the full set with Opus first). The
+	// Originator below intersects this set with the caller's offer, keeping
+	// every common codec so the far end can still fall back (vendored patch).
 	if callTouchesTrunk(l) {
-		out.SetCodecs(trunkCodecs)
+		out.SetCodecs(s.cfg.trunkCodecs())
 	}
 	from := in.InviteRequest.From()
 	legA := &callLeg{name: "caller", trunk: l.callerTrunk, sess: in, party: wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()}}
@@ -820,7 +865,7 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		OnRefer:       call.onRefer(legB),
 	})
 	if err != nil {
-		log.Error("invite callee", "dst", dst.String(), "err", err)
+		log.Error("invite callee", "dst", dst.String(), "offered", codecNames(out.Media().MediaSession()), "err", err)
 		_ = out.Hangup(out.Context())
 		out.Close()
 		if in.Context().Err() == nil {
@@ -893,6 +938,16 @@ type pump struct {
 	skewMs     atomic.Int64
 	earlyMaxMs atomic.Int64
 	lateMaxMs  atomic.Int64
+	// Loss, reordering and interarrival jitter as seen from the source's
+	// sequence numbers and timing (RFC 3550 §6.4.1), so a lossy leg can be
+	// placed without RTCP. Written by the relay goroutine only.
+	expectSeq   uint16
+	lost        atomic.Int64
+	reordered   atomic.Int64
+	jitter      float64 // RTP ticks, running estimate
+	jitterMs100 atomic.Int64
+	lastArrival time.Time
+	lastTs      uint32
 }
 
 type mediaEnd interface {
@@ -929,9 +984,12 @@ func (p *pump) setPacketPath(rr *media.RTPPacketReader, rw *media.RTPPacketWrite
 }
 
 func (p *pump) String() string {
-	return fmt.Sprintf("read=%d written=%d write_errs=%d early_max_ms=%d late_max_ms=%d",
-		p.read.Load(), p.written.Load(), p.writeErrs.Load(), p.earlyMaxMs.Load(), p.lateMaxMs.Load())
+	return fmt.Sprintf("read=%d written=%d write_errs=%d lost=%d reordered=%d jitter_ms=%.1f early_max_ms=%d late_max_ms=%d",
+		p.read.Load(), p.written.Load(), p.writeErrs.Load(), p.lost.Load(), p.reordered.Load(), p.jitterMs(),
+		p.earlyMaxMs.Load(), p.lateMaxMs.Load())
 }
+
+func (p *pump) jitterMs() float64 { return float64(p.jitterMs100.Load()) / 100 }
 
 // forward sends one payload to the destination leg at once, carrying the
 // source packet's own timing.
@@ -965,6 +1023,8 @@ func (p *pump) forward(payload []byte) error {
 		p.tsOffset = start - hdr.Timestamp
 		p.srcSSRC, p.haveSrc = hdr.SSRC, true
 		p.t0, p.ts0 = now, hdr.Timestamp
+		p.expectSeq = hdr.SequenceNumber + 1
+		p.lastArrival, p.lastTs = now, hdr.Timestamp
 	} else {
 		// Arrival skew against the source's own timeline since its first
 		// packet: negative = early (a burst / backlog draining), positive =
@@ -979,6 +1039,33 @@ func (p *pump) forward(payload []byte) error {
 		if skew > p.lateMaxMs.Load() {
 			p.lateMaxMs.Store(skew)
 		}
+		// Sequence accounting (wraparound-safe): a jump forward is loss, a
+		// small step back is a reordered packet that was counted lost a
+		// moment ago, a large one is the source renumbering its stream.
+		switch diff := int16(hdr.SequenceNumber - p.expectSeq); {
+		case diff == 0:
+			p.expectSeq++
+		case diff > 0:
+			p.lost.Add(int64(diff))
+			p.expectSeq = hdr.SequenceNumber + 1
+		case diff > -64:
+			p.reordered.Add(1)
+			if p.lost.Load() > 0 {
+				p.lost.Add(-1)
+			}
+		default:
+			p.expectSeq = hdr.SequenceNumber + 1
+		}
+		// Interarrival jitter (RFC 3550 §6.4.1): the running mean of how far
+		// the arrival spacing strays from the timestamp spacing, in RTP ticks.
+		arrival := now.Sub(p.lastArrival).Seconds() * float64(p.codec.SampleRate)
+		d := arrival - float64(int32(hdr.Timestamp-p.lastTs))
+		if d < 0 {
+			d = -d
+		}
+		p.jitter += (d - p.jitter) / 16
+		p.jitterMs100.Store(int64(p.jitter * 100000 / float64(p.codec.SampleRate)))
+		p.lastArrival, p.lastTs = now, hdr.Timestamp
 	}
 	// The writer's next timestamp is where it left off (we never let it
 	// advance on its own); move it to where this packet belongs.
@@ -1049,6 +1136,7 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 			r, w := p.read.Load(), p.written.Load()
 			log.Info("relay", "read", r, "written", w, "write_errs", p.writeErrs.Load(),
 				"read_2s", r-lastRead, "written_2s", w-lastWritten,
+				"lost", p.lost.Load(), "reordered", p.reordered.Load(), "jitter_ms", p.jitterMs(),
 				"skew_ms", p.skewMs.Load(), "early_max_ms", p.earlyMaxMs.Load(), "late_max_ms", p.lateMaxMs.Load())
 			lastRead, lastWritten = r, w
 		}
@@ -1067,4 +1155,17 @@ func (s *Server) primaryDomain() string {
 		return s.cfg.Domains[0]
 	}
 	return s.cfg.ExternalHost
+}
+
+// codecNames lists a session's offered codecs for logs ("-" before any
+// media session exists).
+func codecNames(ms *media.MediaSession) string {
+	if ms == nil {
+		return "-"
+	}
+	names := make([]string, 0, len(ms.Codecs))
+	for _, c := range ms.Codecs {
+		names = append(names, c.Name)
+	}
+	return strings.Join(names, ",")
 }

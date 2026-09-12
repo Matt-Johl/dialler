@@ -1,6 +1,6 @@
 #!/bin/sh
 # Ring the iOS app running in the simulator (or on a device on this Mac's
-# network) through the real server: phone-b (202) dials 201, whose SIP user
+# network) through the real server: phone-b (212) dials 201, whose SIP user
 # is NOT registered by any baresip, so the server wakes device `dev-a` — the
 # app, connected to 127.0.0.1:7443 as dev-a — and CallKit rings.
 #
@@ -19,7 +19,7 @@ ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
 }
-echo "== phone-b (202) dials 201 → server wakes dev-a (the app)"
+echo "== phone-b (212) dials 201 → server wakes dev-a (the app)"
 ctl '{"command":"dial","params":"201@dialler"}'
 sleep 1
 $C logs --no-log-prefix --since 5s dialler 2>&1 | grep -E 'invite|woke|480|404' | sed 's/^/   /' || true

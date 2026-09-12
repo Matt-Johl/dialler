@@ -19,7 +19,10 @@ import os
 /// called its periodic timer, so a server restart left the extension down
 /// until Wi-Fi was toggled (user-reported 2026-09-11). The timer is now only
 /// a backstop that kicks the keeper.
-final class PushProvider: NEAppPushProvider {
+final class PushProvider: NEAppPushProvider, @unchecked Sendable {
+    // @unchecked Sendable: all mutable state is confined to `queue`; the
+    // system's callbacks and the session's event pump hop onto it before
+    // touching anything.
     private let logger = Logger(subsystem: DiallerIDs.bundlePrefix, category: "push-provider")
     /// Everything below runs on this queue: the NE callbacks arrive on the
     /// system's queue and the session's events on a task.

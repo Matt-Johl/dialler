@@ -2,7 +2,7 @@
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
 <!--
   Negative: a host on the Wi-Fi with no enrolment at all tries to register
-  as [service] (201) with made-up credentials. Challenged (401), then
+  as [service] (211) with made-up credentials. Challenged (401), then
   refused (403). This is the exposure the app-leg authentication closes.
 -->
 <scenario name="register_unenrolled_403">

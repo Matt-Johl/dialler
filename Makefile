@@ -72,8 +72,12 @@ harness-wake:
 harness-trunk:
 	sh harness/trunk_test.sh
 
-# Echo self-test: the app hears its own audio back from the server
-# ("echo", app leg only) or from the PBX ("600", through the trunk).
+# Echo self-test and audio-quality gate (SPEC §7.2): the app hears its own
+# audio back from the server ("echo", app leg only) or from the PBX ("600",
+# through the trunk); the recording is correlated with the played tone for
+# mouth-to-ear delay (≤150 ms / ≤200 ms) and gaps (none). IMPAIR=1 adds
+# 2% loss + 30±10 ms jitter to what the server sends and judges concealment.
+#   IMPAIR=1 make harness-echo      MAX_GAP_MS=… MAX_GAPS=… to relax a bound
 harness-echo:
 	sh harness/echo_test.sh
 	TRUNK=1 sh harness/echo_test.sh
@@ -90,7 +94,7 @@ harness-ring-sim:
 # ASTERISK_HOST to trunk to it, or leave it unset for app-only testing.
 #   make dev-server                          # terminal 1 (Ctrl-C to stop)
 #   ASTERISK_HOST=10.18.0.50 make dev-server # trunked to the Ubuntu PBX
-#   make harness-ring-native                 # terminal 2: 202 dials the phone
+#   make harness-ring-native                 # terminal 2: 212 (docker) dials the phone
 ASTERISK_HOST ?=
 TRUNK_FLAGS = $(if $(ASTERISK_HOST),-trunk "sip:$(ASTERISK_HOST):5060;transport=udp" -trunk-addr :5062 -trunk-external-host $(DIALLER_PUBLIC_HOST),)
 dev-server: server tone
@@ -135,12 +139,12 @@ ios-vendor:
 	sh ios/vendor/build-baresip.sh all all
 
 # Headless run of the real baresip engine on this Mac against the docker
-# server: registers 201, answers a call if one arrives. Needs the macOS slice
+# server: registers 203 (dev-s, the simulator/probe identity), answers a call if one arrives. Needs the macOS slice
 # (ios-vendor) and a server started with DIALLER_PUBLIC_HOST=<mac-ip>.
 #   make engine-probe HOST=$$(ipconfig getifaddr en0)
 HOST ?= 127.0.0.1
 engine-probe:
-	cd ios/DiallerEngine && swift run --disable-sandbox engine-probe $(HOST) 201@dialler 5061 40
+	cd ios/DiallerEngine && swift run --disable-sandbox engine-probe $(HOST) 203@dialler 5061 40 dev-s tok_dev_s_harness_fixed
 
 # Does the audiounit driver move audio under the CallKit contract (units
 # start only on release, in every event ordering)? No SIP, no server.
@@ -156,7 +160,7 @@ audio-probe:
 #   make sim-call                    # activation ~150ms after answer (device order)
 #   ACTIVATE_MS=1500 make sim-call   # activation after the call established
 #   CALLS=3 ANSWER_MS=8000 make sim-call   # several calls in one process, long rings
-#   OUTBOUND=202 make sim-call       # the simulated phone dials (keypad / directory path)
+#   OUTBOUND=212 make sim-call       # the simulated phone dials (keypad / directory path)
 #   OUTBOUND=echo make sim-call      # full mic→server→speaker loop (server echo)
 #   HOLD_MS=3000 make sim-call       # hold/resume mid-call, asserts media stops and restarts
 #   TRANSFER=echo make sim-call      # blind transfer of the caller to echo (REFER handled server-side)
@@ -169,7 +173,7 @@ sim-call:
 
 # The incoming, outbound, decline and reconnect runs every call-path change must pass.
 sim-call-all:
-	OUTBOUND=202 sh harness/sim_call.sh
+	OUTBOUND=212 sh harness/sim_call.sh
 	CALLS=2 sh harness/sim_call.sh
 	DECLINE=1 sh harness/sim_call.sh
 	RESTART_SERVER=1 sh harness/sim_call.sh

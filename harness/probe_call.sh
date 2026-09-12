@@ -1,9 +1,9 @@
 #!/bin/sh
 # NAT regression test, run on a Mac (not inside docker): the engine probe —
-# the real BaresipCallEngine — registers 201 from this Mac through Docker's
+# the real BaresipCallEngine — registers 203 (dev-s) from this Mac through Docker's
 # published ports, which is a genuine NAT (the server sees Docker's gateway
 # as the source, not the probe's advertised Contact). Then the harness phone
-# 202 dials 201: the server must reach the probe over the TLS connection it
+# 212 dials 203: the server must reach the probe over the TLS connection it
 # registered on and relay media with symmetric RTP. Exit 0 = pass.
 #
 #   make probe-call                                  # expect PASS
@@ -34,9 +34,9 @@ sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up -d baresip-b >/dev/null 2>&1
 sleep 3
 
-echo "== probe registers 201 from this Mac"
+echo "== probe registers 203 (dev-s) from this Mac"
 OUT="$(mktemp)"
-"$PROBE" "$HOST" 201@dialler 5061 40 > "$OUT" 2>&1 &
+"$PROBE" "$HOST" 203@dialler 5061 40 dev-s tok_dev_s_harness_fixed > "$OUT" 2>&1 &
 PROBE_PID=$!
 i=0
 while [ $i -lt 25 ]; do grep -q '\[state\] registered' "$OUT" && break; sleep 1; i=$((i+1)); done
@@ -46,11 +46,11 @@ if ! grep -q '\[state\] registered' "$OUT"; then
   echo "   --- server ---"; $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -iE 'register|tls|error' | tail -5 | cut -c1-200 | sed 's/^/   /'
   exit 1
 fi
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep 'sip register' | grep 'user=201' | tail -n1 | cut -c1-220 | sed 's/^/   /'
+$COMPOSE logs --no-log-prefix dialler 2>&1 | grep 'sip register' | grep 'user=203' | tail -n1 | cut -c1-220 | sed 's/^/   /'
 
-echo "== phone 202 dials 201"
+echo "== phone 212 dials 203"
 docker run --rm --network "$NET" alpine:3.20 sh -c \
-  "p='{\"command\":\"dial\",\"params\":\"201@dialler\"}'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
+  "p='{\"command\":\"dial\",\"params\":\"203@dialler\"}'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
 
 # Stream the probe's progress while it runs; hard cap so this never stalls.
 shown=0; i=0

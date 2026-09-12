@@ -20,12 +20,12 @@ sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
 sleep 5
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=202' || { echo "FAIL: 202 never registered"; exit 1; }
+$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=212' || { echo "FAIL: 212 never registered"; exit 1; }
 
 echo "== kill the callee outright (SIGKILL: no clean unregister, like a phone losing Wi-Fi)"
 $COMPOSE kill -s SIGKILL baresip-b >/dev/null 2>&1
 sleep 2
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip unregister.*user=202'; then
+if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip unregister.*user=212'; then
   echo "FAIL: callee unregistered cleanly; the test did not model a dead flow"; exit 1
 fi
 
@@ -33,9 +33,9 @@ ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
-echo "== 201 dials 202"
+echo "== 211 dials 212"
 start=$(date +%s)
-ctl '{"command":"dial","params":"202@dialler"}'
+ctl '{"command":"dial","params":"212@dialler"}'
 sleep 6
 ctl '{"command":"hangup"}'
 

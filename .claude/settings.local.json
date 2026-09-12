@@ -124,7 +124,31 @@
       "Bash(cd /Users/matt/Code/Cursor/Dialler; grep -n \"^## 9\\\\|^## 10\\\\|Known issues\\\\|Open issues\\\\|^### .*[Rr]isk\" SPEC.md | head; echo \"=== synced device crash logs today ===\"; ls -t ~/Library/Logs/CrashReporter/MobileDevice/*/ 2>/dev/null | grep -i \"dialler\\\\|2026-09-11\" | head -5; ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i dialler | head -3)",
       "Read(//Users/matt/Library/Logs/CrashReporter/**)",
       "Read(//Users/matt/Downloads/**)",
-      "Bash(python3 - /Users/matt/Downloads/Dialler-2026-09-11-161148.ips)"
+      "Bash(python3 - /Users/matt/Downloads/Dialler-2026-09-11-161148.ips)",
+      "Bash(grep -E 'relay|echo:' __TRACKED_VAR__/harness-echo-b1.log)",
+      "Bash(cd /Users/matt/Code/Cursor/Dialler/ios/DiallerEngine; ls Tests 2>/dev/null || echo \"\\(no Tests dir\\)\"; echo \"=== Package.swift ===\"; cat Package.swift; echo \"=== harness phone config ===\"; cat ../../harness/baresip/config)",
+      "Read(//Users/matt/Code/Cursor/harness/baresip/**)",
+      "Bash(grep -E '^== |audio:|PASS|FAIL|impaired' __TRACKED_VAR__/harness-echo-b2.log)",
+      "Bash(grep -E '^== |audio:|netem:|PASS|FAIL' __TRACKED_VAR__/harness-echo-a4.log)",
+      "Bash(sed -n '/=== make harness-trunk ===/,$p' /private/tmp/claude-501/-Users-matt-Code-Cursor-Dialler/a0dcea92-cec8-4661-83c4-a2deaca5d36a/tasks/bfbfg9to2.output | cut -c1-170)",
+      "WebFetch(domain:webrtc.googlesource.com)",
+      "Bash(grep -n 'BARESIP_MODULES=\\\\|cmake -S \"$SRC/baresip\"' ios/vendor/build-baresip.sh)",
+      "Bash(grep -n 'MODULES_DETECTED=\\\\|g722\\\\|error:\\\\|EXIT' __TRACKED_VAR__/ios-vendor.log)",
+      "Bash(grep -n 'MODULES_DETECTED=\\\\|error:\\\\|g722' __TRACKED_VAR__/ios-vendor.log)",
+      "Bash(grep -n 'm=audio\\\\|rtpmap:9\\\\|callee answered' __TRACKED_VAR__/trunk-out.log)",
+      "Bash(grep -n 'PASS\\\\|FAIL\\\\|EXIT\\\\|codec=' __TRACKED_VAR__/harness-trunk2.log)",
+      "Bash(grep -n codec= __TRACKED_VAR__/reg-echo2.log)",
+      "Bash(grep -q ^EXIT __TRACKED_VAR__/trunk-narrow.log)",
+      "Bash(grep -n 'allows\\\\|PASS\\\\|FAIL\\\\|EXIT\\\\|codec=\\\\|offered' __TRACKED_VAR__/trunk-narrow.log)",
+      "Bash(grep -q ^EXIT __TRACKED_VAR__/trunk-narrow2.log)",
+      "Bash(grep -n 'PASS\\\\|FAIL\\\\|EXIT' __TRACKED_VAR__/trunk-wide.log)",
+      "Bash(grep -n 'allows\\\\|PASS\\\\|FAIL\\\\|EXIT\\\\|renegotiated\\\\|offered' __TRACKED_VAR__/trunk-narrow2.log)",
+      "Bash(grep -q ^EXIT __TRACKED_VAR__/trunk-narrow-xfer.log)",
+      "Bash(grep -n 'PASS\\\\|FAIL\\\\|EXIT\\\\|negotiated' __TRACKED_VAR__/trunk-wide2.log)",
+      "Bash(grep -n 'PASS\\\\|FAIL\\\\|EXIT\\\\|audio:' __TRACKED_VAR__/trunk-narrow-xfer.log)"
+    ],
+    "additionalDirectories": [
+      "/private/tmp/claude-501/-Users-matt-Code-Cursor-Dialler/a0dcea92-cec8-4661-83c4-a2deaca5d36a/tasks"
     ]
   },
   "sandbox": {

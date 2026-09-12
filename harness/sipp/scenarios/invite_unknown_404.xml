@@ -56,7 +56,7 @@
       Call-ID: [call_id]
       CSeq: 2 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
-      [authentication username=dev-a password=tok_dev_a_harness_fixed]
+      [authentication username=dev-ha password=tok_dev_ha_harness_fixed]
       Content-Type: application/sdp
       Content-Length: [len]
 

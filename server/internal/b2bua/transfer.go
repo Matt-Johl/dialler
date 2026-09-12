@@ -213,7 +213,14 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 		}
 		codecs := []media.Codec{other.codec}
 		if trunk {
-			codecs = trunkCodecs
+			// The remaining leg's codec first, so the PBX keeps the call
+			// on it whenever it can; the rest of the trunk set as fallback
+			// (the remaining leg is then moved by re-INVITE, below).
+			for _, tc := range c.s.cfg.trunkCodecs() {
+				if tc != other.codec {
+					codecs = append(codecs, tc)
+				}
+			}
 		}
 		out.SetCodecs(codecs)
 		leg := &callLeg{name: "transfer", trunk: trunk, sess: out, party: wire.Party{URI: dst.String()}}
@@ -234,13 +241,19 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 			return err
 		}
 		leg.codec = media.CodecAudioFromSession(out.Media().MediaSession())
-		if leg.codec.Name != other.codec.Name || leg.codec.SampleRate != other.codec.SampleRate {
-			// The relay copies encoded audio; without renegotiating the
-			// remaining leg there is nothing we can do with a mismatch.
-			log.Info("transfer: codec mismatch, would need transcoding", "target", leg.codec.Name, "remaining", other.codec.Name)
-			_ = out.Hangup(out.Context())
-			out.Close()
-			return &sipgo488{}
+		if !sameCodec(leg.codec, other.codec) {
+			// The relay copies encoded audio, so both legs must share a
+			// codec: move the remaining leg onto the target's by re-INVITE
+			// (an app on Opus transferred to the PBX lands on G.722). Only
+			// if the remaining party refuses is the transfer impossible.
+			log.Info("transfer: codec mismatch, renegotiating the remaining leg", "target", leg.codec.Name, "remaining", other.codec.Name)
+			if err := renegotiateCodec(ctx, other, leg.codec); err != nil {
+				log.Info("transfer: remaining leg would not move codec", "codec", leg.codec.Name, "err", err)
+				_ = out.Hangup(out.Context())
+				out.Close()
+				return &sipgo488{}
+			}
+			log.Info("transfer: remaining leg renegotiated", "codec", other.codec.Name)
 		}
 		newLeg = leg
 	}
@@ -540,3 +553,39 @@ type sipgo488 struct{}
 
 func (*sipgo404) Error() string { return "404 Not Found" }
 func (*sipgo488) Error() string { return "488 Not Acceptable Here" }
+
+func sameCodec(a, b media.Codec) bool {
+	return a.Name == b.Name && a.SampleRate == b.SampleRate && a.NumChannels == b.NumChannels
+}
+
+// reInviter is what both diago session types offer beyond DialogSession.
+type reInviter interface {
+	ReInvite(ctx context.Context) error
+}
+
+// renegotiateCodec moves an established leg onto codec: narrows its offer
+// to that one codec, re-INVITEs, and checks the answer took it. The leg's
+// codec is updated; on failure the previous negotiation is restored so the
+// call carries on as it was.
+func renegotiateCodec(ctx context.Context, leg *callLeg, codec media.Codec) error {
+	ri, ok := leg.sess.(reInviter)
+	if !ok {
+		return errors.New("session cannot re-INVITE")
+	}
+	m := leg.sess.Media()
+	prev := m.MediaSession().CommonCodecs()
+	if len(prev) == 0 {
+		prev = []media.Codec{leg.codec}
+	}
+	m.SetCodecs([]media.Codec{codec})
+	err := ri.ReInvite(ctx)
+	if err == nil {
+		if got := media.CodecAudioFromSession(m.MediaSession()); sameCodec(got, codec) {
+			leg.codec = got
+			return nil
+		}
+		err = errors.New("answer did not take the codec")
+	}
+	m.SetCodecs(prev)
+	return err
+}

@@ -6,7 +6,7 @@
 set -u
 HOST="${DIALLER_HOST:-dialler}"
 PORT="${DIALLER_SIP_PORT:-5061}"
-USER="${SIP_USER:-201}"
+USER="${SIP_USER:-211}"
 
 echo "== environment"
 sipp -v 2>&1 | grep -m1 -i 'sipp v' | sed 's/^/   /'

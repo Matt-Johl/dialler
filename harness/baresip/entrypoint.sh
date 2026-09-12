@@ -7,13 +7,18 @@
 # CODECS (baresip audio_codecs list), AUDIO_SOURCE (baresip audio_source;
 # default the test tone, "aufile,/media/silence.wav" for a silent phone).
 set -eu
-: "${SIP_USER:=201}"
+: "${SIP_USER:=211}"
 : "${SIP_DOMAIN:=dialler}"
 : "${REGINT:=300}"
 : "${TRANSPORT:=tls}"
 : "${AUTH_USER:=$SIP_USER}"
 : "${AUTH_PASS:=unused}"
-: "${CODECS:=opus/48000/2,PCMU/8000/1}"
+# opus/48000/1: the phones run mono Opus (config opus_stereo no), and
+# baresip's account list names the codec by its audio channel count; the
+# SDP still carries opus/48000/2. A /2 here finds no codec → PCMU fallback.
+# G722/16000/1: likewise named by its audio rate (16 kHz), not the 8000 RTP
+# clock the SDP carries (RFC 3551); G722/8000/1 is "audio codec not found".
+: "${CODECS:=opus/48000/1,G722/16000/1,PCMU/8000/1}"
 : "${AUDIO_SOURCE:=aufile,/media/in.wav}"
 CFG="$HOME/.baresip"
 mkdir -p "$CFG"

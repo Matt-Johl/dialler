@@ -32,14 +32,14 @@ type Device struct {
 }
 
 type record struct {
-	User      string    `json:"user"`
-	TokenHash string    `json:"token_hash"` // hex sha256
+	User      string `json:"user"`
+	TokenHash string `json:"token_hash"` // hex sha256
 	// HA1 is the SIP Digest form of the same token, MD5(device:realm:token)
 	// (sipauth.HA1): what the app-leg registrar verifies against. Empty for
 	// credentials issued before a realm was configured; re-issue those.
-	HA1 string `json:"ha1,omitempty"`
-	IssuedAt  time.Time `json:"issued_at"`
-	Revoked   bool      `json:"revoked"`
+	HA1      string    `json:"ha1,omitempty"`
+	IssuedAt time.Time `json:"issued_at"`
+	Revoked  bool      `json:"revoked"`
 }
 
 // Store is safe for concurrent use.

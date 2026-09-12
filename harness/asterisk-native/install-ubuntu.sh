@@ -34,4 +34,11 @@ systemctl enable asterisk >/dev/null 2>&1 || true
 systemctl restart asterisk
 sleep 2
 asterisk -rx 'pjsip show endpoints' | sed -n '1,40p'
+# Wideband on the trunk (SPEC §4.4 rule 4) needs codec_g722, which ships
+# with the Asterisk core; without it every call silently falls back to G.711.
+if asterisk -rx 'core show codecs audio' | grep -q g722; then
+  echo "codec g722: present"
+else
+  echo "WARNING: Asterisk has no g722 codec — trunk calls will be G.711 only" >&2
+fi
 echo "== done. Phone: register 101/dialler101 to $(hostname -I | awk '{print $1}'):5060 UDP; console: sudo asterisk -rvvv"

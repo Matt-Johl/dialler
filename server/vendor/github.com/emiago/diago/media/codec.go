@@ -20,6 +20,12 @@ var (
 	CodecAudioAlaw          = Codec{PayloadType: 8, SampleRate: 8000, SampleDur: 20 * time.Millisecond, NumChannels: 1, Name: "PCMA"}
 	CodecAudioOpus          = Codec{PayloadType: 96, SampleRate: 48000, SampleDur: 20 * time.Millisecond, NumChannels: 2, Name: "opus"}
 	CodecTelephoneEvent8000 = Codec{PayloadType: 101, SampleRate: 8000, SampleDur: 20 * time.Millisecond, NumChannels: 1, Name: "telephone-event"}
+	// CodecAudioG722 (Dialler vendor patch): G.722 wideband, static payload
+	// type 9. SampleRate is the RTP CLOCK, which RFC 3551 fixes at 8000 for
+	// G.722 although the audio is 16 kHz — so timestamps advance 160 per
+	// 20 ms exactly as for G.711, and the relay's timing maths holds. The
+	// server never decodes it; it is only offered, matched and relayed.
+	CodecAudioG722 = Codec{PayloadType: 9, SampleRate: 8000, SampleDur: 20 * time.Millisecond, NumChannels: 1, Name: "G722"}
 )
 
 type Codec struct {
@@ -90,6 +96,8 @@ func CodecAudioFromPayloadType(payloadType uint8) (Codec, error) {
 		return CodecAudioUlaw, nil
 	case sdp.FORMAT_TYPE_OPUS:
 		return CodecAudioOpus, nil
+	case sdp.FORMAT_TYPE_G722:
+		return CodecAudioG722, nil
 	case sdp.FORMAT_TYPE_TELEPHONE_EVENT:
 		return CodecTelephoneEvent8000, nil
 	}
@@ -106,6 +114,8 @@ func mapSupportedCodec(f string) Codec {
 		return CodecAudioUlaw
 	case sdp.FORMAT_TYPE_OPUS:
 		return CodecAudioOpus
+	case sdp.FORMAT_TYPE_G722:
+		return CodecAudioG722
 	case sdp.FORMAT_TYPE_TELEPHONE_EVENT:
 		return CodecTelephoneEvent8000
 	default:
@@ -153,6 +163,15 @@ func CodecsFromSDPRead(formats []string, attrs []string, codecsAudio []Codec) (i
 
 		if f == "8" {
 			codecsAudio[n] = CodecAudioAlaw
+			n++
+			continue
+		}
+
+		// Static payload type 9 (Dialler vendor patch): a peer may omit the
+		// rtpmap for G.722 just as for PCMU/PCMA; and when it sends one it is
+		// "G722/8000", which parses to the same struct below.
+		if f == sdp.FORMAT_TYPE_G722 {
+			codecsAudio[n] = CodecAudioG722
 			n++
 			continue
 		}

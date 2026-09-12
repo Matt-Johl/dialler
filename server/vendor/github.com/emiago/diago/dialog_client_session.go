@@ -191,8 +191,16 @@ func (d *DialogClientSession) invite(ctx context.Context, med *DialogMedia, opts
 			// We do not want originator to be remote side, but we want to apply codec filtering
 			sess.SetRemoteAddr(&net.UDPAddr{})
 
-			// Now to totally remove transcoding a chance. Leave only one codec of different types
-			audioCodec := media.Codec{}
+			// Offer every audio codec the originator and this dialog have in
+			// common, in the originator's order, plus one telephone-event.
+			//
+			// Dialler patch: upstream kept only the FIRST common audio codec
+			// ("leave only one codec of different types"). Whatever the far
+			// end answers is common with the originator either way, so the
+			// relay never transcodes; but a single-codec offer leaves the far
+			// end no fallback — with G.722 preferred, a PBX that only speaks
+			// G.711 was offered G.722 alone and the call failed. Seen on the
+			// user's Asterisk 2026-09-12 ("no supported codecs found").
 			telEventCodec := media.Codec{}
 
 			codecs := sess.CommonCodecs()
@@ -200,27 +208,21 @@ func (d *DialogClientSession) invite(ctx context.Context, med *DialogMedia, opts
 				codecs = sess.Codecs
 			}
 
+			audioCodecs := make([]media.Codec, 0, len(codecs))
 			for _, c := range codecs {
-				// TODO refactor this
 				if strings.HasPrefix(c.Name, "telephone-event") {
 					if telEventCodec.SampleRate == 0 {
 						telEventCodec = c
 					}
 					continue
 				}
-
-				if audioCodec.SampleRate == 0 {
-					audioCodec = c
-				}
+				audioCodecs = append(audioCodecs, c)
 			}
 
 			// TODO: DO we need to be thread safe here?
 			// In this case we want to rewrite what should be Offered in our SDP
 			// NOTE: Generally this would require Session Fork, but for now we avoid this extra step.
-			sessCodecs := sess.Codecs[:0]
-			if audioCodec.SampleRate != 0 {
-				sessCodecs = append(sessCodecs, audioCodec)
-			}
+			sessCodecs := append(sess.Codecs[:0], audioCodecs...)
 
 			// TODO: should we only match telephone event with same sampling rate?
 			if telEventCodec.SampleRate != 0 {
@@ -464,6 +466,9 @@ func (d *DialogClientSession) ReInvite(ctx context.Context) error {
 
 	res, err := d.reInviteDo(ctx, req)
 	if err != nil {
+		return err
+	}
+	if err := d.applyReInviteAnswer(res); err != nil {
 		return err
 	}
 

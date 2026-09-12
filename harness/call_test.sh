@@ -1,5 +1,5 @@
 #!/bin/sh
-# Headless app↔app call (SPEC §7.2): PHONE_A (201) dials 202, the server
+# Headless app↔app call (SPEC §7.2): PHONE_A (211) dials 212, the server
 # bridges the legs with media proxied through itself, and the callee's
 # recording is asserted to contain audio. Exit 0 = pass.
 #
@@ -47,8 +47,8 @@ ctl() {
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 $PHONE_A 4444 >/dev/null"
 }
 
-echo "== dial 201 -> 202@$DOMAIN"
-ctl "{\"command\":\"dial\",\"params\":\"202@$DOMAIN\"}"
+echo "== dial 211 -> 212@$DOMAIN"
+ctl "{\"command\":\"dial\",\"params\":\"212@$DOMAIN\"}"
 sleep "$CALL_SECONDS"
 ctl '{"command":"hangup"}'
 sleep 2
@@ -63,4 +63,4 @@ echo "== callee"
 $COMPOSE logs --no-log-prefix "$PHONE_B" 2>&1 | grep -iE 'Call established|incoming rtp' | sed 's/^/   /'
 
 echo "== media"
-python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-202.wav"
+python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-212.wav"

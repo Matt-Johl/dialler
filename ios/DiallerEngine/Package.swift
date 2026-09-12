@@ -47,5 +47,8 @@ let package = Package(
         // answer, CallKit activation sequence) on the iOS simulator against
         // the docker harness, asserted on RTP + rendered audio energy.
         .executableTarget(name: "sim-call", dependencies: ["DiallerEngine", "DiallerCore", "DiallerProtocol", "CBaresip"]),
+        // Pure-Swift checks on the engine (the baresip config profile); no
+        // SIP stack is started. `cd ios/DiallerEngine && swift test --disable-sandbox`.
+        .testTarget(name: "DiallerEngineTests", dependencies: ["DiallerEngine"]),
     ]
 )

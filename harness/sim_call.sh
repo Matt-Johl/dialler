@@ -85,7 +85,7 @@ if [ -n "${OUTBOUND:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; 
   # must already hold a live registration with THIS server instance:
   # recreate it and wait for that registration BEFORE the phone starts.
   # (echo / 600 need no callee: the server or the PBX answers.)
-  echo "== phone-b (202) must be registered (callee)"
+  echo "== phone-b (212) must be registered (callee)"
   MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ "$SERVER" = native ]; then
     BARESIP_B_OUTBOUND="$HOST:5061" $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
@@ -93,7 +93,7 @@ if [ -n "${OUTBOUND:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; 
   else
     $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
     i=0
-    until $C logs --no-log-prefix --since "$MARK" dialler 2>/dev/null | grep -q 'sip register" user=202'; do
+    until $C logs --no-log-prefix --since "$MARK" dialler 2>/dev/null | grep -q 'sip register" user=212'; do
       i=$((i+1)); [ $i -le 25 ] || { echo "FAIL: phone-b did not register within 25s"; exit 1; }
       sleep 1
     done
@@ -101,11 +101,24 @@ if [ -n "${OUTBOUND:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; 
   echo "   phone-b registered"
 fi
 
+# IMPAIR=1: 2 % loss and 30 ± 10 ms jitter on everything the docker server
+# sends (harness/netem), so the simulated phone's decoder has to conceal.
+# Started last — a later `up` recreating the server would strand the
+# shaper in a dead namespace. The sim is told, so a lossy verdict is not
+# a failure in that run.
+if [ "${IMPAIR:-0}" = 1 ]; then
+  [ "$SERVER" = native ] && { echo "FAIL: IMPAIR=1 needs the docker server"; exit 1; }
+  docker compose -f harness/docker-compose.yml --profile impair up --build -d netem >/dev/null 2>&1
+  sleep 1
+  echo "== impaired: $(docker compose -f harness/docker-compose.yml --profile impair logs --no-log-prefix netem 2>&1 | grep 'netem applied' | tail -1)"
+  export SIMCTL_CHILD_IMPAIRED=1
+fi
+
 echo "== simulator $SIM"
 xcrun simctl boot "$SIM" 2>/dev/null || true
 : > "$OUT"
 # GATEWAY=no: no wire-protocol session, so no wake; calls ring from the INVITE.
-# OUTBOUND=202 (or any target): the simulated phone dials phone-b, which
+# OUTBOUND=212 (or any target): the simulated phone dials phone-b, which
 # auto-answers and plays its tone — the keypad / directory path.
 MODE=""; [ "${GATEWAY:-yes}" = no ] && MODE=nogateway
 [ -n "${OUTBOUND:-}" ] && MODE="outbound:$OUTBOUND"
@@ -121,7 +134,9 @@ if [ -n "${TRANSFER:-}" ]; then SOURCE=""; fi   # silent phone, so any audio pho
 # is told 486 Busy Here — not 480, which PBXs and phones show as "no
 # response" — and that our side never established the call.
 if [ -n "${DECLINE:-}" ]; then SOURCE=""; fi
-xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-a tok_dev_a_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}" > "$OUT" 2>&1 &
+# dev-s / 203: the simulator's own enrolment (harness/provision.sh), so a
+# real phone registered as dev-a / 201 to this server never takes its calls.
+xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}" > "$OUT" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
 
@@ -131,7 +146,7 @@ until grep -q 'sim: registered' "$OUT"; do
   grep -q 'sim: FAIL\|sim: gateway error' "$OUT" && { grep -E 'sim:|engine:' "$OUT" | sed 's/^/   /'; exit 1; }
   sleep 1
 done
-echo "   registered as 201 (dev-a)"
+echo "   registered as 203 (dev-s)"
 
 # RESTART_SERVER=1: restart the server under the registered app. The app
 # must reconnect its gateway session on its own (backoff), get a new
@@ -153,7 +168,7 @@ if [ -n "${RESTART_SERVER:-}" ]; then
   sleep 4
 fi
 
-[ -n "${OUTBOUND:-}" ] || echo "== phone-b (202) dials 201"
+[ -n "${OUTBOUND:-}" ] || echo "== phone-b (212) dials 203 (the simulator)"
 ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
@@ -163,7 +178,7 @@ while :; do
   if [ -n "${OUTBOUND:-}" ]; then
     echo "   (outbound: the simulated phone dials $OUTBOUND)"
   else
-    ctl '{"command":"dial","params":"201@dialler"}'
+    ctl '{"command":"dial","params":"203@dialler"}'
   fi
   i=0
   until grep -q "sim: call $n: \|sim: FAIL" "$OUT"; do
@@ -179,7 +194,7 @@ while :; do
     i=$((i+1)); [ $i -le 20 ] || break
     sleep 1
   done
-  echo "== phone-b dials 201 again (call $n)"
+  echo "== phone-b dials 203 again (call $n)"
   sleep 2
 done
 i=0
@@ -195,7 +210,7 @@ grep -E 'sim:|engine:|callkit|audiounit:|stream:|INVITE|answered|incoming|wake|c
 if [ -n "${TRANSFER:-}" ]; then
   echo "== transfer: did phone-b hear the echo after being transferred?"
   sleep 3
-  python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-202.wav" || { echo "FAIL: phone-b heard nothing after the transfer"; exit 1; }
+  python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-212.wav" || { echo "FAIL: phone-b heard nothing after the transfer"; exit 1; }
 fi
 if [ -n "${DECLINE:-}" ]; then
   echo "== decline: what was the caller (phone-b) told?"

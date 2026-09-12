@@ -66,11 +66,53 @@ func TestLegNAT(t *testing.T) {
 	}
 }
 
-func TestTrunkCodecsAreG711Only(t *testing.T) {
-	for _, c := range trunkCodecs {
-		if c.SampleRate != 8000 || (c.Name != "PCMU" && c.Name != "PCMA") {
-			t.Errorf("trunk offered %s/%d; a PBX trunk gets G.711 only", c.Name, c.SampleRate)
+// A PBX trunk is offered the G.711 family the relay can copy end to end
+// without transcoding: G.722 wideband first (RTP clock 8000 like G.711,
+// RFC 3551), then PCMU/PCMA. Never Opus by default — Asterisk here has no
+// Opus and CUCM trunks do not either.
+func TestTrunkCodecsAreWidebandThenG711(t *testing.T) {
+	codecs := Config{}.trunkCodecs()
+	if len(codecs) == 0 || codecs[0].Name != "G722" {
+		t.Fatalf("default trunk offer = %v; G.722 must come first", codecs)
+	}
+	for _, c := range codecs {
+		if c.SampleRate != 8000 || (c.Name != "G722" && c.Name != "PCMU" && c.Name != "PCMA") {
+			t.Errorf("trunk offered %s/%d; a PBX trunk gets G.722 or G.711 only", c.Name, c.SampleRate)
 		}
+	}
+	narrow := Config{TrunkCodecs: []media.Codec{media.CodecAudioUlaw}}.trunkCodecs()
+	if len(narrow) != 1 || narrow[0].Name != "PCMU" {
+		t.Errorf("configured trunk codecs not honoured: %v", narrow)
+	}
+}
+
+func TestParseCodecs(t *testing.T) {
+	got, err := ParseCodecs("g722, PCMU ,alaw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Name != "G722" || got[1].Name != "PCMU" || got[2].Name != "PCMA" {
+		t.Errorf("ParseCodecs = %v", got)
+	}
+	if _, err := ParseCodecs("g722,g729"); err == nil {
+		t.Error("an unknown codec name must be refused, not ignored")
+	}
+	if _, err := ParseCodecs(""); err == nil {
+		t.Error("an empty list must be refused")
+	}
+}
+
+// The vendored SDP reader must recognise G.722 both as a bare static
+// payload type and with its rtpmap, and must not confuse it with G.711.
+func TestSDPReadsG722(t *testing.T) {
+	var codecs [8]media.Codec
+	n, err := media.CodecsFromSDPRead([]string{"9", "0", "8"}, nil, codecs[:])
+	if err != nil || n != 3 || codecs[0].Name != "G722" || codecs[0].PayloadType != 9 || codecs[0].SampleRate != 8000 {
+		t.Fatalf("static G722 offer: n=%d err=%v codecs=%v", n, err, codecs[:n])
+	}
+	n, err = media.CodecsFromSDPRead([]string{"96", "9"}, []string{"rtpmap:96 opus/48000/2", "rtpmap:9 G722/8000"}, codecs[:])
+	if err != nil || n != 2 || codecs[1] != media.CodecAudioG722 {
+		t.Fatalf("G722 with rtpmap: n=%d err=%v codecs=%v", n, err, codecs[:n])
 	}
 }
 

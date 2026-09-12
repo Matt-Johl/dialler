@@ -29,6 +29,10 @@ services:
       # Host-side ports are overridable so this harness can run next to a
       # native `make dev-server` (DIALLER_SIGNAL_HOSTPORT / SIP_HOSTPORT /
       # HTTP_HOSTPORT / RTP_MIN / RTP_MAX); the RTP range is published 1:1.
+      # Then ALSO set DIALLER_PUBLIC_HOST=dialler: the Makefile defaults it
+      # to the Mac's address, a phone answering an INVITE opens a new TLS
+      # connection to that host on 5061 — and with a native server there,
+      # its responses land on the wrong server (every callee test fails).
       - -rtp-min=${DIALLER_RTP_MIN:-20000}
       - -rtp-max=${DIALLER_RTP_MAX:-20100}
       - -public-sip-port=${DIALLER_SIP_HOSTPORT:-5061}
@@ -39,6 +43,9 @@ services:
       # on :5060/udp.
       - -trunk=${DIALLER_TRUNK:-sip:172.30.0.20:5060;transport=udp}
       - -trunk-addr=:5060
+      # What the PBX is offered: G.722 wideband first, G.711 fallback; a
+      # narrowband-only PBX gets "pcmu,pcma".
+      - -trunk-codecs=${DIALLER_TRUNK_CODECS:-g722,pcmu,pcma}
       # Off here on purpose: Docker Desktop's UDP port proxy rewrites a LAN
       # phone's RTP source, and replies to that rewritten source are not
       # delivered, so learning the source (symmetric RTP) silences the phone
@@ -58,7 +65,10 @@ services:
       - "${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}:${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}/udp" # relayed media, so phones (and containers via the host address) reach it
 
   asterisk:
-    build: ./asterisk
+    build:
+      context: ./asterisk
+      args:
+        ASTERISK_CODECS: ${ASTERISK_CODECS:-g722,ulaw,alaw} # ulaw,alaw = narrowband-only PBX
     depends_on: [dialler]
     networks:
       default:
@@ -69,7 +79,9 @@ services:
   # Desk phone 100: registers to Asterisk (UDP, Digest), G.711 only — the
   # far side of the trunk leg for harness/trunk_test.sh.
   baresip-c:
-    build: ./baresip
+    build:
+      context: ..
+      dockerfile: harness/baresip/Dockerfile
     profiles: [test]
     depends_on: [asterisk]
     environment:
@@ -78,10 +90,27 @@ services:
       TRANSPORT: udp
       AUTH_USER: "100"
       AUTH_PASS: harness
-      CODECS: PCMU/8000/1,PCMA/8000/1
+      CODECS: G722/16000/1,PCMU/8000/1,PCMA/8000/1 # a wideband desk phone, like the 8821/WP826 (baresip names G.722 by its 16 kHz audio rate)
       OUTBOUND: asterisk:5060
     volumes:
       - ./baresip/media:/media
+
+  # Network impairment for the audio-quality gates (profile "impair"): shares
+  # the server's network namespace and shapes its egress, so every packet the
+  # server sends — to the phones and to the PBX — sees NETEM_LOSS random loss
+  # and NETEM_DELAY ± NETEM_JITTER. The phones' own sending stays clean: what
+  # is measured is what a phone's decoder can conceal. Used by
+  # `IMPAIR=1 make harness-echo` and `IMPAIR=1 make sim-call`.
+  netem:
+    build: ./netem
+    profiles: [impair]
+    depends_on: [dialler]
+    network_mode: "service:dialler"
+    cap_add: [NET_ADMIN]
+    environment:
+      NETEM_LOSS: "${NETEM_LOSS:-2%}"
+      NETEM_DELAY: "${NETEM_DELAY:-30ms}"
+      NETEM_JITTER: "${NETEM_JITTER:-10ms}"
 
   sipp:
     build: ./sipp
@@ -94,16 +123,18 @@ services:
       DIALLER_SIP_PORT: "5061"
 
   baresip-a:
-    build: ./baresip
+    build:
+      context: ..
+      dockerfile: harness/baresip/Dockerfile
     profiles: [test]
     depends_on: [dialler]
     environment:
-      SIP_USER: "201"
+      SIP_USER: "211"
       SIP_DOMAIN: dialler
       # App-leg SIP Digest: the enrolled device's id and fixed dev token
       # (harness/provision.sh).
-      AUTH_USER: dev-a
-      AUTH_PASS: tok_dev_a_harness_fixed
+      AUTH_USER: dev-ha
+      AUTH_PASS: tok_dev_ha_harness_fixed
       # The trunk transfer test recreates this phone silent, so the desk
       # phone's recording can only contain audio the PBX sent it.
       AUDIO_SOURCE: ${AUDIO_SOURCE:-aufile,/media/in.wav}
@@ -111,14 +142,16 @@ services:
       - ./baresip/media:/media
 
   baresip-b:
-    build: ./baresip
+    build:
+      context: ..
+      dockerfile: harness/baresip/Dockerfile
     profiles: [test]
     depends_on: [dialler]
     environment:
-      SIP_USER: "202"
+      SIP_USER: "212"
       SIP_DOMAIN: dialler
-      AUTH_USER: dev-b
-      AUTH_PASS: tok_dev_b_harness_fixed
+      AUTH_USER: dev-hb
+      AUTH_PASS: tok_dev_hb_harness_fixed
       REGINT: "${BARESIP_B_REGINT:-300}" # 0 → starts unregistered (wake test)
       # Set to <mac-ip>:5061 to register with a server running natively on
       # the Mac instead of the dialler container (harness/ring_native.sh).

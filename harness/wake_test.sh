@@ -1,9 +1,9 @@
 #!/bin/sh
 # Headless wake test (SPEC §7.2, the LPC/APNS path without a device):
-#   - phone-b (202) starts UNREGISTERED (REGINT=0);
-#   - fake-app holds a wire-protocol connection to the gateway as dev-b;
-#   - phone-a (201) dials 202 → server finds 202 unregistered → sends `wake`
-#     to dev-b → fake-app acks and tells phone-b to REGISTER → the server's
+#   - phone-b (212) starts UNREGISTERED (REGINT=0);
+#   - fake-app holds a wire-protocol connection to the gateway as dev-hb;
+#   - phone-a (211) dials 212 → server finds 212 unregistered → sends `wake`
+#     to dev-hb → fake-app acks and tells phone-b to REGISTER → the server's
 #     WaitRegistered fires → the bridge completes → media flows.
 # Asserts the wake arrived, the server logged the wake path, and the callee
 # recorded audio. Exit 0 = pass.
@@ -16,7 +16,7 @@ MEDIA_DIR=harness/baresip/media
 CALL_SECONDS="${CALL_SECONDS:-8}"
 # On wake the fake app creates phone-b's user agent, which registers at once
 # (a UA started with regint=0 has no registration objects, so uareg is a no-op).
-ACCOUNT_B='<sip:202@dialler;transport=tls>;auth_user=dev-b;auth_pass=tok_dev_b_harness_fixed;regint=300;answermode=auto;audio_codecs=opus/48000/2,PCMU/8000/1'
+ACCOUNT_B='<sip:212@dialler;transport=tls>;auth_user=dev-hb;auth_pass=tok_dev_hb_harness_fixed;regint=300;answermode=auto;audio_codecs=opus/48000/1,PCMU/8000/1'
 WAKE_CMD="${WAKE_CMD:-{\"command\":\"uanew\",\"params\":\"$ACCOUNT_B\"}}"
 KEEP="${KEEP:-0}"
 
@@ -30,16 +30,16 @@ echo "== up"
 $COMPOSE up --build -d dialler >/dev/null 2>&1
 sleep 2
 PROV="$(sh harness/innet.sh "$NET" harness/provision.sh)"
-TOKEN_B="$(printf '%s\n' "$PROV" | sed -n 's/.*"device_id":"dev-b".*"token":"\([^"]*\)".*/\1/p' | head -n1)"
-[ -n "$TOKEN_B" ] || { echo "FAIL: could not read dev-b token from provisioning:"; echo "$PROV"; exit 1; }
+TOKEN_B="$(printf '%s\n' "$PROV" | sed -n 's/.*"device_id":"dev-hb".*"token":"\([^"]*\)".*/\1/p' | head -n1)"
+[ -n "$TOKEN_B" ] || { echo "FAIL: could not read dev-hb token from provisioning:"; echo "$PROV"; exit 1; }
 
 BARESIP_B_REGINT=0 $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
 sleep 4
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=202'; then
+if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=212'; then
   echo "FAIL: phone-b registered at startup; the wake path would not be exercised"; exit 1
 fi
 
-echo "== fake-app connects as dev-b and waits for a wake"
+echo "== fake-app connects as dev-hb and waits for a wake"
 WAKE_OUT="$(mktemp)"
 # The dialler service pins its address on the compose network (Asterisk's
 # resolver needs a fixed one), so a second container of that service
@@ -48,7 +48,7 @@ WAKE_OUT="$(mktemp)"
 IMG="$($COMPOSE images -q dialler 2>/dev/null | head -n1)"
 [ -n "$IMG" ] || IMG="$(docker inspect --format '{{.Image}}' dialler-harness-dialler-1)"
 docker run --rm --network "$NET" --entrypoint /fake-app "$IMG" \
-    -server dialler:7443 -device dev-b -token "$TOKEN_B" -kind extension \
+    -server dialler:7443 -device dev-hb -token "$TOKEN_B" -kind extension \
     -phone-ctl baresip-b:4444 -wake-cmd "$WAKE_CMD" -timeout 40s -hold 20s \
     > "$WAKE_OUT" 2>"$WAKE_OUT.err" &
 FAKE_PID=$!
@@ -59,8 +59,8 @@ ctl() {
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
 
-echo "== dial 201 -> 202 (202 is asleep)"
-ctl '{"command":"dial","params":"202@dialler"}'
+echo "== dial 211 -> 212 (212 is asleep)"
+ctl '{"command":"dial","params":"212@dialler"}'
 sleep "$CALL_SECONDS"
 ctl '{"command":"hangup"}'
 sleep 2
@@ -74,10 +74,10 @@ fi
 echo "   wake: $(cat "$WAKE_OUT")"
 
 echo "== server"
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|woke|wake_ack|sip register.*202|bridged|call ended|level=(ERROR|WARN)' | tail -12 | sed 's/^/   /'
-for want in 'woke callee device' 'wake_ack' 'sip register.*user=202' 'msg=bridged'; do
+$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|woke|wake_ack|sip register.*212|bridged|call ended|level=(ERROR|WARN)' | tail -12 | sed 's/^/   /'
+for want in 'woke callee device' 'wake_ack' 'sip register.*user=212' 'msg=bridged'; do
   $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -qE "$want" || { echo "FAIL: server log lacks: $want"; exit 1; }
 done
 
 echo "== media"
-python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-202.wav"
+python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-212.wav"

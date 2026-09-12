@@ -1,6 +1,6 @@
 #!/bin/sh
 # Ring a real phone through a server running NATIVELY on this Mac (`make
-# dev-server`), with the harness's phone-b (202, in docker) as the caller.
+# dev-server`), with the harness's phone-b (212, in docker) as the caller.
 #
 # Why: Docker Desktop's UDP port proxy does not carry a two-way RTP flow
 # between a LAN phone and a container — the phone gets ~1 s of audio and
@@ -10,7 +10,7 @@
 # reaches it through ordinary outbound NAT, which is fine.
 #
 #   make dev-server                 # terminal 1: native server + provisioning
-#   make harness-ring-native        # terminal 2: 202 dials 201 (the phone)
+#   make harness-ring-native        # terminal 2: 212 dials 201 (the phone)
 set -eu
 cd "$(dirname "$0")/.."
 HOST="${HOST:-$(ipconfig getifaddr en0 2>/dev/null || ifconfig en0 2>/dev/null | awk '/inet /{print $2; exit}')}"
@@ -27,7 +27,7 @@ ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
 }
-echo "== phone-b (202, docker) → native server at $HOST → dials 201 (the phone)"
+echo "== phone-b (212, docker) → native server at $HOST → dials 201 (the phone)"
 ctl '{"command":"dial","params":"201@dialler"}'
 echo "   ringing for ${CALL_SECONDS}s — answer on the phone; the native server's log shows the relay counters"
 sleep "$CALL_SECONDS"

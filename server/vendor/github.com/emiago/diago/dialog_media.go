@@ -225,6 +225,31 @@ func (d *DialogMedia) handleMediaUpdate(req *sip.Request, tx sip.ServerTransacti
 }
 
 // Must be protected with lock
+// SetCodecs (Dialler patch) narrows the established media session to codecs
+// so that ReInvite offers them; see MediaSession.SetCodecs.
+func (d *DialogMedia) SetCodecs(codecs []media.Codec) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.mediaSession != nil {
+		d.mediaSession.SetCodecs(codecs)
+	}
+}
+
+// applyReInviteAnswer (Dialler patch) applies the SDP answer to our own
+// re-INVITE. Upstream ReInvite re-sent the current SDP and ignored the
+// answer's body — enough for hold, not for a codec change, where the
+// negotiated codec (and possibly the peer's media address) come from the
+// answer.
+func (d *DialogMedia) applyReInviteAnswer(res *sip.Response) error {
+	body := res.Body()
+	if len(body) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sdpReInviteUnsafe(body)
+}
+
 func (d *DialogMedia) sdpReInviteUnsafe(sdp []byte) error {
 	if d.mediaSession == nil {
 		return fmt.Errorf("no media session present")

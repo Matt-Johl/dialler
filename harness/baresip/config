@@ -16,16 +16,34 @@ sip_transports          @TRANSPORT@
 audio_player            aufile,/media/out-@SIP_USER@.wav
 audio_source            @AUDIO_SOURCE@
 audio_alert             none
-audio_srate             48000
-audio_channels          1
 
-# Media
+# The same audio profile the app runs (BaresipCallEngine.stackConfig), so
+# the headless quality gates measure what the app does: adaptive jitter
+# buffer 2–8 frames (40–160 ms), adaptive play buffer, Opus in voip mode
+# with in-band FEC, RTP statistics on, dead media hangs up after 30 s.
+# Measured on the impaired echo path (2 % loss, 30 ± 10 ms jitter):
+# without this profile 6 gaps and 160 ms; see SPEC §6 near-term item 5.
+audio_jitter_buffer_type  adaptive
+audio_jitter_buffer_delay 2-8
+audio_buffer              40-160
+audio_buffer_mode         adaptive
+opus_application        voip
+opus_inbandfec          yes
+opus_packet_loss        10
+opus_bitrate            32000
+opus_stereo             no
+opus_sprop_stereo       no
+opus_complexity         6
+opus_cbr                no
+opus_dtx                no
+rtp_stats               yes
+rtp_timeout             30
 rtp_tos                 184
-jitter_buffer_type      adaptive
 
 # Modules
 module_path             @MODULE_PATH@
 module                  opus.so
+module                  g722.so
 module                  g711.so
 module                  aufile.so
 module                  ice.so

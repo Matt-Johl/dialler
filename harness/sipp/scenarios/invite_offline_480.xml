@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="ISO-8859-1" ?>
 <!DOCTYPE scenario SYSTEM "sipp.dtd">
 <!--
-  INVITE to a provisioned user (202) whose device has no live signal
+  INVITE to a provisioned user (212) whose device has no live signal
   connection: the server has nobody to wake, so it fails fast with 480
   instead of holding the caller for the ring timeout.
 
   Initial INVITEs on the app leg are Digest-challenged like REGISTER: the
   first INVITE gets 401 (ACKed), the second carries the enrolled device's
-  credential. The From user (201) must be the one dev-a is enrolled for.
+  credential. The From user (211) must be the one dev-ha is enrolled for.
 -->
 <scenario name="invite_offline_480">
   <send>
     <![CDATA[
-      INVITE sip:202@dialler SIP/2.0
+      INVITE sip:212@dialler SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
       From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:202@dialler>
+      To: <sip:212@dialler>
       Call-ID: [call_id]
       CSeq: 1 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
@@ -35,11 +35,11 @@
   <recv response="401" auth="true" timeout="5000"/>
   <send>
     <![CDATA[
-      ACK sip:202@dialler SIP/2.0
+      ACK sip:212@dialler SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
       From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:202@dialler>[peer_tag_param]
+      To: <sip:212@dialler>[peer_tag_param]
       Call-ID: [call_id]
       CSeq: 1 ACK
       Content-Length: 0
@@ -47,15 +47,15 @@
   </send>
   <send>
     <![CDATA[
-      INVITE sip:202@dialler SIP/2.0
+      INVITE sip:212@dialler SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
       From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:202@dialler>
+      To: <sip:212@dialler>
       Call-ID: [call_id]
       CSeq: 2 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
-      [authentication username=dev-a password=tok_dev_a_harness_fixed]
+      [authentication username=dev-ha password=tok_dev_ha_harness_fixed]
       Content-Type: application/sdp
       Content-Length: [len]
 
@@ -73,11 +73,11 @@
   <recv response="480" timeout="5000"/>
   <send>
     <![CDATA[
-      ACK sip:202@dialler SIP/2.0
+      ACK sip:212@dialler SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
       From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:202@dialler>[peer_tag_param]
+      To: <sip:212@dialler>[peer_tag_param]
       Call-ID: [call_id]
       CSeq: 2 ACK
       Content-Length: 0

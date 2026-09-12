@@ -4,7 +4,7 @@
   REGISTER over TLS to the light server. The app leg is Digest-authenticated
   with the enrolled device's credential (SPEC §4.4 rule 2): the first
   REGISTER is challenged (401), the second carries the device's response
-  and is accepted (200 with our Contact echoed). dev-a is enrolled for 201,
+  and is accepted (200 with our Contact echoed). dev-ha is enrolled for 211,
   the [service] user run.sh passes.
 -->
 <scenario name="register_tls">
@@ -35,7 +35,7 @@
       Call-ID: [call_id]
       CSeq: 2 REGISTER
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
-      [authentication username=dev-a password=tok_dev_a_harness_fixed]
+      [authentication username=dev-ha password=tok_dev_ha_harness_fixed]
       User-Agent: sipp-harness
       Content-Length: 0
     ]]>

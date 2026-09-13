@@ -25,7 +25,35 @@ Apple-sanctioned wakeup that does not route through APNS.
 ### Hard constraints this imposes
 - **Wi-Fi-network-bound.** The push provider only runs while the device is
   joined to a designated Wi-Fi SSID (`matchSSIDs`, a list, so multi-SSID
-  sites are fine). Off that network there are no wakeups and the phone is
+  sites are fine; the app takes them comma-separated since 2026-09-13).
+  A handoff between two listed SSIDs is a network change: the provider
+  stops (`NEProviderStopReason` 3, no network) and restarts on the new
+  one, and the app registers again from its new address. A call placed
+  in that window is dialled to the registration the server holds at the
+  moment, which may be the old address — so the server watches the
+  registry while a callee's INVITE is in flight and re-dials the new
+  route the instant a registration from elsewhere arrives
+  (`registry.WaitRouteChange`, `retargetError` in `internal/b2bua`, at
+  most 3 re-targets per call); before that, every such call ran into
+  Timer B (32 s) and died (2026-09-13 two-SSID test). An INVITE on a
+  route that has given no response is abandoned at once when the caller
+  hangs up, the callee moves or the wake is declined (sipgo's forced
+  cancel; with a response, the normal CANCEL/487 runs) — sipgo otherwise
+  waits for Timer B before it will cancel, and the wake_cancel came 20–30
+  s after the caller had gone, so the app rang for nobody. The wake sent
+  on the old, dead extension connection is replayed to whichever session
+  of the device connects next within the ring window; the client itself
+  reconnects the moment Network.framework reports a better path for its
+  connection (`betterPathUpdateHandler` in `LANSocketTransport`, Apple's
+  own migration guidance), which is what a handoff to a new address
+  produces. The SIP stack must learn the new address too: baresip lists
+  its interface addresses once at start (the netroam module, not loaded
+  here, is what would refresh them), so the shim re-reads them before
+  every transport reset — with the stale list the rebuilt transport and
+  every call's media socket bound the old address and the app answered
+  each INVITE with 500 Call Error (2026-09-13, the second SSID test:
+  "unavailable" on the caller's phone, a few seconds of CallKit on the
+  iPhone). Off that network there are no wakeups and the phone is
   unreachable for incoming calls: this is the accepted product scope, not a
   bug. It matches the on-prem goal ("works even if internet is down, as long
   as local Wi-Fi is up"). Remote reach (cellular / home Wi-Fi) is unscheduled
@@ -178,6 +206,19 @@ are already implemented — do not remove them because remote reach is deferred.
    leg to it by re-INVITE.
 5. Wake, directory and presence travel on the **wire-protocol channel**.
    SIP carries call setup and media only.
+5a. **QoS on every hop** (Phase E, 2026-09-13): media is marked DSCP EF
+   (46) and signalling CS3 (24) by the app, the server and the PBX. App:
+   baresip `rtp_tos 184` / `sip_tos 96`, and a libre patch that also sets
+   Apple's `SO_NET_SERVICE_TYPE` (voice / signalling — what iOS maps to
+   the Wi-Fi WMM access category; the DSCP byte alone does not) and
+   `IPV6_TCLASS`; the wire-protocol socket uses `NWParameters.serviceClass
+   = .signaling`. Server: RTP/RTCP sockets EF and the SIP and wire-protocol
+   listeners CS3 through `net.ListenConfig` Control hooks (`internal/qos`,
+   vendored `media.ListenConfig` / `sipgo.ListenConfig`), accepted TLS
+   connections inheriting the listener's mark. PBX: `tos_audio=ef`,
+   `cos_audio=5` on endpoints and `tos=cs3`, `cos=3` on transports.
+   Gate: `make harness-qos` captures the server's egress and requires
+   every RTP packet EF and every SIP/TLS packet CS3.
 6. **REFER (transfer) is handled by the server** as B2BUA, never proxied
    through to the far leg. When the remaining party and the target are both
    on the PBX, the server re-issues the transfer to the PBX (its own REFER
@@ -412,10 +453,32 @@ on by config — see §7.4.
      (fine while that was always PCMU), so a G.711-only PBX was offered
      G.722 alone and the INVITE failed — the offer now carries every common
      codec, in the caller's order (`server/vendor/PATCHES.md`).
-     Escalation if concealment on G.722/G.711 (Phase D) cannot meet the
-     loss target on the real WLAN: an app-leg Opus transcoder in the
-     server, kept out on purpose (latency, tandem coding, breaks the
-     copy-relay and the std-lib-only server).
+     *2026-09-12 (Phase D done):* honest loss and concealment. The relay
+     now rebases the source's RTP sequence numbers onto its own instead of
+     renumbering every packet (vendored `WriteSamplesSeq`), so a packet
+     lost upstream stays missing on the way out and the far end's jitter
+     buffer and concealment see it; before, a loss became a silent hole in
+     a seamlessly numbered stream that no decoder could conceal. G.711 and
+     G.722 got packet-loss concealment in the app — baresip only had it
+     for Opus — as our own unit (`ios/vendor/patches/plc`: pitch-period
+     repetition with overlap-add and a fade, after ITU-T G.711 Appendix I,
+     no third-party code; `make plc-test`), compiled into both modules and
+     into the harness phone. Measured on the impaired PBX loop (2 % loss,
+     30 ± 10 ms jitter, 12–18 drops): 7 gaps of 40 ms before; after, one
+     or two dips of 20–40 ms per call (three runs: 1×20, 1×20, 2×40 ms);
+     the gate is now ≤ 2 gaps ≤ 40 ms on both loops. The residual is
+     baresip's jitter buffer refilling after a loss (`jbuf_get` withholds
+     while `nf <= wish`; concealment runs only when the next packet is
+     pulled, so the player underruns for a frame first). Counting the
+     missing packets as frames so the next one is released on time was
+     tried and reverted the same day: it drained the buffer and made
+     things worse (4–13 gaps). Closing the last 20–40 ms needs concealment
+     driven from the playout timeline (decode on a timer when a slot's
+     packet has not arrived), a receive-path redesign — left open.
+     Escalation if concealment on G.722/G.711 cannot meet the loss target
+     on the real WLAN: an app-leg Opus transcoder in the server, kept out
+     on purpose (latency, tandem coding, breaks the copy-relay and the
+     std-lib-only server).
 
 ### Much later (not scheduled)
 
@@ -511,6 +574,7 @@ open-ended "test the app".
 | OpenSSL 3.3 | Apache-2.0 | TLS + SRTP crypto; the largest licence surface in the app (3.x only — 1.x carried the old OpenSSL/SSLeay licence) |
 | G.722 (WebRTC's copy of Steve Underwood's implementation) | public domain; WebRTC's edits BSD-3 | wideband codec on PBX calls, compiled into the app's `g722` module instead of spandsp (LGPL, which baresip's upstream module needs). Source revision, licence check and SHA-256 recorded in `ios/vendor/patches/README.md` |
 | G.711 | royalty-free (baresip's own module) | narrowband fallback |
+| Packet-loss concealment (G.711/G.722) | own code, `ios/vendor/patches/plc` | written from the ITU-T G.711 Appendix I description; no spandsp or other third-party PLC |
 | G.729 | patents expired (~2017) | optional |
 | sipgo / diago (server) | BSD-2 / MPL-2.0 | **decided** in Phase 0; vendored, builds with `CGO_ENABLED=0` |
 | Server runtime (Go) | permissive stdlib + vendored deps | — |
@@ -571,6 +635,208 @@ it is neither linked nor redistributed.
    restart the server, call — all ring. If it resurfaces: Analytics report
    `Dialler-…ips` with 0xBAADCA11, then a device console capture; the
    signatures to look for are in the iOS app notes.
+   *Recurred 2026-09-13 00:51:24 (server time), narrower shape:* the app
+   had been backgrounded six seconds earlier (`app: will resign active`
+   is its last line) and was still resident; the extension acknowledged
+   the wake, and the suspended process was killed with 0xBAADCA11 (its
+   MetricKit crash report, pid 644, arrived by the diagnostics pipeline)
+   without any of our code running — no `wake via extension`, no PushKit
+   line. The three wakes that followed each launched a fresh process,
+   which reported to CallKit within 100 ms and rang. So the delegate fix
+   holds for a launch and for a long-suspended app (last week's test),
+   and fails for a just-suspended one. Also seen that minute: CallKit
+   refusing a report with `incomingcall error 3` (filtered by Do Not
+   Disturb / Focus) — a system decision, logged as a 486 by the app.
+   *Closed the same night from the device console:* callservicesd
+   resumed the process and delivered the payload, and inside the app the
+   framework logged `NEAppPushManager app has not set the delegate to
+   receive the incoming call payload`; 7 s later `Killing VoIP app …
+   because it failed to post an incoming call in time`. The delegate had
+   been set — on the manager object the app itself created and saved when
+   Local Push was re-enabled at 00:50:23. Deliveries go to the delegate of
+   the instance the framework LOADS from preferences; the app's own saved
+   object is not it. Every later process loaded the manager at launch and
+   rang. Fix: after every save, reload from preferences and attach the
+   delegate to the loaded instances (all of them, kept alive), and
+   re-attach on `willResignActive`, the moment a delivery to a suspended
+   process starts to matter. The phone's clock ran ~33 s ahead of the Mac's.
+   *Two more from the same night's uploads (01:31–01:32), both fixed:*
+   (a) ringing after the caller hung up on a locked phone — the server's
+   `wake_cancel` went out at 01:31:01 to the only live connection (the
+   extension), and the app's own session came up at 01:31:06; a cancel is
+   now remembered until the wake's expiry plus 30 s and replayed to any
+   session of that device that connects later (gateway `cancelled`,
+   PROTOCOL.md §7, `TestCancelIssuedBeforeTheAppConnectedIsReplayed`), and
+   the app resolves a cancel through a merged wake id when the call rang
+   from its INVITE first; (b) one SIP call reported to CallKit twice —
+   the INVITE's report was queued for the main thread from the SIP loop
+   when the wake arrived on the main thread, found no CallKit entry yet,
+   and reported again, so the caller's hangup ended only one of the two
+   and the other rang until the user ended it. `CallKitBridge` now tracks
+   queued reports: a reaffirm during that window counts as satisfied, and
+   a queued report finds the call already reported and steps aside.
+   *05:52 the same morning, two more:* (c) with the app in the foreground,
+   the wake (gateway thread) and the INVITE (SIP loop) landed in the same
+   millisecond; the INVITE path checked for a ringing call and inserted
+   its own entry in two separate critical sections, so both passed their
+   check first and one call rang twice — the check-and-insert is now one
+   locked step; (d) the extension had been disconnected from 02:00 to
+   05:52 while iOS reported it active, so every call found "callee
+   offline, wake undeliverable"; its own log was lost because the app's
+   launch upload deleted the shared file while the extension held it open
+   (FileLog now reopens after a drain), and the extension's system timer
+   now rebuilds the session from scratch whenever it finds itself
+   disconnected. The server had not restarted (same instance, same
+   session id prefix): the Mac was unreachable for those hours and came
+   back, and the extension did not reconnect in the minutes after. The
+   keeper's only hole for that: a connect attempt that reports nothing
+   (no connected/waiting/disconnected) armed no timer, so one such attempt
+   left it down for good. Every attempt now has a 10 s deadline
+   (`GatewaySession.attemptTimeout`), after which it is torn down and the
+   backoff continues; `testASilentAttemptIsAbandonedAtTheDeadlineAndRetried`.
+   *Ring-after-hangup, the lasting cause (2026-09-13 17:02, third
+   sighting):* the app's keeper deliberately holds no gateway session in
+   the background, but a call the extension wakes rings in the
+   background — so the caller's hangup (a wake_cancel on the app's
+   socket, or its replay on connect) had nowhere to arrive, and neither
+   did the app's own decline ack. The extension received every cancel
+   within 1.5 s; the app only learned of them when the user opened it.
+   Fix: the app holds a session for exactly as long as a call is tracked
+   (`holdSessionWhileCallTracked` on the wake, `callEnded` releases it
+   when the last call is gone and the app is not on screen); CallKit
+   keeps the process running for that span. No new channel, no timer.
+   *Confirmed the same day, 06:21, when the extension's log survived:* it
+   logged `gateway error idle_timeout fatal=true` and nothing more for
+   twelve minutes, until iOS stopped it for lack of a network. The
+   server's fatal error frame was handled by `SessionMachine` as
+   "emit the error, close the transport" — without a `.disconnected`,
+   and `didClose` is a no-op once the state is closed — so the keeper
+   never learned the connection was gone and never reconnected. Every
+   fatal error is now a drop (`.protocolError` then `.disconnected`),
+   the keeper retries the transient ones and stops on the refusals
+   (`unauthorized`, `unsupported_version`, `superseded`) until the next
+   foreground; and the machine mirrors the server's liveness rule: no
+   frame from the server within 3 × heartbeat (a healthy link carries a
+   pong per ping) closes the connection so a link the network silently
+   lost is not held until TCP gives up. `testFatalErrorWhileLiveIsADrop`,
+   `testASilentServerIsDroppedAfterThreeHeartbeats`,
+   `testAFatalIdleTimeoutIsRetried`, `testARefusalStopsTheBackoffUntilTheNextForeground`.
+   Why the extension's pings stopped reaching the server for 75 s on a
+   locked phone still on Wi-Fi is not known (the frame it then received
+   proves the downlink worked); the reconnect now covers it either way.
+   *Same afternoon, two SSIDs on the list (§2):* moving between them
+   does not restart the provider (both match), the phone's address
+   changes, and the extension's connection dies without either side's
+   TCP noticing. The server kept sending wakes into the old session
+   until its 75 s idle close, and the extension only reconnected when
+   its own 75 s liveness rule fired — every call placed in that window
+   was lost. (A server-side ping was tried and reverted: it cannot reach
+   a dead connection.) The fix is on the client and needs no timer: an
+   NWConnection reports when the path under it is gone (viability) and
+   when a better path exists; a handoff to a new address is exactly a
+   better path, and the transport closes on it so the keeper reconnects
+   at once over the new network (PROTOCOL.md §5).
+8. **OPEN — SIP loop thread spinning at 100 % CPU; root cause not found
+   (2026-09-12; spin contained the same day).** Report
+   `Dialler.cpu_resource_fatal-2026-09-12-141400.ips` (iOS 26.6.2, the
+   Phase C build): iOS killed the app after 48 s at 99 % CPU while in the
+   background ("Non-Frontmost App"). Heaviest stack: the engine's loop
+   thread → libre `re_main` → a kernel syscall, in a loop; 2 of 16 samples
+   inside malloc from the same loop (the warning formatter). Reading:
+   `fd_poll` was failing with `EBADF` — libre's Darwin "workaround"
+   (`if (EBADF == err) continue;`) then retries forever without running
+   timers or sleeping. `kevent` returns EBADF only when the kqueue
+   descriptor itself is invalid. Consequences seen the same day: the
+   shim's "loop died → rebuild" recovery could not fire (`re_main` never
+   returned), every engine call from the app waited its 10 s timeout, the
+   UI froze ("app won't even start" on a relaunch that hit the same
+   state), and the server saw the app's registration go stale and a
+   phone → app INVITE die on it (17:14 log; the stale-route case is
+   closed since 2026-09-13 by the mid-ring re-target, §2). *Contained:*
+   `ios/vendor/patches/apply-re.sh` bounds the retry (8 × 10 ms, with a
+   warning naming `kqfd`/`nfds`) and returns EBADF; the loop thread marks
+   itself dead and the engine rebuilds the stack. *Unknown:* what
+   invalidated the kqueue descriptor. Two hypotheses, distinguishable by
+   the new warning's `kqfd` value: (a) `kqfd=-1` — libre's own context
+   was torn down under the running loop (`poll_close` via
+   `re_thread_close`/`libre_close` on the loop thread from inside a
+   handler, or the tss destructor); look at every `libre_close`/`stack_close`
+   call site in `cbaresip.c` and at anything calling libre from a thread
+   other than the loop; (b) `kqfd>=0` — some other code closed a
+   descriptor number it did not own (a double `close()` — CoreAudio /
+   audiounit teardown, Network.framework, or a baresip socket closed
+   twice after a transport reset) and the kqueue's number was hit; look
+   for the previous owner of that number in the console around the
+   warning. Timing clue: the report started 114 s after the device woke
+   and while the app was backgrounded, i.e. right after the wake/transport
+   reset path (`resetRegistration` → `cb_reset_transports` →
+   `uag_reset_transp`) ran. *Next time:* collect (1) the `Dialler…ips`
+   from Analytics Data, (2) the app log / console lines containing
+   `fd_poll EBADF` (the `kqfd` value decides between (a) and (b)) and
+   `re_main returned` from the shim, (3) the server log around the same
+   minute (a stale registration dialled, `context canceled`), (4) whether
+   the app had just come back from a lock/unlock or a call end. With a
+   symbolicated stack (keep the build's dSYM this time — the 42689BEC…
+   image in the report could not be symbolicated because Xcode had
+   already rebuilt), the frame above `re_main` names the caller.
+   *Second episode, 2026-09-13 00:35–00:40 (with the diagnostics
+   pipeline in place):* two normal calls, `app: will resign active`, then
+   the process's gateway socket closed two minutes later with no log line;
+   the launches that followed wrote nothing at all — not even the app's
+   first log line — until the phone was rebooted. So those launches hung
+   before the app's own code ran, in a startup step that talks to a
+   system daemon (CallKit provider registration, the audio session, the
+   Local Push manager, or the SIP stack's audio unit), and a wedged daemon
+   is the common factor with the loop spin. No MetricKit report had
+   arrived by the next launch. Added: launch breadcrumbs around each of
+   those steps (`Breadcrumb.drop`, in the uploaded log), a 20 s bound on
+   the SIP stack start (`cb_start` returns ETIMEDOUT instead of freezing
+   the app), and `active=` (NEAppPushManager.isActive) in the Local Push
+   line — the extension had not connected all evening, which is why the
+   incoming call at 00:37 found "callee offline, wake undeliverable".
+   Next time: the last `launch:` breadcrumb in `data/diag/` names the
+   hanging step; an Analytics `.ips` with `0x8badf00d` (launch watchdog)
+   would show the blocked call directly.
+9. **CLOSED — "app silent after a wake, then launches that hang and cannot
+   be killed" (2026-09-13 06:13 SAST; same shape as the 00:37 episode and
+   the 2026-09-12 "restart needed a reboot"): the app was running under
+   Xcode's debugger.** The device log archive settled it: the process
+   carried `debug:asserted` from the start and `debugserver` held the
+   adjacent pid (1228/1229, a Wi-Fi debug session). At 06:13:08 the
+   extension's wake reached the system, callservicesd launched the app
+   to deliver it (`Successfully launched application`), SpringBoard
+   forwarded the scene event with a 30 s watchdog — and the process never
+   ran a thread: watchdogd reported "Impacted by suspension of Dialler",
+   "Best option is process being debugged". A debuggee stopped by lldb
+   (breakpoint, signal, EXC_RESOURCE — a CPU-limit exception goes to the
+   debugger first, which is what the 2026-09-12 loop spin would have
+   produced under Xcode) has its task suspended: its main thread cannot
+   take the PushKit delivery, so callservicesd killed it at 06:13:16 with
+   0xBAADCA11 — `terminate_with_reason() success`, yet a suspended task
+   does not exit until it is resumed, so pid 1228 stayed. The user's tap
+   at 06:13:29 foregrounded the frozen process (FrontBoard: "Ignoring
+   watchdog … process is being debugged", "Not terminating … process is
+   being debugged"); two swipe-kills at 06:13:44 and 06:13:57 were
+   accepted and never completed ("Still waiting on exit context after
+   19.1 seconds"). The process finally disappeared at 06:36:36, the
+   moment debugserver 1229 exited (its connection to the Mac reset).
+   Nothing of ours could log any of this, and no crash report is written
+   for a debugged process, which is why every launch "left no trace".
+   *Not determined:* what stopped the debuggee at ~06:12; Xcode's debug
+   console at the time would have said (an EXC_RESOURCE from the loop
+   spin, item 8, is the one candidate with prior evidence — the build's
+   patch level, now printed by `cb_version()`, will say whether the guard
+   was present). *Rule for field testing:* never leave a device run under
+   the debugger. Install with Xcode, stop, launch from the home screen,
+   or untick "Debug executable" in the scheme's Run action; a debugged
+   app cannot be woken by CallKit once stopped and cannot be killed
+   without a reboot or a dead debug link. *Checklist item:* a log
+   archive's `debug:asserted` on the app's process state, or FrontBoard's
+   "process is being debugged", ends the investigation before it starts.
+   Seen beside it on every wake, successful ones included:
+   nesessionmanager "failed to report incoming call to CallKit … Code=4099
+   com.apple.callkit.networkextension.messagecontrollerhost was
+   invalidated" — callservicesd still launches the app; treated as noise.
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

@@ -25,12 +25,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate, PKPushRegistryDelegate
     lazy var model = AppModel()
     private var pushRegistry: PKPushRegistry?
 
+    /// The earliest point of ours in a launch (UIKit instantiates the
+    /// delegate before didFinishLaunching). A launch that hangs with no
+    /// breadcrumb at all never got this far: it is stuck in dyld or in
+    /// UIKit's own start-up, before any code of ours.
+    override init() {
+        super.init()
+        Breadcrumb.drop("AppDelegate created")
+    }
+
     func application(_ application: UIApplication, didFinishLaunchingWithOptions _: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        Breadcrumb.drop("didFinishLaunching")
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         pushRegistry = registry
+        Breadcrumb.drop("push registry ready; creating the app model")
         model.autoConnectIfConfigured()
+        Breadcrumb.drop("app model ready")
         return true
     }
 

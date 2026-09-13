@@ -12,6 +12,9 @@
  * for G.722 audio is 16,000 Hz, the RTP clock rate is 8,000 Hz (assigned
  * in error in RFC 1890 and kept for compatibility): 160 clock ticks and
  * 160 octets per 20 ms, 320 samples.
+ *
+ * Packet-loss concealment (plc/plc.c, shared with g711) fills a lost
+ * frame from the last decoded audio; upstream's module has none.
  */
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +22,7 @@
 #include <rem_au.h>
 #include <baresip.h>
 #include "modules/third_party/g722/g722_enc_dec.h"
+#include "plc.h"
 
 
 enum {
@@ -33,6 +37,8 @@ struct auenc_state {
 
 struct audec_state {
 	G722DecoderState dec;
+	struct plc plc;
+	size_t last_sampc; /* samples in the last decoded frame (the loss size) */
 };
 
 
@@ -85,6 +91,8 @@ static int decode_update(struct audec_state **adsp,
 		mem_deref(st);
 		return EPROTO;
 	}
+	plc_init(&st->plc, G722_SAMPLE_RATE);
+	st->last_sampc = 320;
 
 	*adsp = st;
 
@@ -138,6 +146,35 @@ static int decode(struct audec_state *st, int fmt, void *sampv, size_t *sampc,
 	n = WebRtc_g722_decode(&st->dec, sampv, buf, len);
 
 	*sampc = n;
+	if (n) {
+		st->last_sampc = n;
+		plc_good(&st->plc, sampv, n);
+	}
+
+	return 0;
+}
+
+
+/* One lost frame: synthesise a frame the size of the last decoded one. */
+static int g722_plc(struct audec_state *st, int fmt, void *sampv,
+		    size_t *sampc, const uint8_t *buf, size_t len)
+{
+	size_t n;
+	(void)buf;
+	(void)len;
+
+	if (!st || !sampv || !sampc)
+		return EINVAL;
+
+	if (fmt != AUFMT_S16LE)
+		return ENOTSUP;
+
+	n = st->last_sampc;
+	if (n > *sampc)
+		n = *sampc;
+
+	plc_fill(&st->plc, sampv, n);
+	*sampc = n;
 
 	return 0;
 }
@@ -154,6 +191,7 @@ static struct aucodec g722 = {
 	.ench    = encode,
 	.decupdh = decode_update,
 	.dech    = decode,
+	.plch    = g722_plc,
 };
 
 

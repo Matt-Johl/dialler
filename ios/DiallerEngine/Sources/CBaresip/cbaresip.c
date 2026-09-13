@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -61,6 +62,17 @@ enum op_type {
 };
 
 static cb_media_stats_t media_stats; /* filled by OP_MEDIA_STATS on the loop thread */
+
+/* net_if_apply handler: put one current interface address back into
+ * baresip's list, under its configured interface/family filter (the same
+ * test baresip applies at start). */
+static bool readd_laddr(const char *ifname, const struct sa *sa, void *arg)
+{
+    struct network *net = arg;
+    if (net_ifaddr_filter(net, ifname, sa))
+        (void)net_add_address_ifname(net, sa, ifname);
+    return false; /* keep going */
+}
 
 /* From the (patched) audiounit module — modules/audiounit/audiounit.h is
  * not part of baresip.h. See ios/vendor/patches/README.md. */
@@ -260,6 +272,15 @@ static int do_op(struct op *op)
          * evicts the connection until the loop happens to read its EOF.
          * baresip's network-change reset flushes the cache and rebuilds
          * the transports on the current addresses; registration is ours. */
+        /* First re-read the interface addresses. baresip enumerates them
+         * once at start and never again (that is the netroam module's
+         * job, which we do not load); after a Wi-Fi handoff to a new
+         * address the stale list makes the transport rebuild bind the old
+         * address ("SIP Transport failed: Can't assign requested address
+         * [49]") and every call's media socket fail the same way — the
+         * app answered each INVITE with 500 Call Error (2026-09-13). */
+        net_flush_addresses(baresip_network());
+        net_if_apply(readd_laddr, baresip_network());
         info("cbaresip: resetting SIP transports (dropping cached connections)\n");
         err = uag_reset_transp(false, false);
         info("cbaresip: transports reset (err=%d)\n", err);
@@ -505,10 +526,13 @@ static void stack_close(void)
     libre_close(); /* releases this thread's libre context */
 }
 
+#define CB_START_TIMEOUT_S 20 /* stack_open normally takes well under a second */
+
 struct start_args {
     const char *config; /* valid until we signal done, not after */
     int err;
     bool done;
+    bool abandoned; /* cb_start gave up waiting: the loop thread frees this */
     pthread_mutex_t mu;
     pthread_cond_t cv;
 };
@@ -528,10 +552,18 @@ static void *loop_thread(void *arg)
     pthread_mutex_lock(&a->mu);
     a->err = err;
     a->done = true;
+    bool abandoned = a->abandoned;
     pthread_cond_broadcast(&a->cv);
     pthread_mutex_unlock(&a->mu);
+    if (abandoned) {
+        /* cb_start timed out and returned; nobody else will free this. */
+        pthread_cond_destroy(&a->cv);
+        pthread_mutex_destroy(&a->mu);
+        free(a);
+        a = NULL;
+    }
     if (err)
-        return NULL; /* a lives on cb_start's stack: untouched from here on */
+        return NULL; /* untouched from here on either way */
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = stall_dump;
@@ -573,9 +605,18 @@ bool cb_alive(void)
 
 int cb_start(const char *config, cb_event_cb cb, void *ctx)
 {
-    struct start_args a = { .config = config };
-    if (g.running)
+    /* Heap-allocated: if the stack takes too long to come up (a wedged
+     * audio or network daemon — seen as an app that "never starts" until
+     * the phone is rebooted), cb_start gives up after CB_START_TIMEOUT_S
+     * and the loop thread frees the args when it eventually finishes. */
+    struct start_args *ap = calloc(1, sizeof(*ap));
+    if (!ap)
+        return -ENOMEM;
+    ap->config = config;
+    if (g.running) {
+        free(ap);
         return -EALREADY;
+    }
 
     memset(&g, 0, sizeof(g));
     atomic_store(&g_loop_dead, 0);
@@ -583,27 +624,40 @@ int cb_start(const char *config, cb_event_cb cb, void *ctx)
     g.cb = cb;
     g.ctx = ctx;
 
-    pthread_mutex_init(&a.mu, NULL);
-    pthread_cond_init(&a.cv, NULL);
+    pthread_mutex_init(&ap->mu, NULL);
+    pthread_cond_init(&ap->cv, NULL);
     g.running = true; /* before the thread exists: on_loop_thread() needs it */
-    if (pthread_create(&g.thread, NULL, loop_thread, &a) != 0) {
+    if (pthread_create(&g.thread, NULL, loop_thread, ap) != 0) {
         memset(&g, 0, sizeof(g));
-        pthread_cond_destroy(&a.cv);
-        pthread_mutex_destroy(&a.mu);
+        pthread_cond_destroy(&ap->cv);
+        pthread_mutex_destroy(&ap->mu);
+        free(ap);
         return -EAGAIN;
     }
 
-    pthread_mutex_lock(&a.mu);
-    while (!a.done)
-        pthread_cond_wait(&a.cv, &a.mu);
-    pthread_mutex_unlock(&a.mu);
-    pthread_cond_destroy(&a.cv);
-    pthread_mutex_destroy(&a.mu);
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += CB_START_TIMEOUT_S;
+    pthread_mutex_lock(&ap->mu);
+    while (!ap->done) {
+        if (pthread_cond_timedwait(&ap->cv, &ap->mu, &deadline) == ETIMEDOUT && !ap->done) {
+            ap->abandoned = true;
+            pthread_mutex_unlock(&ap->mu);
+            wd_say("cbaresip: stack start did not finish in %llu s; giving up on it "
+                   "(the loop thread keeps going and frees the args)\n", (uint64_t)CB_START_TIMEOUT_S);
+            return -ETIMEDOUT;
+        }
+    }
+    int err = ap->err;
+    pthread_mutex_unlock(&ap->mu);
+    pthread_cond_destroy(&ap->cv);
+    pthread_mutex_destroy(&ap->mu);
+    free(ap);
 
-    if (a.err) {
+    if (err) {
         pthread_join(g.thread, NULL);
         memset(&g, 0, sizeof(g));
-        return -a.err;
+        return -err;
     }
     return 0;
 }
@@ -707,7 +761,16 @@ void cb_audio_test_free(void)
     run_op(OP_AUDIO_TEST_FREE, NULL);
 }
 
+/* From the patched libre (ios/vendor/patches/apply-re.sh): which set of
+ * Dialler patches the linked XCFramework carries. Not weak on purpose: an
+ * app built against an XCFramework older than the patch fails to link
+ * instead of silently shipping without the fixes (2026-09-12: a build from
+ * between an XCFramework rebuild and a codec fix cost an afternoon). */
+int re_dialler_patchlevel(void);
+
 const char *cb_version(void)
 {
-    return "baresip " BARESIP_VERSION;
+    static char v[64];
+    snprintf(v, sizeof v, "baresip " BARESIP_VERSION " (libre patch level %d)", re_dialler_patchlevel());
+    return v;
 }

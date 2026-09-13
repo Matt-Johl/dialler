@@ -33,9 +33,48 @@ final class SessionMachineTests: XCTestCase {
         var m = SessionMachine(now: { self.t0 })
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "bad", client: .app))
         let e = ProtocolError(code: .unauthorized, message: nil, fatal: true)
-        XCTAssertEqual(m.received(env(.error(e))), [.emit(.protocolError(e)), .close])
+        XCTAssertEqual(m.received(env(.error(e))),
+                       [.emit(.protocolError(e)), .emit(.disconnected(reason: "server: unauthorized")), .close])
         XCTAssertEqual(m.state, .closed)
         XCTAssertEqual(m.didClose(reason: "x"), [], "already closed: no duplicate disconnected event")
+    }
+
+    /// The server's idle_timeout (or any fatal error) while live is a drop:
+    /// the keeper must see `.disconnected` and reconnect. On 2026-09-13 the
+    /// extension logged the error and never reconnected because only
+    /// `.close` followed.
+    func testFatalErrorWhileLiveIsADrop() {
+        var m = SessionMachine(now: { self.t0 })
+        _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .extensionKind))
+        _ = m.received(env(.welcome(welcome)))
+        let e = ProtocolError(code: .idleTimeout, message: "no frame within 3×heartbeat", fatal: true)
+        XCTAssertEqual(m.received(env(.error(e))),
+                       [.emit(.protocolError(e)), .emit(.disconnected(reason: "server: idle_timeout")), .close])
+        XCTAssertEqual(m.state, .closed)
+        XCTAssertEqual(m.didClose(reason: "transport cancelled"), [], "no duplicate disconnected event")
+    }
+
+    /// A server that stops answering pings is dead to us after 3 × heartbeat,
+    /// whatever TCP thinks: the machine closes so the keeper reconnects.
+    func testASilentServerIsDroppedAfterThreeHeartbeats() {
+        var now = t0
+        var m = SessionMachine(now: { now })
+        _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .extensionKind))
+        _ = m.received(env(.welcome(welcome)))
+
+        now = t0.addingTimeInterval(25)
+        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)])
+        XCTAssertEqual(m.received(Envelope(id: "p", ts: now, message: .pong)), [], "a pong resets the idle clock")
+
+        now = t0.addingTimeInterval(50)
+        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)])
+        now = t0.addingTimeInterval(75)
+        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)], "50 s of silence is within the limit")
+        now = t0.addingTimeInterval(101)
+        XCTAssertEqual(m.heartbeatDue(),
+                       [.emit(.disconnected(reason: "no frame from the server within 75s")), .close])
+        XCTAssertEqual(m.state, .closed)
+        XCTAssertEqual(m.heartbeatDue(), [], "closed: the timer does nothing more")
     }
 
     func testWakeDedupAndExpiry() {

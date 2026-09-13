@@ -17,6 +17,7 @@ final class GatewaySessionTests: XCTestCase {
     func make() -> (GatewaySession, FakeTransport, SleepLog) {
         let inner = FakeTransport(), sleeps = SleepLog()
         let s = GatewaySession(transport: inner, sleep: { try await sleeps.sleep($0) })
+        s.attemptTimeout = nil // events are delivered by hand; the deadline test enables it
         return (s, inner, sleeps)
     }
 
@@ -42,19 +43,19 @@ final class GatewaySessionTests: XCTestCase {
 
         inner.deliver(.disconnected(reason: "read: ECONNABORTED"))
         eventually("first reconnect") { inner.connectCount == 2 }
-        XCTAssertEqual(sleeps.delays, [1], "first retry after 1 s")
+        XCTAssertEqual(sleeps.delays, [0], "first retry at once")
 
-        // Still down: the next drop backs off further.
+        // Still down: the next drop backs off.
         inner.deliver(.disconnected(reason: "failed"))
         eventually("second reconnect") { inner.connectCount == 3 }
-        XCTAssertEqual(sleeps.delays, [1, 2])
+        XCTAssertEqual(sleeps.delays, [0, 1])
 
         // Up again, then dropped: backoff starts over.
         inner.deliver(.connected(welcome))
         settle()
         inner.deliver(.disconnected(reason: "read"))
         eventually("reconnect after a good session") { inner.connectCount == 4 }
-        XCTAssertEqual(sleeps.delays, [1, 2, 1])
+        XCTAssertEqual(sleeps.delays, [0, 1, 0])
     }
 
     func testNoReconnectAfterTheUserDisconnected() {
@@ -101,18 +102,63 @@ final class GatewaySessionTests: XCTestCase {
 
         inner.deliver(.waiting(reason: "-9816: server closed session with no notification"))
         eventually("stuck attempt torn down") { inner.disconnectCount == 1 }
-        XCTAssertEqual(sleeps.delays, [1, s.waitingGrace], "backoff, then the waiting grace")
+        XCTAssertEqual(sleeps.delays, [0, s.waitingGrace], "immediate retry, then the waiting grace")
 
         // The transport reports the teardown as a drop; that schedules the
         // next, longer backoff.
         inner.deliver(.disconnected(reason: "client disconnect"))
         eventually("next attempt") { inner.connectCount == 3 }
-        XCTAssertEqual(sleeps.delays, [1, s.waitingGrace, 2])
+        XCTAssertEqual(sleeps.delays, [0, s.waitingGrace, 1])
 
         // Once an attempt succeeds, a pending grace is dropped.
         inner.deliver(.connected(welcome))
         settle()
         XCTAssertEqual(inner.disconnectCount, 1)
+    }
+
+    // An attempt that reports nothing at all — no .connected, no .waiting,
+    // no .disconnected — must still be abandoned at the deadline and
+    // retried; otherwise the keeper has no timer and stays down for good.
+    func testASilentAttemptIsAbandonedAtTheDeadlineAndRetried() {
+        let (s, inner, sleeps) = make()
+        s.attemptTimeout = 10
+        s.connect(hello: hello)
+        XCTAssertEqual(inner.connectCount, 1)
+        eventually("the attempt deadline") { inner.disconnectCount == 1 }
+        XCTAssertEqual(sleeps.delays.first, 10, "the deadline is attemptTimeout")
+        // The transport reports the teardown; the keeper backs off and retries.
+        inner.deliver(.disconnected(reason: "cancelled"))
+        eventually("retry after the abandoned attempt") { inner.connectCount == 2 }
+        XCTAssertEqual(sleeps.delays.count, 3, "deadline, backoff, then the next attempt's deadline")
+    }
+
+    /// The server's fatal idle_timeout arrives as a protocol error followed
+    /// by the drop; the keeper must retry it like any other drop.
+    func testAFatalIdleTimeoutIsRetried() {
+        let (s, inner, sleeps) = make()
+        s.connect(hello: hello)
+        inner.deliver(.connected(welcome))
+        settle()
+        inner.deliver(.protocolError(ProtocolError(code: .idleTimeout, message: nil, fatal: true)))
+        inner.deliver(.disconnected(reason: "server: idle_timeout"))
+        eventually("reconnect after idle_timeout") { inner.connectCount == 2 }
+        XCTAssertEqual(sleeps.delays, [0])
+    }
+
+    /// A refusal for good (bad enrolment, version, superseded) is not
+    /// retried by the backoff; the next foreground tries once more.
+    func testARefusalStopsTheBackoffUntilTheNextForeground() {
+        let (s, inner, sleeps) = make()
+        s.connect(hello: hello)
+        inner.deliver(.protocolError(ProtocolError(code: .unauthorized, message: nil, fatal: true)))
+        inner.deliver(.disconnected(reason: "server: unauthorized"))
+        settle()
+        XCTAssertEqual(inner.connectCount, 1, "unauthorized is not retried")
+        XCTAssertTrue(sleeps.delays.isEmpty)
+
+        s.setActive(false)
+        s.setActive(true)
+        eventually("a fresh attempt on foreground") { inner.connectCount == 2 }
     }
 
     func testForegroundWhileConnectedDoesNothing() {
@@ -136,7 +182,7 @@ final class GatewaySessionTests: XCTestCase {
         eventually("events forwarded") { collected.events.count >= 3 }
         XCTAssertEqual(collected.events[0], .connected(welcome))
         XCTAssertEqual(collected.events[1], .disconnected(reason: "read: ECONNABORTED"))
-        XCTAssertEqual(collected.events[2], .waiting(reason: "reconnecting in 1s"), "the app can show why it is waiting")
+        XCTAssertEqual(collected.events[2], .waiting(reason: "reconnecting now"), "the app can show why it is waiting")
     }
 }
 

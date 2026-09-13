@@ -303,6 +303,47 @@ func TestForgottenWakeIsNotReplayed(t *testing.T) {
 	again.expectSilence() // nothing to replay
 }
 
+// The locked-phone race (seen 2026-09-13 01:31): the wake goes to the
+// extension, which launches the app; the caller hangs up before the app's
+// own session is up; the app then connects and must be told the call is
+// gone, or it rings on.
+func TestCancelIssuedBeforeTheAppConnectedIsReplayed(t *testing.T) {
+	h := start(t, Config{})
+	ext := h.dial(t)
+	ext.hello(wire.ClientExtension)
+	h.g.Wake("dev1", wakeAt(time.Now().Add(30*time.Second)))
+	ext.expect(wire.TypeWake)
+
+	h.g.CancelWake("dev1", "call1", wire.CancelCallerHangup)
+	ext.expect(wire.TypeWakeCancel) // the live connection hears it at once
+
+	app := h.dial(t)
+	app.hello(wire.ClientApp)
+	app.expect(wire.TypeWakeCancel) // no wake to replay, but its cancel
+	app.expectSilence()
+
+	// A fresh wake for the same call id must not be followed by the stale cancel.
+	h.g.Wake("dev1", wakeAt(time.Now().Add(30*time.Second)))
+	app.expect(wire.TypeWake)
+	app.expectSilence()
+}
+
+func TestReplayedCancelExpiresWithItsWake(t *testing.T) {
+	var mu sync.Mutex
+	base := time.Now()
+	skew := time.Duration(0)
+	h := start(t, Config{Now: func() time.Time { mu.Lock(); defer mu.Unlock(); return base.Add(skew) }})
+	h.g.Wake("dev1", wakeAt(base.Add(30*time.Second))) // nobody connected
+	h.g.CancelWake("dev1", "call1", wire.CancelTimeout)
+
+	mu.Lock()
+	skew = 30*time.Second + cancelGrace + time.Second // past the wake's expiry and the grace
+	mu.Unlock()
+	late := h.dial(t)
+	late.hello(wire.ClientApp)
+	late.expectSilence() // a ring that old has ended on its own; nothing to say
+}
+
 func TestSupersedeSameKind(t *testing.T) {
 	h := start(t, Config{})
 	var mu sync.Mutex

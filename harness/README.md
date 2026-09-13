@@ -36,6 +36,7 @@ audio. Passing on 2026-09-05 (callee RMS ≈ 6500 against a threshold of 200).
 | `wake_test.sh` | Callee starts with no SIP UA; `fake-app` on the gateway receives the wake, creates the UA via `uanew`, bridge completes, media asserted (`make harness-wake`) |
 | `innet.sh` | Runs a repo script inside the compose network, for hosts that cannot reach published localhost ports |
 | `flow_gone_test.sh` | Callee registered then SIGKILLed (no clean unregister): the server must detect the dead connection and take the wake path, never dial the stale route (`make harness-flow-gone`) |
+| `qos_test.sh` + `qos/` | **QoS gate** (`make harness-qos`): a tcpdump sidecar in the server's network namespace (profile `qos`, started last like `netem`) captures one 211 → echo call and requires every RTP packet the server sent to carry DSCP EF (`tos 0xb8`) and every SIP/TLS packet CS3 (`tos 0x60`). See SPEC §4.4 rule 5a. |
 | `probe_call.sh` | **NAT regression** (`make probe-call`, macOS host only): the real baresip engine on this Mac registers through Docker's port forwarding, a genuine NAT, and 212 calls it. `DIALLER_REWRITE_CONTACT=false make probe-call` must fail. |
 
 Why the NAT case needs the host: the container phones bind their outbound

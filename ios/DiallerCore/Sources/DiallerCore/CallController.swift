@@ -262,31 +262,44 @@ public final class CallController {
     /// An INVITE reached the SIP stack. If a wake already rang for this
     /// call, just note it; otherwise ring the system UI from the INVITE.
     public func handle(sipIncoming peer: String, displayName: String? = nil) {
-        let ringing: TrackedCall? = lock.withLock {
-            guard let (id, c) = calls.first(where: { $0.value.phase != .ended }) else { return nil }
-            var updated = c
-            updated.sipArrived = true
-            calls[id] = updated
-            return updated
-        }
-        if let ringing {
-            log("INVITE from \(peer) for call \(ringing.wake.callID) (already \(ringing.phase))")
-            return
-        }
-        guard let account = lock.withLock({ self.account }) else {
-            log("INVITE from \(peer) but no SIP account is known; ignoring")
-            return
-        }
         // Same naming as the wake path (directory → caller's own display name
         // → bare number), so the banner does not depend on which of the two
         // arrives first. The caller's own name is kept on the synthetic wake
         // for the in-call title.
         let from = Party(displayName: displayName?.isEmpty == false ? displayName : nil, uri: peer)
         let name = callerName(for: from)
-        let id: String = lock.withLock { sipCallSeq += 1; return "sip-\(sipCallSeq)" }
-        let wake = Wake(callID: id, from: from, to: Party(uri: "sip:\(account.user)"),
-                        sip: account.sip, expiresAt: now().addingTimeInterval(60))
-        lock.withLock { calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, reportedName: name) }
+        // Check-and-insert under ONE lock: the wake (gateway thread) and the
+        // INVITE (SIP loop) can land in the same millisecond, and with the
+        // check and the insert as separate critical sections both passed
+        // their check before either inserted — one call rang twice
+        // (2026-09-13 05:52:58, f512… and sip-4 reported 10 ms apart).
+        enum Outcome { case merged(TrackedCall), created(String, Wake), noAccount }
+        let outcome: Outcome = lock.withLock {
+            if let (id, c) = calls.first(where: { $0.value.phase != .ended }) {
+                var updated = c
+                updated.sipArrived = true
+                calls[id] = updated
+                return .merged(updated)
+            }
+            guard let account else { return .noAccount }
+            sipCallSeq += 1
+            let id = "sip-\(sipCallSeq)"
+            let wake = Wake(callID: id, from: from, to: Party(uri: "sip:\(account.user)"),
+                            sip: account.sip, expiresAt: now().addingTimeInterval(60))
+            calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, reportedName: name)
+            return .created(id, wake)
+        }
+        let id: String
+        switch outcome {
+        case .merged(let ringing):
+            log("INVITE from \(peer) for call \(ringing.wake.callID) (already \(ringing.phase))")
+            return
+        case .noAccount:
+            log("INVITE from \(peer) but no SIP account is known; ignoring")
+            return
+        case .created(let newID, _):
+            id = newID
+        }
         log("incoming SIP call \(id) from \(name) (no wake)")
         ui.reportIncoming(callID: id, displayName: name, handle: peer) { [weak self] err in
             guard let self, let err else { return }
@@ -317,7 +330,14 @@ public final class CallController {
         case .wake(let w):
             handle(wake: w)
         case .wakeCancel(let c):
-            end(callID: c.callID, reason: c.reason == .answeredElsewhere ? .answeredElsewhere : (c.reason == .timeout ? .unanswered : .remoteEnded))
+            // The server names the wake's id. A call that rang from its
+            // INVITE first is tracked under a synthetic id with the wake's id
+            // merged in, so resolve through that too — otherwise the cancel
+            // is dropped as unknown and the phone rings on.
+            let id: String = lock.withLock {
+                calls[c.callID] != nil ? c.callID : (calls.first { $0.value.wakeCallID == c.callID }?.key ?? c.callID)
+            }
+            end(callID: id, reason: c.reason == .answeredElsewhere ? .answeredElsewhere : (c.reason == .timeout ? .unanswered : .remoteEnded))
         default:
             // A gateway drop (.disconnected) is deliberately NOT a call
             // event. A ringing wake does not depend on the session that

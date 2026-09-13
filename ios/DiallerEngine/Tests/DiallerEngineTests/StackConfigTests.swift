@@ -34,7 +34,8 @@ final class StackConfigTests: XCTestCase {
             "opus_dtx": "no",
             "rtp_stats": "yes",
             "rtp_timeout": "30",
-            "rtp_tos": "184",
+            "rtp_tos": "184", // DSCP EF on media
+            "sip_tos": "96", // DSCP CS3 on signalling (baresip's default would be CS5)
             "audio_player": "audiounit,default",
             "audio_source": "audiounit,default",
             "call_max_calls": "1",

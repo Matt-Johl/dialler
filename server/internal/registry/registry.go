@@ -69,18 +69,56 @@ func (r *Registry) WaitRegistered(ctx context.Context, user string) (Endpoint, e
 		return ep, nil
 	case <-ctx.Done():
 		r.mu.Lock()
-		ws := r.waiters[user]
-		for i, w := range ws {
-			if w == ch {
-				r.waiters[user] = append(ws[:i], ws[i+1:]...)
-				break
-			}
-		}
-		if len(r.waiters[user]) == 0 {
-			delete(r.waiters, user)
-		}
+		r.dropWaiterLocked(user, ch)
 		r.mu.Unlock()
 		return Endpoint{}, ctx.Err()
+	}
+}
+
+// WaitRouteChange blocks until user holds a live registration whose contact
+// differs from route, or ctx ends. The call controller watches this while a
+// callee's INVITE is in flight: a phone that changes network mid-ring (an
+// SSID handoff) registers again from its new address within a second, and
+// the INVITE sent to the old route can only time out (Timer B, 32 s) — the
+// 2026-09-13 two-SSID test rang the app and then lost every call that way.
+// A refresh from the same connection (same contact) is not a change.
+func (r *Registry) WaitRouteChange(ctx context.Context, user, route string) (Endpoint, error) {
+	for {
+		r.mu.Lock()
+		if ep := r.byUser[user]; ep != nil {
+			if v := r.viewLocked(ep); v.Contact != "" && v.Contact != route {
+				r.mu.Unlock()
+				return v, nil
+			}
+		}
+		ch := make(chan struct{})
+		r.waiters[user] = append(r.waiters[user], ch)
+		r.mu.Unlock()
+
+		select {
+		case <-ch:
+			// Something registered; loop to see whether the route moved.
+		case <-ctx.Done():
+			r.mu.Lock()
+			r.dropWaiterLocked(user, ch)
+			r.mu.Unlock()
+			return Endpoint{}, ctx.Err()
+		}
+	}
+}
+
+// dropWaiterLocked removes one WaitRegistered/WaitRouteChange channel that
+// gave up. Caller holds mu.
+func (r *Registry) dropWaiterLocked(user string, ch chan struct{}) {
+	ws := r.waiters[user]
+	for i, w := range ws {
+		if w == ch {
+			r.waiters[user] = append(ws[:i], ws[i+1:]...)
+			break
+		}
+	}
+	if len(r.waiters[user]) == 0 {
+		delete(r.waiters, user)
 	}
 }
 

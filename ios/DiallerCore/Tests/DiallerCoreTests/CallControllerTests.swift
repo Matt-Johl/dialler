@@ -257,6 +257,21 @@ final class CallControllerTests: XCTestCase {
         XCTAssertEqual(ui.ended.count, 1, "unknown call cancel is ignored")
     }
 
+    // INVITE first (registered app), wake second: the call is tracked under
+    // the INVITE's synthetic id. The server's cancel names the wake's id and
+    // must still end it.
+    func testCancelByWakeIDEndsACallThatRangFromItsINVITE() {
+        let (c, ui, engine, _) = make()
+        c.handle(sipIncoming: "sip:100@pbx", displayName: "Reception")
+        c.handle(.wake(wake("c1")))
+        XCTAssertEqual(c.activeCalls.count, 1)
+        c.handle(.wakeCancel(WakeCancel(callID: "c1", reason: .callerHangup)))
+        XCTAssertEqual(ui.ended.count, 1, "the cancel must resolve through the merged wake id")
+        XCTAssertEqual(ui.ended.first?.1, .remoteEnded)
+        XCTAssertEqual(engine.hungUp.count, 1)
+        XCTAssertTrue(c.activeCalls.isEmpty)
+    }
+
     func testDeclineWhileRingingSendsDeclineAck() {
         let (c, _, _, tr) = make()
         c.handle(.wake(wake("c1")))

@@ -460,6 +460,10 @@ public final class BaresipCallEngine: CallEngine {
         rtp_stats               yes
         rtp_timeout             30
         rtp_tos                 184
+        # SIP signalling CS3 (baresip's default is 160, CS5). With the libre
+        # patch, both also set the Apple net service type (voice / signalling)
+        # that selects the Wi-Fi access category.
+        sip_tos                 96
 
         module                  audiounit.so
         module                  aufile.so
@@ -477,6 +481,7 @@ public final class BaresipCallEngine: CallEngine {
         state = .starting
         let config = Self.stackConfig(acceptAnyCertificate: acceptAnyCertificate, audioSource: audioSourceOverride)
         let ctx = Unmanaged.passUnretained(self).toOpaque()
+        log("engine: starting the SIP stack")
         let rc = cb_start(config, { ctx, event, peer, text in
             guard let ctx else { return }
             let engine = Unmanaged<BaresipCallEngine>.fromOpaque(ctx).takeUnretainedValue()

@@ -167,6 +167,20 @@ func (p *RTPPacketWriter) WriteSamples(payload []byte, sampleRateTimestamp uint3
 	return n, err
 }
 
+// WriteSamplesSeq (Dialler patch) is WriteSamples with the sequence number
+// chosen by the caller. A relay that copies packets between legs uses it to
+// carry the source's sequence gaps through: renumbering every forwarded
+// packet contiguously (WriteSamples) hides upstream loss and reordering from
+// the receiver's jitter buffer and concealment. The writer's own sequencer
+// is moved to seq, so a later WriteSamples continues from it.
+func (p *RTPPacketWriter) WriteSamplesSeq(payload []byte, sampleRateTimestamp uint32, marker bool, payloadType uint8, seq uint16) (int, error) {
+	p.mu.RLock()
+	p.seqWriter.InitSeq(seq - 1) // NextSeqNumber() below yields seq
+	n, err := p.writeSamplesUnsafe(p.writer, payload, sampleRateTimestamp, marker, payloadType)
+	p.mu.RUnlock()
+	return n, err
+}
+
 func (p *RTPPacketWriter) writeSamplesUnsafe(writer RTPWriter, payload []byte, sampleRateTimestamp uint32, marker bool, payloadType uint8) (int, error) {
 	pkt := &p.packet
 	pkt.Header = rtp.Header{

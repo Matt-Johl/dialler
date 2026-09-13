@@ -35,11 +35,15 @@ KEEP="${KEEP:-0}"
 TARGET="echo@dialler"; WHERE="the server"; DELAY_BOUND=150; GAP_BOUND=0; GAPS_BOUND=0
 if [ "${TRUNK:-0}" = 1 ]; then
   TARGET="600@dialler"; WHERE="the PBX through the trunk"; DELAY_BOUND=200
-  # This loop is G.722 (G.711 fallback) and neither has concealment yet:
-  # with the server's egress impaired on both legs (to the PBX and back to
-  # the phone) every lost packet is a gap — measured 8 of 16 drops audible
-  # on G.711. Tightened to "concealed" in plan Phase D.
-  [ "${IMPAIR:-0}" = 1 ] && { GAP_BOUND=60; GAPS_BOUND=12; }
+  # This loop is G.722 (G.711 fallback). With the server's egress impaired
+  # on both legs (to the PBX and back to the phone) every lost packet used
+  # to be a gap — 8 of 16 drops audible on G.711, 7 of 18 on G.722. With
+  # the app's concealment (plan Phase D, ios/vendor/patches/plc) the same
+  # loss leaves one or two dips of 20–40 ms (measured over three runs:
+  # 1×20, 1×20, 2×40 ms), the jitter buffer's own refill after a loss —
+  # what the bound now holds. The 20 ms target needs concealment driven
+  # from the playout timeline (SPEC §6 near-term item 5).
+  [ "${IMPAIR:-0}" = 1 ] && { GAP_BOUND=40; GAPS_BOUND=2; }
 else
   [ "${IMPAIR:-0}" = 1 ] && { GAP_BOUND=40; GAPS_BOUND=1; }
 fi

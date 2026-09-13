@@ -206,6 +206,10 @@ struct StatusView: View {
                     }
                 }
                 Section("Log") {
+                    Button("Send diagnostics to the server") { Task { await model.sendDiagnostics(reason: "manual") } }
+                    if !model.diagnosticsStatus.isEmpty {
+                        Text(model.diagnosticsStatus).font(.caption).foregroundStyle(.secondary)
+                    }
                     ForEach(Array(model.log.enumerated().reversed()), id: \.offset) { _, line in
                         Text(line).font(.caption.monospaced())
                     }
@@ -220,7 +224,9 @@ struct StatusView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var ssid = ""
+    /// Comma-separated, as typed; parsed by `SSIDList` on save. Prefilled
+    /// from the saved configuration, which loads asynchronously.
+    @State private var ssids = ""
 
     var body: some View {
         NavigationStack {
@@ -237,11 +243,18 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Local Push Connectivity (device only)") {
-                    TextField("Office Wi-Fi SSID", text: $ssid)
-                    Button("Enable background wakeups on this SSID") { model.configureLocalPush(ssid: ssid) }
-                        .disabled(ssid.isEmpty)
+                    TextField("Office Wi-Fi SSIDs (comma-separated)", text: $ssids)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Text("The provider runs, and calls reach the locked phone, whenever the phone is joined to any of these networks.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Enable background wakeups on these SSIDs") { model.configureLocalPush(ssids: SSIDList.parse(ssids)) }
+                        .disabled(SSIDList.parse(ssids).isEmpty)
                     Button("Remove saved configuration", role: .destructive) { model.removeLocalPush() }
                     LabeledContent("State", value: model.localPushStatus)
+                }
+                .onAppear { if ssids.isEmpty { ssids = SSIDList.format(model.localPushSSIDs) } }
+                .onChange(of: model.localPushSSIDs) { _, saved in
+                    if ssids.isEmpty { ssids = SSIDList.format(saved) }
                 }
                 Section {
                     Button("Save & connect") { model.connect() }

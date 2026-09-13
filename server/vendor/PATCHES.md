@@ -39,4 +39,20 @@ upstream release named in `modules.txt`; re-apply when bumping.
   PBX was offered G.722 alone and the call failed ("no supported codecs
   found", user's Asterisk, 2026-09-12). Both legs still end on one common
   codec — the caller is answered with whatever the callee took.
+- `media/rtp_packet_writer.go`: `RTPPacketWriter.WriteSamplesSeq` — like
+  `WriteSamples` with the sequence number chosen by the caller (and the
+  writer's sequencer moved to it). The relay rebases the source's sequence
+  numbers onto its own instead of renumbering every packet, so upstream
+  loss and reordering reach the far end's jitter buffer and concealment
+  (plan Phase D; before, a lost packet became a silent hole in a
+  seamlessly numbered stream that no decoder could conceal).
+- `media/media_session.go` (`media.ListenConfig`) — QoS: RTP/RTCP sockets
+  are opened through a package-level `net.ListenConfig` so the B2BUA can
+  mark them DSCP EF from its Control hook (plan Phase E; std lib only).
+
+## github.com/emiago/sipgo
+
+- `server.go` (`sipgo.ListenConfig`, `listenUDP/TCP/TLS`) — QoS: every SIP
+  listener is opened through a package-level `net.ListenConfig` so the
+  B2BUA can mark them DSCP CS3; accepted connections inherit it.
 

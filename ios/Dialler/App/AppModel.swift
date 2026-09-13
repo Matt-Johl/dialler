@@ -3,6 +3,7 @@ import Combine
 import DiallerCore
 import DiallerProtocol
 import Foundation
+import MetricKit
 // @preconcurrency: NetworkExtension's classes (NEAppPushManager) are not yet
 // marked Sendable, and its completion handlers are @Sendable. We only touch
 // the manager after hopping back to the main actor inside those handlers,
@@ -31,6 +32,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var contacts: [DirectoryContact] = []
     @Published private(set) var log: [String] = []
     @Published private(set) var localPushStatus = "not configured"
+    /// The SSIDs of the saved Local Push configuration, as loaded from
+    /// the framework's preferences (the source of truth; the app persists
+    /// nothing of its own). Settings prefills its field from this.
+    @Published private(set) var localPushSSIDs: [String] = []
 
     /// The call in progress, for the in-call screen. Nil while idle or
     /// merely ringing (ringing is CallKit's UI alone).
@@ -68,14 +73,22 @@ final class AppModel: ObservableObject {
     /// process exists (foreground or suspended) and only goes through
     /// PushKit to launch a dead one. See `LocalPushDelegate`.
     private var pushManager: NEAppPushManager?
+    /// Every loaded manager instance, kept alive so their delegates stay set.
+    private var pushManagers: [NEAppPushManager] = []
     private lazy var localPushDelegate = LocalPushDelegate(model: self)
     private var book = AddressBook()
     /// Thread-safe caller-name lookup for incoming calls (the controller
     /// resolves names off the main actor). Kept in step with `contacts`.
     private nonisolated let nameIndex = DirectoryNameIndex()
     private let logger = Logger(subsystem: DiallerIDs.bundlePrefix, category: "app")
+    /// Persistent log in the App Group (survives a kill; uploaded to the dev
+    /// server on the next launch), beside the in-memory view.
+    private let fileLog = Breadcrumb.log
+    private let diagnostics = DiagnosticsCollector()
+    @Published private(set) var diagnosticsStatus = ""
 
     init() {
+        Breadcrumb.drop("AppModel: creating the SIP engine")
         #if canImport(DiallerEngine)
         let baresip = BaresipCallEngine(acceptAnyCertificate: true)
         engine = baresip
@@ -91,6 +104,16 @@ final class AppModel: ObservableObject {
             token = cfg.token
             acceptAnyCertificate = cfg.gateway.acceptAnyCertificate
         }
+        fileLog?.write("---- launch \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") ----")
+        // MetricKit hands the app its own crash / hang / CPU-kill reports on
+        // the launch after they happened; they are queued and uploaded with
+        // the logs, so a termination on the phone is readable on the Mac.
+        diagnostics.onPayload = { [weak self] data in
+            DiagnosticsClient.enqueue(kind: "metrickit", data: data)
+            Task { @MainActor in self?.append("diagnostics: MetricKit report queued (\(data.count) bytes)") }
+        }
+        MXMetricManager.shared.add(diagnostics)
+        Task { await sendDiagnostics(reason: "launch") }
         callKit.onAnswer = { [weak self] id in
             guard let self else { return }
             self.controller.userAnswered(callID: id)
@@ -100,7 +123,7 @@ final class AppModel: ObservableObject {
         callKit.onEnd = { [weak self] id in
             guard let self else { return }
             self.controller.userEnded(callID: id)
-            if self.activeCall?.id == id { self.activeCall = nil }
+            self.callEnded(id)
         }
         callKit.onStart = { [weak self] id in
             guard let self else { return }
@@ -140,6 +163,12 @@ final class AppModel: ObservableObject {
         // iOS suspends the app (and kills its sockets) in the background;
         // reconnect the moment we are back, and do not retry while away.
         let nc = NotificationCenter.default
+        nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            // Leaving the foreground: a Local Push delivery to this
+            // (soon suspended) process must find a delegate on the loaded
+            // manager. Re-attach now; cheap, and it is exactly when it counts.
+            Task { @MainActor in self?.attachLocalPushDelegate() }
+        }
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.appBecameActive() }
         }
@@ -207,6 +236,22 @@ final class AppModel: ObservableObject {
     /// `end`, which calls this.
     func callEnded(_ id: String) {
         if activeCall?.id == id { activeCall = nil }
+        // The last call is over and we are not on screen: back to the
+        // background rule (no session; the extension covers wakes).
+        if controller.activeCalls.isEmpty, UIApplication.shared.applicationState != .active {
+            session?.setActive(false)
+        }
+    }
+
+    /// A call the extension woke rings while the app is in the background,
+    /// where the keeper holds no session of its own — so the caller's
+    /// hangup, a wake_cancel the server sends on the app's socket (and
+    /// replays to a session that connects later), had nowhere to arrive and
+    /// the phone rang until the user gave up (2026-09-13, repeatedly). CallKit
+    /// keeps the process running while a call is tracked, so hold a session
+    /// for exactly that long; `callEnded` lets it go again.
+    private func holdSessionWhileCallTracked() {
+        session?.setActive(true)
     }
 
     private func title(for call: TrackedCall) -> String {
@@ -229,16 +274,27 @@ final class AppModel: ObservableObject {
         if currentConfig.isComplete { connect() }
     }
 
-    /// Loads the saved Local Push configuration and attaches our delegate to
-    /// it. Must happen at every launch: the delegate lives on the loaded
-    /// object, not in the saved preferences.
+    /// Loads the saved Local Push configuration(s) and attaches our delegate
+    /// to every loaded instance. The framework delivers an incoming call to
+    /// the delegate of a manager it LOADED from preferences: a manager the
+    /// app created itself and saved is not that instance, even though it
+    /// carries the same configuration. Seen 2026-09-13: after re-enabling
+    /// Local Push (new object, delegate set on it, saved), the next wake to
+    /// the suspended app logged "NEAppPushManager app has not set the
+    /// delegate to receive the incoming call payload" and callservicesd
+    /// killed the app (0xBAADCA11). So: attach at launch, again after every
+    /// save, and again whenever the app leaves the foreground — the moment
+    /// a delivery to this process starts to matter.
     private func attachLocalPushDelegate() {
         NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
             Task { @MainActor in
                 guard let self else { return }
                 if let error { self.append("Local Push: load failed: \(error.localizedDescription)"); return }
-                guard let manager = managers?.first else { return }
-                self.adopt(pushManager: manager)
+                let loaded = managers ?? []
+                guard !loaded.isEmpty else { self.append("Local Push: no saved configuration"); return }
+                self.pushManagers = loaded
+                for m in loaded { m.delegate = self.localPushDelegate }
+                self.adopt(pushManager: loaded[0])
             }
         }
     }
@@ -246,7 +302,11 @@ final class AppModel: ObservableObject {
     private func adopt(pushManager manager: NEAppPushManager) {
         manager.delegate = localPushDelegate
         pushManager = manager
-        append("Local Push: delegate attached (enabled=\(manager.isEnabled), ssids=\(manager.matchSSIDs))")
+        localPushSSIDs = manager.matchSSIDs
+        // isActive: whether iOS is currently running the provider extension
+        // (on a matching SSID). false here explains "callee offline, wake
+        // undeliverable" on the server: nothing holds the wake connection.
+        append("Local Push: delegate attached (enabled=\(manager.isEnabled), active=\(manager.isActive), ssids=\(manager.matchSSIDs))")
     }
 
     func connect() {
@@ -342,8 +402,9 @@ final class AppModel: ObservableObject {
         let name = nameIndex.name(forURI: wake.from.uri) ?? (wake.from.displayName?.isEmpty == false ? wake.from.displayName! : CallController.numberPart(of: wake.from.uri))
         switch controller.handle(wake: wake) {
         case .rang:
-            break
+            holdSessionWhileCallTracked()
         case .duplicate(let id):
+            holdSessionWhileCallTracked()
             append("wake \(wake.callID) already ringing as \(id); reaffirming with CallKit")
             if !callKit.reaffirm(callID: id) {
                 // The controller still tracks the call but CallKit has no
@@ -380,7 +441,11 @@ final class AppModel: ObservableObject {
 
     // MARK: Local Push Connectivity (device only; SPEC §2)
 
-    func configureLocalPush(ssid: String) {
+    /// Saves the provider configuration for `ssids` (already parsed, see
+    /// `SSIDList`): iOS runs the extension whenever the phone is joined to
+    /// any one of them.
+    func configureLocalPush(ssids: [String]) {
+        guard !ssids.isEmpty else { localPushStatus = "no SSID given"; return }
         NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
             Task { @MainActor in
                 guard let self else { return }
@@ -388,7 +453,7 @@ final class AppModel: ObservableObject {
                 let manager = managers?.first ?? NEAppPushManager()
                 manager.localizedDescription = "Dialler on-prem calls"
                 manager.providerBundleIdentifier = DiallerIDs.pushProviderBundleID
-                manager.matchSSIDs = [ssid]
+                manager.matchSSIDs = ssids
                 manager.providerConfiguration = ["gateway": "\(self.host):\(self.port)"]
                 manager.isEnabled = true
                 manager.saveToPreferences { err in
@@ -399,9 +464,11 @@ final class AppModel: ObservableObject {
                             self.localPushStatus = "save failed: \(ns.domain) \(ns.code) \(detail)"
                             self.append("NEAppPushManager save failed: \(ns.domain) \(ns.code) \(detail); provider=\(DiallerIDs.pushProviderBundleID)")
                         } else {
-                            self.localPushStatus = "enabled for SSID \(ssid)"
-                            self.append("NEAppPushManager saved for SSID \(ssid)")
-                            self.adopt(pushManager: manager)
+                            self.localPushStatus = "enabled for SSIDs \(SSIDList.format(ssids))"
+                            self.append("NEAppPushManager saved for SSIDs \(SSIDList.format(ssids))")
+                            // Not adopt(manager): deliveries go to the delegate
+                            // of the instance the framework loads, so reload.
+                            self.attachLocalPushDelegate()
                         }
                     }
                 }
@@ -423,6 +490,7 @@ final class AppModel: ObservableObject {
                     m.removeFromPreferences { err in
                         Task { @MainActor in
                             self.localPushStatus = err.map { "remove failed: \($0.localizedDescription)" } ?? "removed; re-enable to save afresh"
+                            if err == nil { self.localPushSSIDs = [] }
                         }
                     }
                 }
@@ -436,8 +504,29 @@ final class AppModel: ObservableObject {
         // explain it were gone. notice is persisted and shows in Console.app,
         // sysdiagnose and `log show` after the fact.
         logger.notice("\(line, privacy: .public)")
+        fileLog?.write(line)
         log.append(line)
         if log.count > 200 { log.removeFirst(log.count - 200) }
+    }
+
+    /// Queues this process's and the extension's persistent logs and sends
+    /// everything queued (logs, MetricKit reports) to the dev server, which
+    /// files them under data/diag/<device>/. Called at launch and from the
+    /// "Send diagnostics" button; failures leave the queue for next time.
+    func sendDiagnostics(reason: String) async {
+        guard let cfg = store.load(), cfg.isComplete else {
+            diagnosticsStatus = "not configured"
+            return
+        }
+        if let data = fileLog?.drain() { DiagnosticsClient.enqueue(kind: "app-log", name: reason, data: data) }
+        if let ext = FileLog(name: "extension"), let data = ext.drain() {
+            DiagnosticsClient.enqueue(kind: "extension-log", name: reason, data: data)
+        }
+        let client = DiagnosticsClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
+                                       acceptAnyCertificate: cfg.gateway.acceptAnyCertificate)
+        let result = await client.flush()
+        diagnosticsStatus = result.failed == 0 ? "sent \(result.sent) item(s)" : "sent \(result.sent), \(result.failed) queued (server unreachable)"
+        append("diagnostics (\(reason)): \(diagnosticsStatus)")
     }
 }
 
@@ -486,4 +575,17 @@ final class LocalPushDelegate: NSObject, NEAppPushDelegate {
             model?.handleExtensionWake(userInfo: userInfo)
         }
     }
+}
+
+/// Receives MetricKit diagnostics (crash, hang, CPU exception, disk write)
+/// and hands each payload's JSON to `onPayload`. Delivered by the system on
+/// the launch following the event.
+final class DiagnosticsCollector: NSObject, MXMetricManagerSubscriber {
+    var onPayload: ((Data) -> Void)?
+
+    func didReceive(_ payloads: [MXDiagnosticPayload]) {
+        for p in payloads { onPayload?(p.jsonRepresentation()) }
+    }
+
+    func didReceive(_ payloads: [MXMetricPayload]) {}
 }

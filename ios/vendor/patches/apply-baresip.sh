@@ -77,3 +77,12 @@ EOF
   grep -q 'prev_ts = ar->ts_recv.last' "$SRC/src/aureceiver.c" || { echo "patch: aureceiver.c prev_ts anchor not found"; exit 1; }
 fi
 echo "   baresip: receive-path PLC/FEC patch present"
+
+# NOT applied — tried and reverted 2026-09-12: counting the packets missing
+# between the tail and a new arrival as frames in the jitter buffer (so the
+# packet after a loss is released on time and concealed in its slot). It
+# released packets early, drained the buffer and made the impaired echo
+# WORSE (4–13 gaps per call instead of 1–2). The residual one 20–40 ms gap
+# per lost packet is the buffer's own refill after a loss; any fix needs a
+# timeline-driven concealment (decode on a timer, not on arrival), not a
+# change to the frame count. See ios/vendor/patches/README.md.

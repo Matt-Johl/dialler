@@ -83,14 +83,23 @@ fetch() {
 # extracted sources (see patches/README.md). Idempotent.
 apply_patches() {
   [ -d "$ROOT/patches/audiounit" ] || return 0
-  log "patches: audiounit (manual audio for CallKit), g722 (no spandsp), aureceiver PLC"
+  log "patches: audiounit (manual audio for CallKit), g722 (no spandsp), g711+g722 PLC, aureceiver PLC"
   cp "$ROOT/patches/audiounit/"*.c "$ROOT/patches/audiounit/"*.h "$SRC/baresip/modules/audiounit/"
   # g722: upstream's module needs spandsp (LGPL) and is silently skipped
   # without it; ours compiles WebRTC's public-domain G.722 into the module.
   cp "$ROOT/patches/g722/CMakeLists.txt" "$ROOT/patches/g722/g722.c" "$SRC/baresip/modules/g722/"
   rm -rf "$SRC/baresip/modules/g722/webrtc"
   cp -R "$ROOT/patches/g722/webrtc" "$SRC/baresip/modules/g722/webrtc"
+  # g711: upstream's module plus packet-loss concealment; plc/ is the
+  # concealment unit both sample-domain codecs compile in.
+  cp "$ROOT/patches/g711/CMakeLists.txt" "$ROOT/patches/g711/g711.c" "$SRC/baresip/modules/g711/"
+  for m in g711 g722; do
+    rm -rf "$SRC/baresip/modules/$m/plc"
+    mkdir -p "$SRC/baresip/modules/$m/plc"
+    cp "$ROOT/patches/plc/plc.c" "$ROOT/patches/plc/plc.h" "$SRC/baresip/modules/$m/plc/"
+  done
   sh "$ROOT/patches/apply-baresip.sh" "$SRC/baresip"
+  sh "$ROOT/patches/apply-re.sh" "$SRC/re"
 }
 
 # ---- openssl -----------------------------------------------------------------

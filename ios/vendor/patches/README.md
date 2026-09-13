@@ -112,6 +112,84 @@ module against the distro's spandsp shared library instead (an LGPL
 dependency is fine in a test container). Verified by `make harness-trunk`
 (`codec=G722` on both legs of every trunk call, gap-free recordings).
 
+## plc/ + g711/ — packet-loss concealment for G.711 and G.722
+
+baresip calls a codec's `plch` for every lost frame (with our aureceiver
+patch above), but only the Opus module implements one: on a G.711 or
+G.722 call every lost packet was 20 ms of silence. `plc/plc.c` is our own
+concealment unit — pitch-period repetition with overlap-add and a fade,
+after the method of ITU-T G.711 Appendix I, written from the description
+with no third-party code — compiled into both sample-domain modules:
+
+- `g711/g711.c` + `g711/CMakeLists.txt` replace upstream's module: the
+  decoder keeps a `struct plc` per call, feeds every decoded frame to
+  `plc_good()`, and `plch` fills a lost frame from `plc_fill()`;
+- `g722/g722.c` does the same after the WebRTC decoder.
+
+The unit keeps 60 ms of history, estimates the pitch (2.5–15 ms) by
+normalised cross-correlation over the last 20 ms, repeats the last period
+with the first quarter period overlap-added onto the history, attenuates
+20 % per further lost frame and is silent after five (a long loss must not
+buzz), and cross-fades the first 5 ms of the first good frame after a loss.
+`make plc-test` (plc/plc_test.c, plain C on the host) checks a concealed
+frame keeps the signal's energy and shape (error well below the signal),
+the recovery frame is undamaged, and a long loss fades to silence. The
+harness phone (harness/baresip/Dockerfile) compiles the same modules, so
+`IMPAIR=1 make harness-echo` measures the same concealment the app has.
+
+## Tried and reverted: jitter buffer counting a lost packet as a frame
+
+The residual gap after concealment (one 20–40 ms dip per lost packet, any
+codec) is the jitter buffer's refill: `jbuf_get` releases a packet only
+while the buffer holds more than `wish` frames, and a loss leaves it one
+short until another packet arrives, so the player runs dry for a frame
+before the hole is concealed. Counting the missing packets as "holes"
+inside the frame count (so the following packet is released on time) was
+tried on 2026-09-12 and reverted: it released packets early, drained the
+buffer, and the impaired echo went from 1–2 gaps per call to 4–13. The fix
+would be concealment driven by the playout timeline (a decode on a timer
+when the slot's packet has not arrived), which is a receive-path redesign,
+not a counting change. Left open; the numbers are in SPEC §6.
+
+## apply-re.sh — libre's main loop must not spin on EBADF
+
+Upstream `re_main()` has a Darwin "workaround": when `fd_poll()` fails
+with `EBADF` it retries at once, forever, without running timers. That is
+the state the loop is in once its kqueue descriptor has become invalid
+(the context torn down under it, or the descriptor number closed twice by
+someone else), and on iOS it is the engine thread at 100 % CPU in the
+background until the system kills the app: `cpu_resource_fatal`, 48 s at
+99 %, on 2026-09-12 — the heaviest stack was the loop thread inside
+`re_main` calling `kevent`. The shim's "loop died" recovery never ran
+because `re_main` never returned. Patched: warn with the descriptor state
+(`kqfd`, so the next occurrence says whether it was closed under the loop
+or by a stray close elsewhere), retry eight times 10 ms apart, then return
+EBADF; the loop thread treats an unasked return as dead and the engine
+rebuilds the stack. Applied to the harness phone too.
+
+## apply-re.sh — QoS: Apple net service type beside the DSCP
+
+`udp_settos()`, `tcp_settos()` and `tcp_conn_settos()` set `IP_TOS` only.
+On iOS the DSCP byte does not by itself pick the Wi-Fi access category;
+the socket's `SO_NET_SERVICE_TYPE` does (`NET_SERVICE_TYPE_VO` for voice,
+`_SIG` for signalling), and IPv6 sockets need `IPV6_TCLASS` for the DSCP.
+The patch adds both under `#ifdef DARWIN`, mapping tos ≥ 184 (EF) to voice
+and tos ≥ 96 (CS3) to signalling, ignoring failures (the other address
+family, or an unsupported option). baresip applies `rtp_tos` to RTP/RTCP
+and `sip_tos` to the SIP transports through these functions; the app's
+profile sets 184 and 96 (plan Phase E, SPEC §4.4 rule 5a).
+
+## apply-re.sh — patch level
+
+`re_dialler_patchlevel()` is appended to libre's `main.c` and returns
+`RE_PATCH_LEVEL` from apply-re.sh (1: EBADF guard; 2: + the QoS marks).
+`cb_version()` prints it in the engine's "started baresip …" log line, so a
+field report says which XCFramework the build carried — an app built from
+between an XCFramework rebuild and a source fix has cost an afternoon
+before. The reference is deliberately not weak: an app linked against an
+XCFramework older than the patch fails to link rather than run without it.
+Bump the level whenever a patch above changes.
+
 ## Not a patch: libre's context is bound to the initialising thread
 
 Recorded here because it looked like a libre bug and nearly became a

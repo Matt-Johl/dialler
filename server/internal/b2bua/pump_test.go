@@ -143,11 +143,20 @@ func TestRelayPreservesSilenceGapsAndRebasesNewStreams(t *testing.T) {
 				ts = 9_000_000
 			}
 		}
-		src.pkts = append(src.pkts, packet(uint16(i), ts, ssrc, false))
+		seq := uint16(i)
+		if i >= 30 {
+			seq = 40000 + uint16(i) // the restarted stream numbers itself afresh
+		}
+		src.pkts = append(src.pkts, packet(seq, ts, ssrc, false))
 		ts += ulawFrame
 	}
 	sink, _ := runPump(t, src)
 	out := sink.all()
+	// Sequence numbers continue across the restart too: the far end sees
+	// one stream, not a 40000-packet loss.
+	if out[30].hdr.SequenceNumber != out[29].hdr.SequenceNumber+1 {
+		t.Fatalf("new stream did not continue our sequence: %d after %d", out[30].hdr.SequenceNumber, out[29].hdr.SequenceNumber)
+	}
 	if d := out[10].hdr.Timestamp - out[9].hdr.Timestamp; d != 26*ulawFrame {
 		t.Fatalf("silence gap not preserved: step %d, want %d", d, 26*ulawFrame)
 	}
@@ -194,6 +203,32 @@ func TestRelayCountsLossReorderingAndJitter(t *testing.T) {
 	}
 	if !strings.Contains(p.String(), "lost=1 reordered=1") {
 		t.Fatalf("summary lacks the counters: %s", p.String())
+	}
+}
+
+// A packet the source lost stays lost on the way out, and a reordered one
+// keeps its place: the relay rebases sequence numbers like timestamps
+// instead of renumbering, so the receiver's jitter buffer and concealment
+// see the loss (plan Phase D).
+func TestRelayCarriesSequenceGapsAndOrder(t *testing.T) {
+	src := &fakeSource{}
+	order := []int{0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 11, 13, 14, 15} // 7 lost; 11 late
+	for _, i := range order {
+		src.pkts = append(src.pkts, packet(uint16(100+i), uint32(i)*ulawFrame, 0x777, false))
+	}
+	sink, _ := runPump(t, src)
+	out := sink.all()
+	base := out[0].hdr.SequenceNumber - 100
+	for k, i := range order {
+		if want := uint16(100+i) + base; out[k].hdr.SequenceNumber != want {
+			t.Fatalf("packet %d (source seq %d): out seq %d, want %d — gaps/order not carried", k, 100+i, out[k].hdr.SequenceNumber, want)
+		}
+	}
+	if out[7].hdr.SequenceNumber != out[6].hdr.SequenceNumber+2 {
+		t.Fatal("the lost packet's number was not left missing")
+	}
+	if out[11].hdr.SequenceNumber != out[10].hdr.SequenceNumber-1 {
+		t.Fatal("the late packet was renumbered instead of keeping its place")
 	}
 }
 

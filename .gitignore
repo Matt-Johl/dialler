@@ -1,4 +1,5 @@
 # build outputs
+/ios/dsyms/
 /bin/
 /data/
 server/*.test

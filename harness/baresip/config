@@ -39,6 +39,7 @@ opus_dtx                no
 rtp_stats               yes
 rtp_timeout             30
 rtp_tos                 184
+sip_tos                 96
 
 # Modules
 module_path             @MODULE_PATH@

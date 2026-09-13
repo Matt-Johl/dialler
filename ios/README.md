@@ -136,7 +136,8 @@ resolve; today it is `dialler`, which only matters once the engine exists.
 
 ## Local Push Connectivity (device only)
 
-Settings → "Enable background wakeups on this SSID" configures
+Settings → "Enable background wakeups on these SSIDs" (comma-separated;
+the provider runs on any of them) configures
 `NEAppPushManager` for the extension. Requires the
 `app-push-provider` Network Extension entitlement on the provisioning profile
 (SPEC §9 risk 1). Not available in the simulator.
@@ -147,3 +148,60 @@ Settings → "Enable background wakeups on this SSID" configures
 caches (see `make swift-test-sandboxed`). `xcodebuild` additionally needs the
 `CLANG_MODULE_CACHE_PATH` / `SWIFTPM_MODULECACHE_OVERRIDE` environment and a
 `-derivedDataPath` under `~/Library/Developer`.
+
+## When the app dies or freezes: what to collect
+
+First: **was the app launched from Xcode?** A debugged process that stops
+(breakpoint, signal, CPU-limit exception) has its task suspended: it cannot
+take a CallKit wake, callservicesd's kill "succeeds" without the process
+exiting, a tap shows the frozen UI, swipe-kills are accepted and never
+complete, and it stays until the debugger lets go or the phone reboots.
+Nothing of ours logs and no crash report is written. Three field incidents
+(2026-09-12/13) were this. For device testing install with Xcode, stop,
+and launch from the home screen — or untick "Debug executable" in the
+scheme's Run action. In a device log archive the tell is `debug:asserted`
+on the app's process state, or FrontBoard's "process is being debugged".
+
+Most of the rest now collects itself:
+
+- The app and the extension keep a persistent log in the App Group
+  (`logs/app.log`, `logs/extension.log`, rotating at 2 MB), with every line
+  the in-app log view shows, including the SIP engine's.
+- On every launch, and from the Log section's **Send diagnostics** button,
+  the app uploads those logs plus any MetricKit report iOS handed it
+  (crash, hang, CPU kill — delivered on the launch after the event) to the
+  dev server, `POST /v1/diag`, which files them under
+  `data/diag/<device>/<time>-<kind>…`. Anything the server did not accept
+  stays queued in the App Group for the next attempt.
+- `make dev-server` also writes its own log to `data/logs/dev-server.log`.
+- Every Xcode build keeps its symbols in `ios/dsyms/<UUID>/` (the "Keep
+  build symbols" phase; the project has `ENABLE_USER_SCRIPT_SANDBOXING`
+  off because Xcode's script sandbox would silently refuse that write),
+  and `make symbolicate FILE=<report>` resolves a `.ips` or a MetricKit
+  JSON against them.
+
+So after an incident: rebuild nothing, open the app once (or press Send
+diagnostics), and read `data/diag/` and `data/logs/` on the Mac. The manual
+route still exists for what MetricKit does not cover: Settings → Privacy &
+Security → Analytics & Improvements → Analytics Data for `Dialler…ips`
+files, and the device console for the same minute
+(`log show --last 5m --predicate 'process CONTAINS "Dialler"' --info
+--style compact`).
+
+- **`Dialler-…ips` with `SIGKILL` and FrontBoard `0xBAADCA11` from
+  callservicesd** — a VoIP push that was not reported to CallKit in time.
+  Console signatures: `CSDVoIPProcessAssertion` granted, then the kill
+  ~7 s later with no `handleExtensionWake` in between. Fixed 2026-09-11
+  (`LocalPushDelegate`); SPEC §9 item 7.
+- **`Dialler.cpu_resource_fatal-…ips`** ("cpu usage", 99 % over ~48 s,
+  process killed, heaviest stack the loop thread inside `re_main`) — the
+  SIP engine's poll loop spinning on `EBADF`, i.e. its kqueue descriptor
+  went bad. Since 2026-09-12 the loop gives up after eight retries and
+  the engine rebuilds the stack, so the app should recover instead of
+  freezing; the *cause* of the bad descriptor is still open. Collect the
+  app log lines containing `fd_poll EBADF` — the `kqfd=` value in them is
+  the deciding clue (`-1`: libre's context was torn down under the loop;
+  `>=0`: another component closed a descriptor number it did not own) —
+  and `re_main returned … unasked` from the shim, plus what the phone had
+  just done (unlock, call end, Wi-Fi change). Full write-up: SPEC §9
+  item 8.

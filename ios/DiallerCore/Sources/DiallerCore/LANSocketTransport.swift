@@ -65,6 +65,9 @@ public final class LANSocketTransport: SignalTransport {
             }, queue)
         }
         let params = NWParameters(tls: tls)
+        // Call signalling: the system maps this to DSCP CS3 and, on Wi-Fi,
+        // the WMM voice-signalling access category (plan Phase E, SPEC §4.4).
+        params.serviceClass = .signaling
         let conn = NWConnection(host: .init(endpoint.host), port: .init(rawValue: endpoint.port)!, using: params)
         connection = conn
 
@@ -90,6 +93,23 @@ public final class LANSocketTransport: SignalTransport {
             default:
                 break
             }
+        }
+        // The connection knows its own path. When the network under it goes
+        // away it reports non-viable; when a usable path exists that this
+        // connection is not on, it reports a better path. A Wi-Fi handoff
+        // between two SSIDs on the Local Push list is exactly that: iOS does
+        // not restart the provider, the phone gets a new address, the old
+        // flow is dead and the new path is "better" — and neither side's
+        // TCP would notice for minutes (2026-09-13: every call placed after
+        // a handoff was lost). Apple's guidance for a better path is to
+        // reconnect over it, which is what closing here makes the keeper do.
+        conn.viabilityUpdateHandler = { [weak self] viable in
+            guard let self, self.connection === conn, !viable else { return }
+            self.continuation.yield(.waiting(reason: "network path not viable"))
+        }
+        conn.betterPathUpdateHandler = { [weak self] better in
+            guard let self, self.connection === conn, better else { return }
+            self.close(reason: "a better network path is available")
         }
         conn.start(queue: queue)
     }
@@ -120,6 +140,15 @@ public final class LANSocketTransport: SignalTransport {
 
     private func write(_ message: Message) {
         guard let conn = connection else { return }
+        // Nothing but the hello goes out before the server has welcomed us.
+        // A frame queued on a connection that is still opening would be
+        // sent ahead of the hello, and the server closes on that
+        // ("hello_expected", 2026-09-13: a wake_ack sent while the app's
+        // session was being brought up for a ringing call).
+        switch (message, machine.state) {
+        case (.hello, _), (_, .live): break
+        default: return
+        }
         let env = Envelope(id: Self.newID(), ts: Date(), message: message)
         do {
             let frame = try Frame.encode(env)

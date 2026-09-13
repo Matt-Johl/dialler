@@ -47,6 +47,65 @@ func TestWaitRegistered(t *testing.T) {
 	}
 }
 
+// A phone that re-registers from a new address while its INVITE is in
+// flight must be noticed; a refresh from the same route must not.
+func TestWaitRouteChange(t *testing.T) {
+	r := New(nil)
+	r.Provision("201", "dev1")
+	old := "sip:201@10.18.0.204:54962;transport=tls"
+	if _, err := r.Register("201", old, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+
+	// A refresh on the same route is not a change: the wait runs out.
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		_, _ = r.Register("201", old, time.Minute)
+	}()
+	if _, err := r.WaitRouteChange(ctx, "201", old); err != context.DeadlineExceeded {
+		t.Fatalf("same-route refresh: want deadline, got %v", err)
+	}
+	cancel()
+
+	// A registration from elsewhere ends the wait with the new route.
+	got := make(chan Endpoint, 1)
+	go func() {
+		ep, err := r.WaitRouteChange(context.Background(), "201", old)
+		if err != nil {
+			t.Error(err)
+		}
+		got <- ep
+	}()
+	time.Sleep(10 * time.Millisecond)
+	moved := "sip:201@10.18.0.111:55043;transport=tls"
+	if _, err := r.Register("201", moved, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ep := <-got:
+		if ep.Contact != moved {
+			t.Fatalf("woken with %q, want %q", ep.Contact, moved)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WaitRouteChange did not wake on the new registration")
+	}
+
+	// Already moved: returns at once.
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if ep, err := r.WaitRouteChange(ctx, "201", old); err != nil || ep.Contact != moved {
+		t.Fatalf("immediate return: %+v %v", ep, err)
+	}
+	// No waiter left behind by the timed-out wait.
+	r.mu.Lock()
+	n := len(r.waiters["201"])
+	r.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d waiter(s) leaked", n)
+	}
+}
+
 func TestProvisionRegisterExpire(t *testing.T) {
 	now := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
 	r := New(func() time.Time { return now })

@@ -24,6 +24,13 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
     // system's callbacks and the session's event pump hop onto it before
     // touching anything.
     private let logger = Logger(subsystem: DiallerIDs.bundlePrefix, category: "push-provider")
+    /// Persistent log in the App Group; the app uploads it with its own.
+    private let fileLog = FileLog(name: "extension")
+
+    private func note(_ line: String) {
+        logger.notice("\(line, privacy: .public)")
+        fileLog?.write(line)
+    }
     /// Everything below runs on this queue: the NE callbacks arrive on the
     /// system's queue and the session's events on a task.
     private let queue = DispatchQueue(label: "dialler.push-provider")
@@ -35,12 +42,12 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
     private var refused = false
 
     override func start() {
-        logger.notice("start")
+        note("start")
         queue.async { self.connect() }
     }
 
     override func stop(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-        logger.notice("stop: \(reason.rawValue)")
+        note("stop: \(reason.rawValue)")
         queue.async {
             self.tearDown()
             completionHandler()
@@ -54,11 +61,16 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
     override func handleTimerEvent() {
         queue.async {
             if self.session == nil || self.refused {
-                self.logger.notice("timer: (re)connecting")
+                self.note("timer: (re)connecting")
                 self.connect()
             } else if !self.connected {
-                self.logger.notice("timer: not connected; kicking the keeper")
-                self.session?.setActive(true) // reconnect now, backoff reset
+                // Not merely a nudge: rebuild the session from scratch. On
+                // 2026-09-13 the extension stayed disconnected from 02:00 to
+                // 05:52 while iOS reported it active — whatever wedged the
+                // keeper, a fresh transport is the sure way out and the
+                // system timer is the backstop that must not fail.
+                self.note("timer: not connected; rebuilding the session")
+                self.connect()
             }
         }
     }
@@ -66,10 +78,10 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
     private func connect() {
         tearDown()
         guard let cfg = AppGroupConfigStore(appGroup: DiallerIDs.appGroup).load(), cfg.isComplete else {
-            logger.error("no complete config in the App Group; the app must be set up first")
+            note("no complete config in the App Group; the app must be set up first")
             return
         }
-        let s = GatewaySession(endpoint: cfg.gateway, policy: ReconnectPolicy(delays: [1, 2, 3, 5]))
+        let s = GatewaySession(endpoint: cfg.gateway, policy: ReconnectPolicy(delays: [0, 1, 2, 3, 5]))
         s.waitingGrace = 3
         session = s
         refused = false
@@ -79,7 +91,7 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
                 self.queue.async { self.handle(ev, session: s) }
             }
         }
-        logger.notice("connecting to \(cfg.gateway.host, privacy: .public):\(cfg.gateway.port)")
+        note("connecting to \(cfg.gateway.host):\(cfg.gateway.port)")
         s.connect(hello: cfg.hello(kind: .extensionKind))
     }
 
@@ -95,34 +107,37 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
         switch ev {
         case .waiting(let reason):
             // Includes the keeper's own "reconnecting in Ns" notices.
-            logger.notice("waiting: \(reason, privacy: .public)")
+            note("waiting: \(reason)")
         case .connected(let w):
             connected = true
-            logger.notice("connected: session \(w.sessionID, privacy: .public)")
+            note("connected: session \(w.sessionID)")
         case .wake(let w):
             // notice: persisted, so the moment the extension handed a wake
             // to PushKit can be read back after the app was killed.
-            logger.notice("wake for call \(w.callID, privacy: .public)")
+            note("wake for call \(w.callID)")
             // Hand the wake to the app through PushKit; the app reports CallKit.
             let json = (try? WireCoding.makeEncoder().encode(w)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
             reportIncomingCall(userInfo: ["wake": json, "call_id": w.callID])
             // The call has been surfaced to the system (PROTOCOL.md §6 step 3).
             session.send(.wakeAck(WakeAck(callID: w.callID, action: .willAnswer)))
         case .wakeCancel(let c):
-            logger.notice("wake cancelled: \(c.callID, privacy: .public) \(c.reason.rawValue, privacy: .public)")
+            note("wake cancelled: \(c.callID) \(c.reason.rawValue)")
             // The app (if running) receives the same cancel on its own socket.
         case .directoryChanged:
             break // the app syncs; the extension does not hold the address book
         case .protocolError(let e):
-            logger.error("gateway error \(e.code.rawValue, privacy: .public) fatal=\(e.fatal)")
-            // The server closes the connection after any fatal error and the
-            // keeper retries — right for the transient ones (idle timeout, a
-            // bad frame). Three are for good until something changes:
-            // unauthorized (re-enrol in the app), an unsupported protocol
-            // version (update), superseded (a newer provider instance owns
-            // the session). Retrying those every few seconds would only fill
-            // the server log and, for superseded, fight the newer instance;
-            // the system timer retries them instead.
+            note("gateway error \(e.code.rawValue) fatal=\(e.fatal)")
+            // A fatal error is followed by the drop (`.disconnected`) and
+            // the keeper retries — right for the transient ones (idle
+            // timeout, a bad frame). Until 2026-09-13 the session machine
+            // closed the transport WITHOUT the drop, so the extension logged
+            // "gateway error idle_timeout fatal=true" at 04:21 and never
+            // reconnected. Three codes are for good until something
+            // changes: unauthorized (re-enrol in the app), an unsupported
+            // protocol version (update), superseded (a newer provider
+            // instance owns the session). The keeper stops its backoff on
+            // those (`GatewaySession.refusals`); the system timer retries
+            // them instead.
             switch e.code {
             case .unauthorized, .unsupportedVersion, .superseded:
                 refused = true
@@ -133,7 +148,7 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
             }
         case .disconnected(let reason):
             connected = false
-            logger.warning("disconnected: \(reason, privacy: .public); the keeper will retry")
+            note("disconnected: \(reason); the keeper will retry")
         }
     }
 }

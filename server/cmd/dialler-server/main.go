@@ -22,10 +22,12 @@ import (
 	"time"
 
 	"dialler/server/internal/b2bua"
+	"dialler/server/internal/diag"
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/gateway"
 	"dialler/server/internal/pbx"
+	"dialler/server/internal/qos"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
 	"dialler/server/internal/sipauth"
@@ -123,6 +125,11 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 
 	if o.publicHost == "" {
 		o.publicHost = firstIPv4()
+	}
+	if err := checkPublicHost(o.publicHost, net.InterfaceAddrs); err != nil {
+		// Not fatal: behind port forwarding (the Docker harness advertising
+		// the Mac's address) the advertised host is never a local one.
+		log.Warn("public host check", "err", err)
 	}
 	if o.localDomain == "" {
 		o.localDomain = o.publicHost
@@ -238,6 +245,10 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	mux := http.NewServeMux()
 	mux.Handle("/v1/directory", directory.NewHandler(dir, devices.DeviceAuth, o.adminToken))
 	mux.Handle("/v1/directory/", directory.NewHandler(dir, devices.DeviceAuth, o.adminToken))
+	// Device diagnostics land in <data-dir>/diag/<device>/ (app + extension
+	// logs, MetricKit crash/CPU reports): readable on this machine without
+	// touching the phone. See ios/README.md "When the app dies or freezes".
+	mux.Handle("/v1/diag", diag.Handler(filepath.Join(o.dataDir, "diag"), devices.DeviceAuth, log))
 	mux.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken, enroll.Hooks{
 		OnIssue: func(deviceID, user string) { reg.Provision(user, deviceID) },
 		OnRevoke: func(deviceID string) {
@@ -249,10 +260,14 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintln(w, "ok") })
 
 	// Listeners.
-	signalLn, err := tls.Listen("tcp", o.signalAddr, tlsCfg)
+	// The wire-protocol listener carries call signalling (wakes): CS3, like
+	// the SIP listener. Accepted connections inherit the marking.
+	signalLc := net.ListenConfig{Control: qos.Control(qos.DSCPCS3)}
+	signalRaw, err := signalLc.Listen(ctx, "tcp", o.signalAddr)
 	if err != nil {
 		return fmt.Errorf("signal listen: %w", err)
 	}
+	signalLn := tls.NewListener(signalRaw, tlsCfg)
 	// The directory/admin API carries device and admin tokens, so it is TLS
 	// on the same certificate as the other listeners.
 	httpLn, err := tls.Listen("tcp", o.httpAddr, tlsCfg)
@@ -290,6 +305,31 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// checkPublicHost reports a -public-host that is an IP literal this machine
+// does not hold. Apps register their SIP leg to the host the welcome
+// advertises; an address that is not ours can only time out on the phone
+// ("engine: registration failed: Operation timed out") while the gateway,
+// reached by the address in the app's settings, looks fine. That is what a
+// stale `ipconfig getifaddr` in `make dev-server` produced on 2026-09-13
+// (advertised 10.18.0.168 on a Mac that was 10.18.0.212). A hostname is
+// left to DNS. The caller decides whether it is fatal.
+func checkPublicHost(host string, interfaceAddrs func() ([]net.Addr, error)) error {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	addrs, err := interfaceAddrs()
+	if err != nil {
+		return nil // cannot tell; do not block startup on it
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP.Equal(ip) {
+			return nil
+		}
+	}
+	return fmt.Errorf("-public-host %s is not an address of this machine; apps would register to it and time out (use the LAN address of the interface phones reach, or a hostname)", host)
 }
 
 func firstIPv4() string {

@@ -112,6 +112,16 @@ services:
       NETEM_DELAY: "${NETEM_DELAY:-30ms}"
       NETEM_JITTER: "${NETEM_JITTER:-10ms}"
 
+  # QoS gate (profile "qos"): a tcpdump sidecar in the server's namespace;
+  # harness/qos_test.sh asserts the server's RTP leaves marked EF (tos 0xb8)
+  # and its SIP/TLS CS3 (tos 0x60). See SPEC §4.4.
+  qos:
+    build: ./qos
+    profiles: [qos]
+    depends_on: [dialler]
+    network_mode: "service:dialler"
+    cap_add: [NET_ADMIN, NET_RAW]
+
   sipp:
     build: ./sipp
     profiles: [test]

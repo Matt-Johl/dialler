@@ -114,7 +114,7 @@ func (srv *Server) ListenAndServe(ctx context.Context, network string, addr stri
 			return fmt.Errorf("fail to resolve address. err=%w", err)
 		}
 
-		udpConn, err := net.ListenUDP(network, laddr)
+		udpConn, err := listenUDP(ctx, network, laddr)
 		if err != nil {
 			return fmt.Errorf("listen udp error. err=%w", err)
 		}
@@ -129,7 +129,7 @@ func (srv *Server) ListenAndServe(ctx context.Context, network string, addr stri
 			return fmt.Errorf("fail to resolve address. err=%w", err)
 		}
 
-		conn, err := net.ListenTCP(network, laddr)
+		conn, err := listenTCP(ctx, network, laddr)
 		if err != nil {
 			return fmt.Errorf("listen tcp error. err=%w", err)
 		}
@@ -146,7 +146,7 @@ func (srv *Server) ListenAndServe(ctx context.Context, network string, addr stri
 			return fmt.Errorf("fail to resolve address. err=%w", err)
 		}
 
-		conn, err := net.ListenTCP(network, laddr)
+		conn, err := listenTCP(ctx, network, laddr)
 		if err != nil {
 			return fmt.Errorf("listen tcp error. err=%w", err)
 		}
@@ -199,7 +199,7 @@ func (srv *Server) ListenAndServeTLS(ctx context.Context, network string, addr s
 			return fmt.Errorf("fail to resolve address. err=%w", err)
 		}
 
-		listener, err := tls.Listen(tcpNetwork, laddr.String(), conf)
+		listener, err := listenTLS(ctx, tcpNetwork, laddr, conf)
 		if err != nil {
 			return fmt.Errorf("listen tls error. err=%w", err)
 		}
@@ -383,4 +383,33 @@ func (srv *Server) serveRequest(f func(r *sip.Request)) {
 // Can be used for modifying
 func (srv *Server) TransportLayer() *sip.TransportLayer {
 	return srv.tp
+}
+
+// ListenConfig (Dialler patch) opens every SIP listener, so the host can mark
+// them for QoS (DSCP CS3 via its Control hook; accepted TLS/TCP connections
+// inherit the listener's marking). Standard library only.
+var ListenConfig net.ListenConfig
+
+func listenUDP(ctx context.Context, network string, laddr *net.UDPAddr) (*net.UDPConn, error) {
+	pc, err := ListenConfig.ListenPacket(ctx, network, laddr.String())
+	if err != nil {
+		return nil, err
+	}
+	return pc.(*net.UDPConn), nil
+}
+
+func listenTCP(ctx context.Context, network string, laddr *net.TCPAddr) (*net.TCPListener, error) {
+	ln, err := ListenConfig.Listen(ctx, network, laddr.String())
+	if err != nil {
+		return nil, err
+	}
+	return ln.(*net.TCPListener), nil
+}
+
+func listenTLS(ctx context.Context, network string, laddr *net.TCPAddr, conf *tls.Config) (net.Listener, error) {
+	ln, err := ListenConfig.Listen(ctx, network, laddr.String())
+	if err != nil {
+		return nil, err
+	}
+	return tls.NewListener(ln, conf), nil
 }

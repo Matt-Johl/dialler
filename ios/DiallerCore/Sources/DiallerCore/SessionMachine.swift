@@ -27,10 +27,19 @@ public struct SessionMachine: Equatable {
     /// call_ids already surfaced, so a replayed wake after reconnect does not
     /// ring twice (PROTOCOL.md §6). Pruned by expiry.
     private var seenWakes: [String: Date] = [:]
+    /// When the server last said anything. A healthy link carries at least
+    /// one frame per heartbeat interval (the pong to our ping), so silence
+    /// for `idleMultiple` intervals means the connection is dead even if
+    /// TCP has not noticed: the phone's Wi-Fi dropped, or the server closed
+    /// while we were asleep. Mirrors the server's own 3 × heartbeat rule
+    /// (PROTOCOL.md §5).
+    private var lastReceived: Date
+    public static let idleMultiple = 3
     private let now: () -> Date
 
     public init(now: @escaping () -> Date = Date.init) {
         self.now = now
+        lastReceived = now()
     }
 
     public static func == (lhs: SessionMachine, rhs: SessionMachine) -> Bool {
@@ -40,6 +49,7 @@ public struct SessionMachine: Equatable {
     /// Transport opened: send hello.
     public mutating func didOpen(hello: Hello) -> [Action] {
         state = .awaitingWelcome
+        lastReceived = now()
         return [.send(.hello(hello))]
     }
 
@@ -50,15 +60,25 @@ public struct SessionMachine: Equatable {
         return [.emit(.disconnected(reason: reason))]
     }
 
-    /// Heartbeat timer fired.
+    /// Heartbeat timer fired: ping, unless the server has been silent for
+    /// `idleMultiple` intervals, in which case the connection is declared
+    /// dead so the keeper reconnects. Without this a connection the network
+    /// silently lost lived until TCP gave up, many minutes on a sleeping
+    /// phone (the extension's 2026-09-13 stalls).
     public mutating func heartbeatDue() -> [Action] {
         guard case .live(_, let hb) = state else { return [] }
+        let limit = TimeInterval(Self.idleMultiple * hb)
+        if now().timeIntervalSince(lastReceived) > limit {
+            state = .closed
+            return [.emit(.disconnected(reason: "no frame from the server within \(Int(limit))s")), .close]
+        }
         return [.send(.ping), .scheduleHeartbeat(seconds: hb)]
     }
 
     /// A frame arrived.
     public mutating func received(_ envelope: Envelope) -> [Action] {
         pruneSeenWakes()
+        lastReceived = now()
         switch (state, envelope.message) {
         case (.awaitingWelcome, .welcome(let w)):
             state = .live(sessionID: w.sessionID, heartbeatSeconds: w.heartbeatSeconds)
@@ -66,7 +86,7 @@ public struct SessionMachine: Equatable {
 
         case (.awaitingWelcome, .error(let e)):
             state = .closed
-            return [.emit(.protocolError(e)), .close]
+            return [.emit(.protocolError(e)), .emit(.disconnected(reason: "server: \(e.code.rawValue)")), .close]
 
         case (.awaitingWelcome, _):
             // Server MUST NOT send anything else before welcome; ignore.
@@ -95,9 +115,15 @@ public struct SessionMachine: Equatable {
             return [.emit(.directoryChanged(d.version))]
 
         case (.live, .error(let e)):
+            // A fatal error is a drop: the server closes right after it, and
+            // the close is what the keeper acts on. Until 2026-09-13 only
+            // `.close` followed, so the connection was torn down without a
+            // `.disconnected` and nothing ever reconnected — the extension
+            // logged "gateway error idle_timeout fatal=true" and then sat
+            // silent for the rest of the night.
             if e.fatal {
                 state = .closed
-                return [.emit(.protocolError(e)), .close]
+                return [.emit(.protocolError(e)), .emit(.disconnected(reason: "server: \(e.code.rawValue)")), .close]
             }
             return [.emit(.protocolError(e))]
 

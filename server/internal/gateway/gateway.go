@@ -75,6 +75,14 @@ type Gateway struct {
 	mu       sync.Mutex
 	sessions map[string]map[wire.ClientKind]*session // deviceID → kind → session
 	pending  map[string]map[string]wire.Wake         // deviceID → callID → wake
+	// cancelled remembers each wake_cancel until the wake it cancels would
+	// have expired, so a session that connects after the cancel was sent is
+	// told too (PROTOCOL.md §7). The wake itself launches the app on a
+	// locked phone; its session comes up seconds later, and a cancel sent
+	// in between reached only the extension, which cannot stop a CallKit
+	// ring — the phone rang on for a caller who had hung up (2026-09-13
+	// 01:31: cancel at :01, app session at :06).
+	cancelled map[string]map[string]cancelRecord // deviceID → callID → cancel
 
 	onAck      atomic.Pointer[func(deviceID string, ack wire.WakeAck)]
 	onPresence atomic.Pointer[func(PresenceEvent)]
@@ -88,13 +96,29 @@ func New(cfg Config, auth Authenticator) *Gateway {
 	var b [6]byte
 	_, _ = rand.Read(b[:])
 	return &Gateway{
-		cfg:      cfg.withDefaults(),
-		auth:     auth,
-		sessions: map[string]map[wire.ClientKind]*session{},
-		pending:  map[string]map[string]wire.Wake{},
-		idPrefix: "srv-" + hex.EncodeToString(b[:]) + "-",
+		cfg:       cfg.withDefaults(),
+		auth:      auth,
+		sessions:  map[string]map[wire.ClientKind]*session{},
+		pending:   map[string]map[string]wire.Wake{},
+		cancelled: map[string]map[string]cancelRecord{},
+		idPrefix:  "srv-" + hex.EncodeToString(b[:]) + "-",
 	}
 }
+
+// cancelRecord is a wake_cancel kept for late sessions until the cancelled
+// wake's own expiry.
+type cancelRecord struct {
+	reason wire.CancelReason
+	until  time.Time
+}
+
+// A cancel is kept until its wake's expiry plus cancelGrace (a client rings
+// until the expiry it was given, and may connect just after), or for
+// cancelMemory when the wake was not pending here.
+const (
+	cancelGrace  = 30 * time.Second
+	cancelMemory = 90 * time.Second
+)
 
 // OnWakeAck registers the callback invoked when a client acknowledges a wake.
 func (g *Gateway) OnWakeAck(fn func(deviceID string, ack wire.WakeAck)) { g.onAck.Store(&fn) }
@@ -145,6 +169,7 @@ func (g *Gateway) Online(deviceID string) bool {
 // device is offline and the caller should fall back to APNS (Phase 4b).
 func (g *Gateway) Wake(deviceID string, w wire.Wake) int {
 	g.mu.Lock()
+	delete(g.cancelled[deviceID], w.CallID) // a fresh wake supersedes an earlier cancel of the same call
 	if w.ExpiresAt.After(g.now()) {
 		if g.pending[deviceID] == nil {
 			g.pending[deviceID] = map[string]wire.Wake{}
@@ -166,12 +191,43 @@ func (g *Gateway) Wake(deviceID string, w wire.Wake) int {
 // CancelWake forgets the pending wake and tells live connections to stop ringing.
 func (g *Gateway) CancelWake(deviceID, callID string, reason wire.CancelReason) {
 	g.mu.Lock()
+	until := g.now().Add(cancelMemory)
+	if w, ok := g.pending[deviceID][callID]; ok {
+		until = w.ExpiresAt.Add(cancelGrace)
+	}
 	delete(g.pending[deviceID], callID)
+	if len(g.pending[deviceID]) == 0 {
+		delete(g.pending, deviceID)
+	}
+	if g.cancelled[deviceID] == nil {
+		g.cancelled[deviceID] = map[string]cancelRecord{}
+	}
+	g.cancelled[deviceID][callID] = cancelRecord{reason: reason, until: until}
 	targets := g.snapshotLocked(deviceID)
 	g.mu.Unlock()
 	for _, s := range targets {
 		_ = s.send(wire.TypeWakeCancel, wire.WakeCancel{CallID: callID, Reason: reason})
 	}
+}
+
+// cancelsFor returns the cancels a newly connected session must still be
+// told about, pruning those whose wake would have expired by now.
+func (g *Gateway) cancelsFor(deviceID string) []wire.WakeCancel {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	var out []wire.WakeCancel
+	for id, c := range g.cancelled[deviceID] {
+		if !c.until.After(now) {
+			delete(g.cancelled[deviceID], id)
+			continue
+		}
+		out = append(out, wire.WakeCancel{CallID: id, Reason: c.reason})
+	}
+	if len(g.cancelled[deviceID]) == 0 {
+		delete(g.cancelled, deviceID)
+	}
+	return out
 }
 
 // ForgetWake drops the pending wake without telling anyone: the call it
@@ -404,6 +460,12 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 	}
 	for _, w := range g.pendingFor(s.deviceID) {
 		_ = s.sendWake(w)
+	}
+	// A cancel issued while this client was still connecting must reach it,
+	// or it rings on for a caller who has hung up (PROTOCOL.md §7).
+	for _, c := range g.cancelsFor(s.deviceID) {
+		log.Info("replaying wake_cancel", "call", c.CallID, "reason", c.Reason)
+		_ = s.send(wire.TypeWakeCancel, c)
 	}
 	log.Info("session up")
 	defer log.Info("session down")

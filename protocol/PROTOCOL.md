@@ -91,7 +91,12 @@ client                                   server
   under typical NAT UDP/TCP idle timeouts and iOS extension budgets).
 - Client sends `ping` at that interval. Server replies `pong`.
 - Server closes a connection with no frame received for `3 × heartbeat_seconds`.
+  Clients apply the same rule to the server (no frame within 3 intervals →
+  reconnect); a healthy link carries at least one frame per interval.
 - Either side may send `ping` at any time.
+- A client SHOULD reconnect as soon as its platform reports a better
+  network path for the connection (an SSID handoff gives the phone a new
+  address; the old flow is dead without either side's TCP noticing).
 
 ## 6. Wake flow
 
@@ -130,9 +135,14 @@ same wake again and MUST NOT ring twice.
   correlation keys.
 - On reconnect the client sends a fresh `hello`. The server re-sends any
   `wake` whose `expires_at` is still in the future and whose call is still
-  ringing: a wake is forgotten, silently, once its call has been answered
-  and has ended (a `wake_cancel` would end the live call in a client that
-  answered it). There is no other replay; the directory is re-synced via
+  ringing, and then any `wake_cancel` issued since for a wake that has not
+  yet reached its `expires_at`: the wake itself launches the app on a
+  locked phone (PushKit through the extension), its own session comes up
+  seconds later, and a cancel sent in between would otherwise be lost —
+  the phone rang on for a caller who had hung up. A wake is forgotten,
+  silently, once its call has been answered and has ended (a
+  `wake_cancel` would end the live call in a client that answered it).
+  There is no other replay; the directory is re-synced via
   `directory_version`.
 - A connection drop is not a call event for the client. A ringing `wake`
   does not depend on the connection that carried it (the extension's

@@ -4,6 +4,7 @@
 package media
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
@@ -837,15 +838,19 @@ func (s *MediaSession) createListeners(laddr *net.UDPAddr) error {
 	return err
 }
 
+// ListenConfig (Dialler patch) opens every RTP/RTCP socket, so the host can
+// mark them (DSCP EF via its Control hook) with the standard library only.
+var ListenConfig net.ListenConfig
+
 func (s *MediaSession) listenRTPandRTCP(laddr *net.UDPAddr) error {
 	var err error
-	s.rtpConn, err = net.ListenUDP("udp", &net.UDPAddr{IP: laddr.IP, Port: laddr.Port})
+	s.rtpConn, err = ListenConfig.ListenPacket(context.Background(), "udp", (&net.UDPAddr{IP: laddr.IP, Port: laddr.Port}).String())
 	if err != nil {
 		return err
 	}
 	laddr = s.rtpConn.LocalAddr().(*net.UDPAddr)
 
-	s.rtcpConn, err = net.ListenUDP("udp", &net.UDPAddr{IP: laddr.IP, Port: laddr.Port + 1})
+	s.rtcpConn, err = ListenConfig.ListenPacket(context.Background(), "udp", (&net.UDPAddr{IP: laddr.IP, Port: laddr.Port + 1}).String())
 	if err != nil {
 		s.rtpConn.Close()
 		return err

@@ -39,6 +39,7 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     private var notificationTokens: [NSObjectProtocol] = []
 
     override init() {
+        Breadcrumb.drop("CallKit: creating the provider")
         let config = CXProviderConfiguration()
         config.supportsVideo = false
         config.maximumCallGroups = 1
@@ -56,7 +57,9 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         // hardware is still reconfiguring while the engine creates its
         // VoiceProcessingIO units, and every render fails for that call
         // (observed: route change reason 3 at activation, then render -1).
+        Breadcrumb.drop("CallKit: provider registered; configuring the audio session")
         configureAudioSession()
+        Breadcrumb.drop("CallKit: audio session configured")
         requestMicrophonePermission()
     }
 
@@ -158,6 +161,14 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     // The controller calls these from whichever thread delivered the event
     // (gateway socket, PushKit, libre loop); CallKit wants the main thread.
 
+    /// Calls whose report is queued for the main thread but not yet made.
+    /// A wake that arrives on the main thread in that window (PushKit) must
+    /// not report the same call again: two CallKit calls for one SIP call,
+    /// only one of which is ended when the caller hangs up, left a phantom
+    /// ring the user had to end by hand (2026-09-13 01:32, "sip-1").
+    private let pendingLock = NSLock()
+    private var pendingReports = Set<String>()
+
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
         // PushKit's contract (iOS 13+): reportNewIncomingCall must be called
         // BEFORE the push delegate returns. The registry delivers on the main
@@ -169,7 +180,14 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         // (gateway socket, SIP loop) still hop asynchronously: a synchronous
         // hop from the SIP loop could deadlock against a main thread waiting
         // on that loop in run_op.
+        pendingLock.withLock { _ = pendingReports.insert(callID) }
         let report = { [self] in
+            pendingLock.withLock { _ = pendingReports.remove(callID) }
+            if let existing = uuids[callID] {
+                onLog("callkit: \(callID) already reported as \(short(existing)); not reporting it twice")
+                completion(nil)
+                return
+            }
             configureAudioSession()
             let uuid = UUID()
             uuids[callID] = uuid
@@ -227,6 +245,12 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     func reaffirm(callID: String) -> Bool {
         dispatchPrecondition(condition: .onQueue(.main))
         guard let uuid = uuids[callID] else {
+            if pendingLock.withLock({ pendingReports.contains(callID) }) {
+                // The INVITE's report is queued behind us on the main
+                // thread; it satisfies the push's obligation in a moment.
+                onLog("callkit: reaffirm of \(callID): report already queued; leaving it")
+                return true
+            }
             onLog("callkit: reaffirm of \(callID): no CallKit call to reaffirm")
             return false
         }

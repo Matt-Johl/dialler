@@ -10,6 +10,7 @@ set(MODULES_DETECTED ${MODULES_DETECTED} PARENT_SCOPE)
 
 set(SRCS
   g722.c
+  plc/plc.c
   webrtc/modules/third_party/g722/g722_encode.c
   webrtc/modules/third_party/g722/g722_decode.c
 )
@@ -20,4 +21,4 @@ else()
     add_library(${PROJECT_NAME} MODULE ${SRCS})
 endif()
 
-target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/webrtc)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/webrtc ${CMAKE_CURRENT_SOURCE_DIR}/plc)

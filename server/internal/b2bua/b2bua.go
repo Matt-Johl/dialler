@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"github.com/emiago/sipgo/sip"
 
 	"dialler/server/internal/pbx"
+	"dialler/server/internal/qos"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
 	"dialler/server/internal/sipauth"
@@ -175,11 +177,16 @@ func (s *Server) trackWait(callID string, cancel context.CancelCauseFunc) func()
 	s.waiting[callID] = cancel
 	s.waitMu.Unlock()
 	return func() {
-		s.waitMu.Lock()
-		delete(s.waiting, callID)
-		s.waitMu.Unlock()
+		s.untrackWait(callID)
 		cancel(nil)
 	}
+}
+
+// untrackWait forgets a call's cancel without cancelling anything.
+func (s *Server) untrackWait(callID string) {
+	s.waitMu.Lock()
+	delete(s.waiting, callID)
+	s.waitMu.Unlock()
 }
 
 // New builds the server. waker may be nil (no wake path; unregistered users
@@ -198,6 +205,12 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 		media.RTPPortStart = cfg.RTPPortStart
 		media.RTPPortEnd = cfg.RTPPortEnd
 	}
+	// QoS (SPEC §4.4): media EF, signalling CS3, on every socket this
+	// process opens — the relay's RTP and the SIP listeners (accepted TLS
+	// connections inherit the listener's marking). Vendored ListenConfig
+	// hooks; standard library only.
+	media.ListenConfig.Control = qos.Control(qos.DSCPEF)
+	sipgo.ListenConfig.Control = qos.Control(qos.DSCPCS3)
 
 	ua, err := sipgo.NewUA(sipgo.WithUserAgent("dialler"), sipgo.WithUserAgentHostname(cfg.ExternalHost))
 	if err != nil {
@@ -538,13 +551,24 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 		s.waker.Wake(ep.DeviceID, s.wakeFor(callID, in, ep))
 	}
 
-	var dst sip.Uri
-	if err := sip.ParseUri(ep.Contact, &dst); err != nil {
-		log.Error("bad registered contact", "contact", ep.Contact, "err", err)
-		_ = in.Respond(500, "Server Internal Error", nil)
-		return
+	var err error
+	for attempt := 0; ; attempt++ {
+		var dst sip.Uri
+		if err = sip.ParseUri(ep.Contact, &dst); err != nil {
+			log.Error("bad registered contact", "contact", ep.Contact, "err", err)
+			_ = in.Respond(500, "Server Internal Error", nil)
+			return
+		}
+		legs.calleeUser, legs.calleeRoute = ep.User, ep.Contact
+		err = s.bridge(ctx, log, in, dst, callID, legs)
+		var moved *retargetError
+		if errors.As(err, &moved) && attempt < maxRetargets && ctx.Err() == nil {
+			ep = moved.ep // the callee moved mid-ring: dial where it is now
+			continue
+		}
+		break
 	}
-	if err := s.bridge(ctx, log, in, dst, callID, legs); err != nil && wakeable {
+	if err != nil && wakeable {
 		// Never bridged: stop the app ringing.
 		reason := wire.CancelTimeout
 		if in.Context().Err() != nil {
@@ -677,7 +701,24 @@ func (s *Server) echo(log *slog.Logger, in *diago.DialogServerSession, trunk boo
 type legs struct {
 	callerTrunk bool
 	calleeTrunk bool
+	// A registered local callee: its SIP user and the route being dialled,
+	// so bridge can notice a re-registration from elsewhere mid-ring and
+	// a decline wake_ack while the INVITE is in flight. Empty for a trunk
+	// or echo callee.
+	calleeUser  string
+	calleeRoute string
 }
+
+// retargetError ends a callee INVITE that was overtaken by a fresh
+// registration: serveDialog dials the new route instead.
+type retargetError struct{ ep registry.Endpoint }
+
+func (e *retargetError) Error() string { return "callee re-registered at " + e.ep.Contact }
+
+var errRetarget = errors.New("callee route changed")
+
+// maxRetargets bounds how often one call follows a moving callee.
+const maxRetargets = 3
 
 // DefaultTrunkCodecs is what a PBX trunk gets offered unless configured:
 // G.722 wideband first (what enterprise handsets speak to their PBX), then
@@ -858,13 +899,90 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	legA := &callLeg{name: "caller", trunk: l.callerTrunk, sess: in, party: wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()}}
 	legB := &callLeg{name: "callee", trunk: l.calleeTrunk, sess: out, party: wire.Party{URI: dst.String()}}
 	call := newBridgedCall(s, log, callID, legA, legB)
-	err = out.Invite(ctx, diago.InviteClientOptions{
+
+	// Abandoning a registered callee's INVITE early. Three things end it
+	// before the callee answers: the caller hangs up (ctx), the callee moves
+	// — a phone changing Wi-Fi network registers again from its new address
+	// within a second, and the INVITE sent to the old route can only run
+	// into Timer B — and a decline wake_ack (the app refused the call on its
+	// wake before the INVITE reached it). sipgo will not CANCEL an INVITE
+	// that has had no response: it waits for the transaction to time out
+	// (32 s) first. Over TLS a live phone answers within milliseconds, so a
+	// route with no response is dead and the wait only delays the
+	// wake_cancel — on 2026-09-13 the app rang for callers who had hung up
+	// 20–30 s earlier. So with no response yet the INVITE is abandoned at
+	// once (sipgo's forced cancel); with one, the normal CANCEL/487
+	// exchange runs and returns quickly.
+	inviteCtx := ctx
+	retargeted := make(chan registry.Endpoint, 1)
+	var (
+		answered  atomic.Bool // any response from the callee's route
+		abandonMu sync.Mutex
+		abandoned error // why we gave up, if we did
+		onResp    func(*sip.Response) error
+	)
+	if l.calleeUser != "" {
+		ictx, cancelInvite := context.WithCancelCause(context.Background())
+		inviteCtx = ictx
+		onResp = func(*sip.Response) error { answered.Store(true); return nil }
+		abandon := func(reason error) {
+			abandonMu.Lock()
+			if abandoned == nil {
+				abandoned = reason
+			}
+			abandonMu.Unlock()
+			if answered.Load() {
+				cancelInvite(reason)
+			} else {
+				cancelInvite(sipgo.WaitAnswerForceCancelErr)
+			}
+		}
+		stopParent := context.AfterFunc(ctx, func() { abandon(context.Cause(ctx)) })
+		s.trackWait(callID, func(cause error) {
+			if cause != nil {
+				abandon(cause)
+			}
+		})
+		wctx, stopWatch := context.WithCancel(ictx)
+		go func() {
+			if ep, err := s.reg.WaitRouteChange(wctx, l.calleeUser, l.calleeRoute); err == nil {
+				retargeted <- ep
+				abandon(errRetarget)
+			}
+		}()
+		defer func() {
+			stopParent()
+			stopWatch()
+			s.untrackWait(callID)
+		}()
+	}
+	err = out.Invite(inviteCtx, diago.InviteClientOptions{
 		Originator:    in,
 		Headers:       []sip.Header{sip.NewHeader(CallIDHeader, callID)},
+		OnResponse:    onResp,
 		OnMediaUpdate: func(m *diago.DialogMedia) { m.MediaSession().RTPNAT = calleeNAT },
 		OnRefer:       call.onRefer(legB),
 	})
 	if err != nil {
+		abandonMu.Lock()
+		why := abandoned
+		abandonMu.Unlock()
+		switch why {
+		case errRetarget:
+			ep := <-retargeted
+			log.Info("invite callee: callee re-registered while ringing; re-targeting", "old", dst.String(), "new", ep.Contact)
+			_ = out.Hangup(out.Context())
+			out.Close()
+			return &retargetError{ep: ep}
+		case errWakeDeclined, errWakeBusy:
+			log.Info("invite callee: refused on the wake before the INVITE was answered", "cause", why)
+			_ = out.Hangup(out.Context())
+			out.Close()
+			if in.Context().Err() == nil {
+				_ = in.Respond(486, "Busy Here", nil)
+			}
+			return why
+		}
 		log.Error("invite callee", "dst", dst.String(), "offered", codecNames(out.Media().MediaSession()), "err", err)
 		_ = out.Hangup(out.Context())
 		out.Close()
@@ -934,6 +1052,12 @@ type pump struct {
 	lastOut  uint32
 	t0       time.Time
 	ts0      uint32
+	// Sequence numbers are rebased like timestamps (source seq + offset),
+	// never regenerated: a packet the source lost stays missing on the
+	// way out, so the far end's jitter buffer and concealment see the loss
+	// instead of a seamless stream with a hole in the timeline.
+	seqOffset uint16
+	lastSeq   uint16
 	// Arrival skew of the source against its own timeline, for the log.
 	skewMs     atomic.Int64
 	earlyMaxMs atomic.Int64
@@ -1021,6 +1145,7 @@ func (p *pump) forward(payload []byte) error {
 			start = p.lastOut + p.codec.SampleTimestamp()
 		}
 		p.tsOffset = start - hdr.Timestamp
+		p.rebaseSeq(hdr.SequenceNumber)
 		p.srcSSRC, p.haveSrc = hdr.SSRC, true
 		p.t0, p.ts0 = now, hdr.Timestamp
 		p.expectSeq = hdr.SequenceNumber + 1
@@ -1054,7 +1179,10 @@ func (p *pump) forward(payload []byte) error {
 				p.lost.Add(-1)
 			}
 		default:
+			// The source renumbered its stream (a phone restarting its
+			// sender): continue ours from where it was.
 			p.expectSeq = hdr.SequenceNumber + 1
+			p.rebaseSeq(hdr.SequenceNumber)
 		}
 		// Interarrival jitter (RFC 3550 §6.4.1): the running mean of how far
 		// the arrival spacing strays from the timestamp spacing, in RTP ticks.
@@ -1075,11 +1203,27 @@ func (p *pump) forward(payload []byte) error {
 		cur = p.lastOut
 	}
 	p.rw.DelayTimestamp(want - cur)
-	_, err := p.rw.WriteSamples(payload, 0, hdr.Marker || newStream, p.codec.PayloadType)
+	seq := hdr.SequenceNumber + p.seqOffset
+	_, err := p.rw.WriteSamplesSeq(payload, 0, hdr.Marker || newStream, p.codec.PayloadType, seq)
 	if err == nil {
+		// Highest so far, wraparound-safe: a reordered packet must not
+		// pull the continuation point backwards.
+		if !p.wroteAny || int16(seq-p.lastSeq) > 0 {
+			p.lastSeq = seq
+		}
 		p.lastOut, p.wroteAny = want, true
 	}
 	return err
+}
+
+// rebaseSeq maps a source stream starting at srcSeq onto our numbering:
+// right after the last number we sent, or anywhere for the first packet.
+func (p *pump) rebaseSeq(srcSeq uint16) {
+	start := p.lastSeq + 1
+	if !p.wroteAny {
+		start = uint16(rand.Uint32())
+	}
+	p.seqOffset = start - srcSeq
 }
 
 // run relays until the source leg's reader ends (its session closed) or

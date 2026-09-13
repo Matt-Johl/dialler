@@ -78,6 +78,11 @@ harness-trunk:
 # mouth-to-ear delay (≤150 ms / ≤200 ms) and gaps (none). IMPAIR=1 adds
 # 2% loss + 30±10 ms jitter to what the server sends and judges concealment.
 #   IMPAIR=1 make harness-echo      MAX_GAP_MS=… MAX_GAPS=… to relax a bound
+# QoS gate (SPEC §4.4): a tcpdump sidecar asserts the server marks media
+# DSCP EF and signalling CS3.
+harness-qos:
+	sh harness/qos_test.sh
+
 harness-echo:
 	sh harness/echo_test.sh
 	TRUNK=1 sh harness/echo_test.sh
@@ -101,8 +106,12 @@ dev-server: server tone
 	@echo "native server on $(DIALLER_PUBLIC_HOST); app Settings: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed"
 	@echo "trunk: $(if $(ASTERISK_HOST),Asterisk at $(ASTERISK_HOST):5060; trunk listener :5062,none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
 	( sleep 2 && DIALLER_API=https://127.0.0.1:8080 sh harness/provision.sh ) &
+	@mkdir -p data/logs
 	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
-	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS)
+	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS) \
+	  2>&1 | tee -a data/logs/dev-server.log
+# The server log is also kept in data/logs/dev-server.log, and devices upload
+# their own logs and crash reports to data/diag/<device>/ (ios/README.md).
 # e.g. DEV_SERVER_FLAGS="-log-level debug" make dev-server   (shows sipgo's connection reference counting)
 
 harness-ring-native:
@@ -137,6 +146,17 @@ ios-typecheck:
 # DiallerEngine and before engine-probe; ~15 min).
 ios-vendor:
 	sh ios/vendor/build-baresip.sh all all
+
+# Host-side unit test of the packet-loss concealment compiled into the
+# app's (and the harness phone's) G.711 and G.722 modules.
+# Symbolicate an iOS crash / CPU report (.ips) or a MetricKit diagnostic
+# (JSON, as uploaded to data/diag/) against the build symbols the Xcode
+# "Keep build symbols" phase saves in ios/dsyms/<UUID>/.
+symbolicate:
+	python3 tools/symbolicate.py "$(FILE)"
+
+plc-test:
+	cc -std=c99 -Wall -Wextra -O2 -o "$${TMPDIR:-/tmp}/plc_test" ios/vendor/patches/plc/plc.c ios/vendor/patches/plc/plc_test.c -lm && "$${TMPDIR:-/tmp}/plc_test"
 
 # Headless run of the real baresip engine on this Mac against the docker
 # server: registers 203 (dev-s, the simulator/probe identity), answers a call if one arrives. Needs the macOS slice

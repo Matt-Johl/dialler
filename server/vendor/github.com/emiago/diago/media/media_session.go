@@ -167,6 +167,13 @@ type MediaSession struct {
 	localCtxSRTP  *srtp.Context
 	remoteCtxSRTP *srtp.Context
 	srtpRemoteTag int
+	// Dialler patch: the SDES key material behind the contexts, so a
+	// re-INVITE re-offers the same local key and keeps the remote context
+	// when the peer's key is unchanged (SRTP contexts carry the rollover
+	// counter; a fresh context on an unchanged key breaks after the first
+	// sequence-number wrap).
+	localSDES    sdesInline
+	remoteInline string
 
 	// RTP NAT enables handling RTP behind NAT. Checkout also RTPSourceLock
 	RTPNAT          int // 0 - disabled, 1 - Learn source change (RTP Symetric)
@@ -308,6 +315,19 @@ func (s *MediaSession) Fork() *MediaSession {
 		sessionID:      s.sessionID,
 		sessionVersion: s.sessionVersion,
 		DTLSConf:       s.DTLSConf,
+		// Dialler patch: a fork is the session after a re-INVITE (hold, a
+		// codec change, the peer's own re-INVITE). Upstream dropped the
+		// SRTP configuration and both contexts here, so the forked session
+		// could neither parse the peer's RTP/SAVP answer ("remote requested
+		// secure RTP, but no context is created") nor keep encrypting.
+		SecureRTP:     s.SecureRTP,
+		SRTPAlg:       s.SRTPAlg,
+		localCtxSRTP:  s.localCtxSRTP,
+		remoteCtxSRTP: s.remoteCtxSRTP,
+		srtpRemoteTag: s.srtpRemoteTag,
+		remoteProto:   s.remoteProto,
+		localSDES:     s.localSDES,
+		remoteInline:  s.remoteInline,
 	}
 	return &cp
 }
@@ -363,6 +383,20 @@ func (s *MediaSession) LocalSDP() []byte {
 		// or when the peer actually offered SRTP
 		if s.Raddr.IP == nil || s.remoteCtxSRTP != nil {
 			err := func() error {
+				// Dialler patch: one local key per session. A re-INVITE
+				// re-offers it; upstream generated a fresh key (and context)
+				// on every LocalSDP, re-keying the peer at each hold or
+				// codec change.
+				if s.localCtxSRTP != nil && s.localSDES.base64 != "" {
+					localSDES = s.localSDES
+					if s.srtpRemoteTag > 0 {
+						localSDES.tag = s.srtpRemoteTag
+					}
+					if !RTPProfileSAVPDisable || s.remoteProto == "RTP/SAVP" {
+						rtpProfile = "RTP/SAVP"
+					}
+					return nil
+				}
 				// TODO detect algorithm
 				profile := srtp.ProtectionProfile(s.SRTPAlg)
 				keysalt, keyLen, err := generateMasterKeySalt(profile)
@@ -384,6 +418,7 @@ func (s *MediaSession) LocalSDP() []byte {
 				}
 
 				s.localCtxSRTP = ctx
+				s.localSDES = localSDES
 
 				if s.srtpRemoteTag > 0 {
 					// Match remote tag if exists
@@ -574,6 +609,12 @@ func (s *MediaSession) RemoteSDP(sdpReceived []byte) error {
 
 			inline := strings.TrimPrefix(vals[2], "inline:")
 
+			// Dialler patch: an unchanged key keeps its context (and its
+			// rollover counter) across the peer's re-INVITEs.
+			if s.remoteCtxSRTP != nil && inline == s.remoteInline {
+				break
+			}
+
 			keyBytes, err := base64.StdEncoding.DecodeString(inline)
 			if err != nil {
 				return fmt.Errorf("failed to decode SDES key: %v", err)
@@ -590,6 +631,7 @@ func (s *MediaSession) RemoteSDP(sdpReceived []byte) error {
 				return fmt.Errorf("CreateContext failed: %v", err)
 			}
 			s.remoteCtxSRTP = ctx
+			s.remoteInline = inline
 
 			break
 		}
@@ -783,6 +825,42 @@ func (s *MediaSession) updateRemoteCodecs(codecs []Codec, answerer bool) int {
 // NOTE: Not thread safe, should be called after negotiation Only!
 func (s *MediaSession) CommonCodecs() []Codec {
 	return s.filterCodecs
+}
+
+// OriginatorCodecs (Dialler patch) applies only the codec list of an SDP —
+// an originator's offer used to filter what this session will offer — and
+// leaves the remote address, media direction and SRTP negotiation alone.
+// RemoteSDP did all of those: an originator on RTP/SAVP made a non-SRTP
+// callee session fail ("remote requested secure RTP, but no context") and
+// planted the originator's SRTP key as the callee's remote context.
+func (s *MediaSession) OriginatorCodecs(sdpReceived []byte) error {
+	sd := sdp.SessionDescription{}
+	if err := sdp.Unmarshal(sdpReceived, &sd); err != nil {
+		return fmt.Errorf("fail to parse originator SDP: %w", err)
+	}
+	md, err := sd.MediaDescription("audio")
+	if err != nil {
+		return err
+	}
+	codecs := make([]Codec, len(md.Formats))
+	n, err := CodecsFromSDPRead(md.Formats, sd.Values("a"), codecs)
+	if err != nil && n == 0 {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("no codecs found in SDP")
+	}
+	if s.updateRemoteCodecs(codecs[:n], true) == 0 {
+		return fmt.Errorf("no supported codecs found")
+	}
+	return nil
+}
+
+// SecureRTPActive (Dialler patch) reports whether both directions of this
+// session are SRTP-protected after negotiation — what the B2BUA logs per
+// leg as srtp=on/off.
+func (s *MediaSession) SecureRTPActive() bool {
+	return s.localCtxSRTP != nil && s.remoteCtxSRTP != nil
 }
 
 // SetCodecs (Dialler patch) replaces the local codec list and forgets the

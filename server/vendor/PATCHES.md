@@ -50,6 +50,27 @@ upstream release named in `modules.txt`; re-apply when bumping.
   are opened through a package-level `net.ListenConfig` so the B2BUA can
   mark them DSCP EF from its Control hook (plan Phase E; std lib only).
 
+- `media/media_session.go` (`OriginatorCodecs`, `SecureRTPActive`) and
+  `dialog_client_session.go` (`invite`, originator handling) — SRTP on the
+  app leg (plan Phase F): the originator's SDP is applied to the callee's
+  session for codec filtering only. Upstream ran it through `RemoteSDP`,
+  which also took the originator's address, direction and SDES key: an app
+  caller on RTP/SAVP made a plain trunk callee fail ("remote requested
+  secure RTP, but no context is created") and planted the caller's key as
+  the callee's remote context. `SecureRTPActive` is what the B2BUA logs per
+  leg (`caller_srtp`/`callee_srtp`).
+- `media/media_session.go` (`Fork`, `LocalSDP`, `RemoteSDP`) — SRTP across
+  re-INVITEs: `Fork` (the session after any re-INVITE: hold, a codec
+  change, the peer's own re-INVITE) now carries the SRTP configuration,
+  both contexts and the key material; upstream dropped them, so the forked
+  session refused the peer's RTP/SAVP answer ("remote requested secure RTP,
+  but no context is created" — the transfer-to-trunk codec change failed).
+  `LocalSDP` re-offers the session's existing local key instead of
+  generating a new one per call, and `RemoteSDP` keeps the remote context
+  when the peer's inline key is unchanged: SRTP contexts hold the rollover
+  counter, and a fresh context on an unchanged key fails after the first
+  sequence wrap (~22 min of audio).
+
 ## github.com/emiago/sipgo
 
 - `server.go` (`sipgo.ListenConfig`, `listenUDP/TCP/TLS`) — QoS: every SIP

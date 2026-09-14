@@ -54,6 +54,51 @@ Opus 1.5, OpenSSL 3.3 — for arm64 device and arm64 simulator. They are not
 committed. `Sources/CBaresip` is a small C shim owning the libre thread;
 `BaresipCallEngine` is the Swift `CallEngine` on top.
 
+### Audio routes: earpiece, speaker, Bluetooth, CarPlay
+
+CallKit owns the audio session; the app only configures it
+(`CallKitBridge.configureAudioSession`: `.playAndRecord`, mode `.voiceChat`,
+`.allowBluetoothHFP`, preferred 48 kHz / 20 ms) and hands activation to the
+engine (`didActivate` releases baresip's audiounit units, `didDeactivate`
+holds them). Everything below follows from that.
+
+- **Routes are CoreAudio's business, not ours.** Earpiece ↔ speaker
+  (`AppModel.toggleSpeaker` → `overrideOutputAudioPort`), a Bluetooth headset
+  appearing or dropping, CarPlay: the VoiceProcessingIO unit keeps running
+  and CoreAudio reconfigures its hardware rate underneath it — the
+  `audiounit: record: enable resampler 16000.0 -> 16000 Hz` line on a
+  Bluetooth route is that. The app logs each change
+  (`callkit: audio route change reason=N now <route>`; reasons: 1 new
+  device, 2 device gone, 3 category change, 4 override, 8 configuration
+  change) and does nothing else. Only an *interruption* (a cellular call,
+  Siri) stops audio: CallKit deactivates the session, the units are held,
+  and a new activation restarts them — `make audio-probe` scenarios C and D
+  exercise exactly that restart, D under rapid churn.
+- **Bluetooth is HFP only.** HFP (hands-free profile) is the one Bluetooth
+  profile that carries a microphone; A2DP is playback-only and never used
+  for a call. Echo cancellation on an HFP route is the headset's; VPIO's own
+  AEC stays harmless.
+- **Wideband survives HFP, latency does not.** Modern headsets negotiate
+  mSBC (16 kHz), so a G.722 or Opus call stays wideband end to end; an old
+  headset falls back to CVSD (8 kHz) and the call sounds narrowband
+  regardless of the SIP codec. The HFP link itself adds latency the app
+  cannot see or reduce: eSCO slots and mSBC framing are 7.5 ms, but the
+  headset's and the phone's Bluetooth audio buffers put a typical headset
+  at 50–100 ms one way, AirPods at the low end of that (the 150–250 ms
+  figures often quoted for Bluetooth are A2DP music streaming and do not
+  apply to calls). So the mouth-to-ear targets in SPEC §7.2 (≤ 150 ms LAN
+  echo, ≤ 200 ms through the PBX) are measured on the built-in earpiece
+  and speaker; on a headset the same call reads 100–200 ms higher on the
+  echo test, and that difference is the link, not the app. To see it:
+  call `echo` on the earpiece, then on the headset, and compare the delay
+  of your own voice coming back.
+- **Device checklist (SPEC §7.3 item 3):** during one call, switch
+  earpiece → speaker → earpiece; connect a Bluetooth headset mid-call and
+  disconnect it; start the call on the headset; take the call on CarPlay;
+  let a cellular call interrupt and end. Audio must continue (or resume
+  after the interruption) in every case, with a route-change line and no
+  `audiounit` error in the log.
+
 For a device call the server must advertise an address the phone can reach.
 `make harness-up` now defaults `DIALLER_PUBLIC_HOST` to this Mac's en0
 address and prints it; override with `DIALLER_PUBLIC_HOST=... make harness-up`.

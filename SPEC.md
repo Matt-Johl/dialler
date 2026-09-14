@@ -199,7 +199,23 @@ are already implemented — do not remove them because remote reach is deferred.
 3. App-leg media **always relays through the server**. ICE/TURN may be added
    later as an optimisation; the relay path is the baseline and must exist from
    Phase 0.
-4. **SRTP mandatory.** Codecs: Opus primary app↔app; G.722 primary and
+4. **SRTP mandatory.** *Done 2026-09-13 (plan Phase F):* SDES SRTP
+   (AES_CM_128_HMAC_SHA1_80) on every app-leg media session — the server
+   offers and answers RTP/SAVP with `a=crypto` on the TLS transport
+   (`MediaSRTP: 1`), the app's account carries `mediaenc=srtp-mand`
+   (baresip's `srtp` module), and the harness phones the same on TLS. The
+   trunk leg stays plain RTP and follows the PBX (`media_encryption=sdes`
+   on the Asterisk endpoint would extend it; not required). The relay is
+   unchanged: it copies encoded payload between the legs and each leg's
+   media session applies its own keys, so a trunk call is SRTP app↔server
+   and RTP server↔PBX with one codec end to end. The server logs
+   `caller_srtp`/`callee_srtp` on `bridged` (and `srtp` on `echo:
+   answered`); `make harness-call` fails unless both app legs are `on`.
+   Vendored diago change: the caller's SDP is applied to the callee's
+   session for codec filtering only (`OriginatorCodecs`), never as its
+   remote side — otherwise an app caller's key became the trunk leg's
+   context (`server/vendor/PATCHES.md`).
+   Codecs: Opus primary app↔app; G.722 primary and
    G.711 fallback when a leg is the PBX trunk. Both legs of a call always
    share one codec — the relay copies encoded audio and never transcodes;
    a transfer whose new far leg takes another codec moves the remaining
@@ -400,7 +416,23 @@ on by config — see §7.4.
      `DIRECTION=xfer-app make harness-trunk`. Still open: attended transfer;
      ring-back or hold music for the party waiting during a transfer.
   3. Real PBX interop beyond Asterisk (CUCM third-party SIP device
-     provisioning, §9 risk 4).
+     provisioning, §9 risk 4). *Check on the live CUCM:* inbound calls
+     to the app negotiate G.722 (on the Grandstream + Asterisk bench,
+     2026-09-14, inbound calls land on PCMU because the PBX's INVITE
+     lists PCMU first — the phone's own offer order — while outbound
+     calls get G.722; the server follows the caller's order by design).
+  3a. **Trunk-leg SRTP.** Offer and accept SDES on the PBX leg when the
+     PBX supports it (Asterisk `media_encryption=sdes` on the trunk
+     endpoint; CUCM secure SIP trunk profile), so every hop between the
+     phones and the PBX is encrypted — the strongest form the
+     architecture allows (Phase F did the app leg only, 2026-09-13).
+     The server's trunk transport takes `MediaSRTP: 1` like the app
+     leg; the flag becomes `-trunk-srtp off|offer|require`, default
+     `off` until the PBX is known to accept it (an offer of RTP/SAVP is
+     refused with 488 by a PBX without encryption, so it cannot be
+     unconditional). Harness: an Asterisk endpoint variant with
+     `media_encryption=sdes` and `caller_srtp/callee_srtp` asserted
+     `on` for the trunk leg in `make harness-trunk`.
   4. Before release: third-party acknowledgements screen and the App Store
      export-compliance declaration (see `ios/README.md`).
   5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
@@ -485,6 +517,14 @@ on by config — see §7.4.
 Kept here so the design intent is not lost and so existing references to the
 old phase labels still resolve. None of this is on the roadmap.
 
+- **Mid-call address change (audio plan Phase G; optional, 2026-09-14).**
+  A call that spans a Wi-Fi handoff between two listed SSIDs keeps its
+  media on the old address until it drops; the handoff itself (the
+  re-registration, wakes, the SIP stack's address refresh) is handled, so
+  only a call in progress at that moment is affected. If wanted: after
+  the transport reset the shim calls `call_modify()` so baresip re-INVITEs
+  with the new media address; the server's media update already
+  re-targets the relay.
 - **Remote users (was Phase 4b).** Staff away from the site, on cellular or
   home Wi-Fi. Each item maps to an existing seam; none changes the call logic:
   - *Wake:* `APNSTransport` (PushKit VoIP push) via the `SignalTransport`
@@ -535,7 +575,10 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
   aperiodic tone pattern, so a recording can be correlated against it —
   `harness/spike/assert_audio.py --reference` reports the mouth-to-ear delay
   of the path and every gap inside a tone burst. `make harness-echo` bounds
-  both (≤ 150 ms on the server echo, ≤ 200 ms through the PBX, no gaps);
+  both (≤ 150 ms on the server echo, ≤ 200 ms through the PBX, no gaps;
+  built-in earpiece/speaker only — a Bluetooth HFP headset adds
+  50–100 ms each way of its own and is excluded, see `ios/README.md`
+  "Audio routes");
   `IMPAIR=1` adds 2 % loss and 30 ± 10 ms jitter to everything the server
   sends (`harness/netem`) and judges what the phone's decoder conceals. The
   relay logs `lost`/`reordered`/`jitter_ms` per leg from the sequence numbers
@@ -551,7 +594,11 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
 1. Extension launches on matched-SSID join and survives app kill / background.
 2. `reportIncomingCall` from the extension shows CallKit and cold-launches the
    app on answer.
-3. Real bidirectional audio + route changes (earpiece/speaker/Bluetooth/CarPlay).
+3. Real bidirectional audio + route changes (earpiece/speaker/Bluetooth/CarPlay):
+   the checklist in `ios/README.md` "Audio routes" (switch routes mid-call,
+   Bluetooth connect/disconnect mid-call, start on the headset, CarPlay, a
+   cellular interruption); the restart path itself is headless in
+   `make audio-probe` (scenarios C and D). Plan Phase H, 2026-09-14.
 4. `LPCTransport` passes the transport conformance suite on-device.
 
 Each is a short checklist backed by structured os_log/signpost output — not an

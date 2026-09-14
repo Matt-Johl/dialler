@@ -259,16 +259,33 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 
 // mediaOptions is the app-leg transport (always present) and the codec set.
 func mediaOptions(cfg Config) []diago.DiagoOption {
+	// The port apps reach us on, in our Contact: diago fills ExternalPort
+	// from BindPort only when ExternalHost is empty (see the trunk transport
+	// above), and a Contact without a port sends in-dialog requests to the
+	// default 5061 — wrong wherever the public port differs (a container
+	// published on another host port: the harness beside a native server
+	// lost every ACK to the wrong server, 2026-09-13).
+	publicPort := cfg.PublicPort
+	if publicPort == 0 {
+		publicPort = cfg.Port
+	}
 	return []diago.DiagoOption{
 		diago.WithTransport(diago.Transport{
 			Transport:    "tls",
 			BindHost:     cfg.BindHost,
 			BindPort:     cfg.Port,
 			ExternalHost: cfg.ExternalHost,
+			ExternalPort: publicPort,
 			TLSConf:      cfg.TLS,
 			// libre/baresip cannot route to a sips: Contact (closes with ENOSYS).
 			TLSURINoSIPS:   true,
 			RewriteContact: true,
+			// SRTP (SDES, AES_CM_128_HMAC_SHA1_80) on every app-leg session
+			// (SPEC §4.4 rule 4): offers carry RTP/SAVP + a=crypto, answers
+			// mirror the app's. The trunk transport above stays plain RTP;
+			// the relay copies encoded payload between the legs and each
+			// leg's media session applies its own keys.
+			MediaSRTP: 1,
 		}),
 		diago.WithMediaConfig(diago.MediaConfig{
 			// The app leg's offer: Opus for app↔app, G.722 for wideband PBX
@@ -691,7 +708,7 @@ func (s *Server) echo(log *slog.Logger, in *diago.DialogServerSession, trunk boo
 		return
 	}
 	codec := media.CodecAudioFromSession(in.Media().MediaSession())
-	log.Info("echo: answered", "codec", codec.Name, "from_trunk", trunk)
+	log.Info("echo: answered", "codec", codec.Name, "from_trunk", trunk, "srtp", srtpState(in.Media().MediaSession()))
 	go p.run(in.Context(), log.With("dir", "echo"))
 	<-in.Context().Done()
 	log.Info("echo: ended", "relayed", p.String())
@@ -766,6 +783,15 @@ func ParseCodecs(list string) ([]media.Codec, error) {
 // the callee is offered G.711 only so the negotiated codec is one both legs
 // share (the relay does not transcode); app↔app keeps the full set.
 func callTouchesTrunk(l legs) bool { return l.callerTrunk || l.calleeTrunk }
+
+// srtpState is the per-leg log value: "on" when both directions of the
+// leg's media are SRTP-protected, "off" otherwise (the trunk, always).
+func srtpState(ms *media.MediaSession) string {
+	if ms != nil && ms.SecureRTPActive() {
+		return "on"
+	}
+	return "off"
+}
 
 // callerStatus is the final response the caller gets when the callee leg
 // fails. A deliberate refusal by the callee — 486 Busy Here (what baresip
@@ -1000,7 +1026,8 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	// took (the relay copies encoded audio, so the legs must match), then
 	// complete the callee.
 	negotiated := media.CodecAudioFromSession(out.Media().MediaSession())
-	log.Info("callee answered", "codec", negotiated.Name, "callee_trunk", l.calleeTrunk, "caller_trunk", l.callerTrunk)
+	log.Info("callee answered", "codec", negotiated.Name, "callee_trunk", l.calleeTrunk, "caller_trunk", l.callerTrunk,
+		"callee_srtp", srtpState(out.Media().MediaSession()))
 	legA.codec, legB.codec = negotiated, negotiated
 	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: s.legNAT(l.callerTrunk), Codecs: []media.Codec{negotiated}, OnRefer: call.onRefer(legA)}); err != nil {
 		log.Error("answer caller", "err", err)
@@ -1015,7 +1042,7 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		return err
 	}
 	defer out.Close()
-	log.Info("bridged", "dst", dst.String())
+	log.Info("bridged", "dst", dst.String(), "caller_srtp", srtpState(in.Media().MediaSession()), "callee_srtp", srtpState(out.Media().MediaSession()))
 
 	// Media relay: our own pumps rather than diago's Bridge, so every leg
 	// reports what it read and wrote — a phone that receives nothing while

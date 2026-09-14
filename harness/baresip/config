@@ -48,6 +48,7 @@ module                  g722.so
 module                  g711.so
 module                  aufile.so
 module                  ice.so
+module                  srtp.so
 # The WAV files are 48 kHz stereo; G.711 legs (the PBX trunk) run 8 kHz
 # mono, so the audio filters must convert, as they do in the app.
 module                  auconv.so

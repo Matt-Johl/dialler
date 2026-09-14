@@ -10,6 +10,10 @@
 //       usually sees, and the one the first driver patch missed)
 //   C  hold while running → frames stop; release → frames resume
 //      (didDeactivate / interruption, then a new activation)
+//   D  three quick hold/release cycles → frames flow after the last
+//      (a route flapping — Bluetooth headset connecting and dropping,
+//       a cellular call interrupting twice — restarts the units rapidly;
+//       plan Phase H)
 //
 // Output frames must flow in every case. Input frames need microphone
 // access; a run without it reports "rec=0 (no mic access)" and still
@@ -105,6 +109,23 @@ cb_audio_interrupt(false)
 f = flow(over: 1.5)
 log("C: after re-release play=\(f.play) rec=\(f.rec)")
 if f.play == 0 { fail("C: no output frames after re-release") }
+micSeen = micSeen || f.rec > 0
+cb_audio_test_free()
+
+// D: rapid restart churn, as a route flap or repeated interruptions produce.
+log("D: three quick hold/release cycles, expect flow after the last")
+cb_audio_interrupt(false)
+arc = cb_audio_test_alloc()
+if arc != 0 { fail("D: alloc \(arc)") }
+for _ in 1...3 {
+    cb_audio_interrupt(true)
+    Thread.sleep(forTimeInterval: 0.2)
+    cb_audio_interrupt(false)
+    Thread.sleep(forTimeInterval: 0.2)
+}
+f = flow(over: 1.5)
+log("D: after the cycles play=\(f.play) rec=\(f.rec)")
+if f.play == 0 { fail("D: no output frames after rapid hold/release cycles") }
 micSeen = micSeen || f.rec > 0
 cb_audio_test_free()
 

@@ -37,9 +37,13 @@ if [ "$REGINT" = 0 ]; then
 else
   OB=""
   [ -n "${OUTBOUND:-}" ] && OB=";outbound=\"sip:$OUTBOUND;transport=$TRANSPORT\""
+  # SRTP is mandatory on the app leg (TLS to the light server); the desk
+  # phone speaks plain RTP to the PBX.
+  MENC=""
+  [ "$TRANSPORT" = tls ] && MENC=";mediaenc=srtp-mand"
   sed -e "s|@SIP_USER@|$SIP_USER|g" -e "s|@SIP_DOMAIN@|$SIP_DOMAIN|g" -e "s|@REGINT@|$REGINT|g" \
       -e "s|@TRANSPORT@|$TRANSPORT|g" -e "s|@AUTH_USER@|$AUTH_USER|g" -e "s|@AUTH_PASS@|$AUTH_PASS|g" \
-      -e "s|@CODECS@|$CODECS|g" -e "s|@OUTBOUND@|$OB|g" /opt/baresip/accounts > "$CFG/accounts"
+      -e "s|@CODECS@|$CODECS|g" -e "s|@OUTBOUND@|$OB|g" -e "s|@MEDIAENC@|$MENC|g" /opt/baresip/accounts > "$CFG/accounts"
 fi
 
 [ -f /media/in.wav ] || echo "warning: /media/in.wav missing; run harness/baresip/media/gen_tone.py"

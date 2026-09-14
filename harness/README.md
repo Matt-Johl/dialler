@@ -30,7 +30,7 @@ audio. Passing on 2026-09-05 (callee RMS ≈ 6500 against a threshold of 200).
 | `dialler/` | Builds `dialler-server` from `../server` into a distroless image |
 | `asterisk/` | Alpine-packaged Asterisk (Debian 12 dropped it) as the customer PBX peer: desk phone `100` (G.722 first, G.711 fallback), trunk peer `dialler` |
 | `sipp/` | App-leg conformance: REGISTER over TLS succeeds, plain TCP is refused, INVITE returns 501 until the B2BUA exists |
-| `baresip/` | Two headless phones (`211`, `212`) registering over TLS with WAV audio in/out |
+| `baresip/` | Two headless phones (`211`, `212`) registering over TLS with WAV audio in/out; SRTP mandatory on that leg (`mediaenc=srtp-mand`, set by `entrypoint.sh` for TLS), plain RTP for the desk phone on UDP |
 | `provision.sh` | Enrols the two phones and seeds the directory via the admin API |
 | `call_test.sh` | End-to-end call 211 → server → 212 with media asserted (`make harness-call`) |
 | `wake_test.sh` | Callee starts with no SIP UA; `fake-app` on the gateway receives the wake, creates the UA via `uanew`, bridge completes, media asserted (`make harness-wake`) |

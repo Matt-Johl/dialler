@@ -58,6 +58,11 @@ $COMPOSE logs --no-log-prefix "$SERVER" 2>&1 | grep -E 'invite|bridged|call ende
 if ! $COMPOSE logs --no-log-prefix "$SERVER" 2>&1 | grep -q 'msg=bridged'; then
   echo "FAIL: server never bridged the call"; exit 1
 fi
+# SRTP is mandatory on the app leg (SPEC §4.4 rule 4): both legs of an
+# app↔app call must have negotiated SDES.
+if ! $COMPOSE logs --no-log-prefix "$SERVER" 2>&1 | grep 'msg=bridged' | grep -q 'caller_srtp=on callee_srtp=on'; then
+  echo "FAIL: an app leg was bridged without SRTP"; exit 1
+fi
 
 echo "== callee"
 $COMPOSE logs --no-log-prefix "$PHONE_B" 2>&1 | grep -iE 'Call established|incoming rtp' | sed 's/^/   /'

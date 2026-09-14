@@ -65,6 +65,7 @@ final class StackConfigTests: XCTestCase {
         // Opus first for app↔app; G.722 wideband then G.711 for calls the
         // server answers with the PBX's codec (SPEC §4.4 rule 4).
         XCTAssertTrue(aor.contains("audio_codecs=opus/48000/1,G722/16000/1,PCMU/8000/1"), aor)
+        XCTAssertTrue(aor.contains(";mediaenc=srtp-mand;"), "the app leg is always SRTP: \(aor)")
         // baresip names G.722 by its 16 kHz audio rate, not the 8000 RTP clock;
         // G722/8000/1 is "audio codec not found" and the call silently runs PCMU.
         XCTAssertFalse(aor.contains("G722/8000"))

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	mrand "math/rand/v2"
-	"net"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -184,12 +183,12 @@ func (d *DialogClientSession) invite(ctx context.Context, med *DialogMedia, opts
 		// Check ContentType and body present
 		contType := origInvite.ContentType()
 		if body := origInvite.Body(); body != nil && (contType != nil && contType.Value() == "application/sdp") {
-			// apply remote SDP
-			if err := sess.RemoteSDP(body); err != nil {
+			// Codec filtering only (Dialler patch): the originator is not
+			// this session's remote side, so its address, direction and —
+			// with SRTP on the app leg — its crypto keys must not land here.
+			if err := sess.OriginatorCodecs(body); err != nil {
 				return fmt.Errorf("failed to apply originator sdp: %w", err)
 			}
-			// We do not want originator to be remote side, but we want to apply codec filtering
-			sess.SetRemoteAddr(&net.UDPAddr{})
 
 			// Offer every audio codec the originator and this dialog have in
 			// common, in the originator's order, plus one telephone-event.

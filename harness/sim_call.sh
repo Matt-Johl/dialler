@@ -71,7 +71,10 @@ elif docker ps --format '{{.Names}}' | grep -q '^dialler-harness-dialler-1$'; th
   [ -n "${OUTBOUND:-}" ] || $C up -d --no-deps baresip-b >/dev/null 2>&1
 else
   echo "== server advertising $HOST"
-  $C up -d dialler baresip-b >/dev/null 2>&1
+  # --build: the other suites rebuild the server image; without it this one
+  # ran whatever image was last built (a stale one failed Phase F for an
+  # hour, 2026-09-13).
+  $C up -d --build dialler baresip-b >/dev/null 2>&1
   # A server we started has an empty data volume (a previous test's
   # `down -v` removed it): enrol the dev devices and seed the directory,
   # or every registration is refused as an unknown device.

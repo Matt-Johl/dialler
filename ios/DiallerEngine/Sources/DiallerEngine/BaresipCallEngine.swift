@@ -400,7 +400,10 @@ public final class BaresipCallEngine: CallEngine {
         // G.722 likewise: baresip names it G722/16000/1 (its audio rate);
         // the SDP says G722/8000 (RFC 3551's RTP clock). G722/8000/1 here
         // is "audio codec not found" and the call falls back to PCMU.
-        return "<sip:\(userPart)@\(domain);transport=tls>\(auth);outbound=\"sip:\(sip.host):\(sip.port);transport=tls\";regint=300;answermode=manual;audio_codecs=opus/48000/1,G722/16000/1,PCMU/8000/1"
+        // mediaenc=srtp-mand: SDES SRTP, required — the app leg is always
+        // encrypted (SPEC §4.4 rule 4); the server offers and answers
+        // RTP/SAVP with AES_CM_128_HMAC_SHA1_80.
+        return "<sip:\(userPart)@\(domain);transport=tls>\(auth);outbound=\"sip:\(sip.host):\(sip.port);transport=tls\";regint=300;answermode=manual;mediaenc=srtp-mand;audio_codecs=opus/48000/1,G722/16000/1,PCMU/8000/1"
     }
 
     private func answerPending() {

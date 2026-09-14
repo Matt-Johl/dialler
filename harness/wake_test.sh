@@ -16,7 +16,7 @@ MEDIA_DIR=harness/baresip/media
 CALL_SECONDS="${CALL_SECONDS:-8}"
 # On wake the fake app creates phone-b's user agent, which registers at once
 # (a UA started with regint=0 has no registration objects, so uareg is a no-op).
-ACCOUNT_B='<sip:212@dialler;transport=tls>;auth_user=dev-hb;auth_pass=tok_dev_hb_harness_fixed;regint=300;answermode=auto;audio_codecs=opus/48000/1,PCMU/8000/1'
+ACCOUNT_B='<sip:212@dialler;transport=tls>;auth_user=dev-hb;auth_pass=tok_dev_hb_harness_fixed;regint=300;answermode=auto;mediaenc=srtp-mand;audio_codecs=opus/48000/1,PCMU/8000/1'
 WAKE_CMD="${WAKE_CMD:-{\"command\":\"uanew\",\"params\":\"$ACCOUNT_B\"}}"
 KEEP="${KEEP:-0}"
 

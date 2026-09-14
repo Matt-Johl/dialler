@@ -37,7 +37,7 @@ RUN cmake -S re -B re/build -DCMAKE_BUILD_TYPE=Release \
  && cmake --build re/build -j"$(nproc)" \
  && cmake --install re/build
 RUN cmake -S baresip -B baresip/build -DCMAKE_BUILD_TYPE=Release \
-      -DSTATIC=OFF -DMODULES="account;contact;menu;ctrl_tcp;aufile;ausine;opus;g722;g711;ice;stdio;auconv;auresamp" \
+      -DSTATIC=OFF -DMODULES="account;contact;menu;ctrl_tcp;aufile;ausine;opus;g722;g711;ice;srtp;stdio;auconv;auresamp" \
  && cmake --build baresip/build -j"$(nproc)" \
  && cmake --install baresip/build
 

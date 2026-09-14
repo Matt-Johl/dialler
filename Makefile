@@ -191,12 +191,19 @@ audio-probe:
 sim-call:
 	sh harness/sim_call.sh
 
-# The incoming, outbound, decline and reconnect runs every call-path change must pass.
+# Call waiting (plan Phase I): a second caller while on a call, Hold &
+# Accept, swap back, end both.
+sim-call-cw:
+	CALLWAITING=1 sh harness/sim_call.sh
+
+# The incoming, outbound, decline, reconnect and call-waiting runs every
+# call-path change must pass.
 sim-call-all:
 	OUTBOUND=212 sh harness/sim_call.sh
 	CALLS=2 sh harness/sim_call.sh
 	DECLINE=1 sh harness/sim_call.sh
 	RESTART_SERVER=1 sh harness/sim_call.sh
+	CALLWAITING=1 sh harness/sim_call.sh
 
 SIM ?= iPhone 16
 audio-probe-sim:

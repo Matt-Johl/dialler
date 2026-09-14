@@ -19,29 +19,38 @@ final class FakeCallUI: CallUI {
     func startOutgoing(callID: String, handle: String, displayName: String) { started.append((callID, handle, displayName)) }
     func outgoingConnecting(callID: String) { connecting.append(callID) }
     func outgoingConnected(callID: String) { connected.append(callID) }
+    var resumed: [String] = []
+    func resume(callID: String) { resumed.append(callID) }
 }
 
+/// Records what the controller asks of the engine, by the engine's own call
+/// ids. `dial` hands back "e-<callID>" so tests can name the outgoing call.
 final class FakeEngine: CallEngine {
-    var onIncomingCall: ((String, String?) -> Void)?
-    var onCallEnded: ((String) -> Void)?
-    var onOutgoingRinging: (() -> Void)?
-    var onCallEstablished: (() -> Void)?
-    var onTransferFailed: ((String) -> Void)?
+    var onIncomingCall: ((String, String, String?, String?) -> Void)?
+    var onCallEnded: ((String, String) -> Void)?
+    var onOutgoingRinging: ((String) -> Void)?
+    var onCallEstablished: ((String) -> Void)?
+    var onTransferFailed: ((String, String) -> Void)?
     var transferred: [(String, String)] = []
     var registered: [String] = []
-    var prepared: [(String, SIPTarget)] = []
-    var users: [String] = []
+    var answered: [String] = []
+    var rejected: [String] = []
     var hungUp: [String] = []
     var dialled: [(String, String)] = []
     var muted: [Bool] = []
-    var held: [Bool] = []
+    var held: [(String, Bool)] = []
+    var dialFails = false
     func register(user: String, sip: SIPTarget) { registered.append(user) }
-    func prepareForIncomingCall(callID: String, user: String, sip: SIPTarget) { prepared.append((callID, sip)); users.append(user) }
-    func dial(callID: String, to target: String) { dialled.append((callID, target)) }
-    func hangup(callID: String) { hungUp.append(callID) }
+    func answer(engineCallID: String) { answered.append(engineCallID) }
+    func reject(engineCallID: String) { rejected.append(engineCallID) }
+    func dial(callID: String, to target: String) -> String? {
+        dialled.append((callID, target))
+        return dialFails ? nil : "e-\(callID)"
+    }
+    func hangup(engineCallID: String) { hungUp.append(engineCallID) }
     func setMuted(_ m: Bool) { muted.append(m) }
-    func setHeld(_ h: Bool) { held.append(h) }
-    func transfer(callID: String, to target: String) { transferred.append((callID, target)) }
+    func setHeld(engineCallID: String, _ h: Bool) { held.append((engineCallID, h)) }
+    func transfer(engineCallID: String, to target: String) { transferred.append((engineCallID, target)) }
 }
 
 final class TransferTests: XCTestCase {
@@ -51,11 +60,13 @@ final class TransferTests: XCTestCase {
         let ui = FakeCallUI(), engine = FakeEngine()
         let c = CallController(ui: ui, engine: engine)
         c.setAccount(user: "201@dialler", sip: sip)
-        c.handle(sipIncoming: "sip:202@dialler")
+        c.handle(sipIncoming: "sip:202@dialler", engineCallID: "e1")
         c.transfer(callID: "sip-1", to: "100")
         XCTAssertTrue(engine.transferred.isEmpty, "ringing: nothing to transfer yet")
         c.userAnswered(callID: "sip-1")
+        XCTAssertEqual(engine.answered, ["e1"])
         c.transfer(callID: "sip-1", to: " 100 ")
+        XCTAssertEqual(engine.transferred.map { $0.0 }, ["e1"], "the engine is told which call")
         XCTAssertEqual(engine.transferred.map { $0.1 }, ["100"])
         c.transfer(callID: "sip-1", to: "   ")
         XCTAssertEqual(engine.transferred.count, 1, "empty target ignored")
@@ -65,16 +76,16 @@ final class TransferTests: XCTestCase {
         let ui = FakeCallUI(), engine = FakeEngine()
         let c = CallController(ui: ui, engine: engine)
         c.setAccount(user: "201@dialler", sip: sip)
-        c.handle(sipIncoming: "sip:202@dialler")
+        c.handle(sipIncoming: "sip:202@dialler", engineCallID: "e1")
         c.userAnswered(callID: "sip-1")
         var reported: [String] = []
         c.onTransferFailed = { reported.append($0) }
         c.transfer(callID: "sip-1", to: "999")
-        engine.onTransferFailed?("404 Not Found")
+        engine.onTransferFailed?("e1", "404 Not Found")
         XCTAssertEqual(reported, ["404 Not Found"])
         XCTAssertEqual(c.activeCalls.count, 1, "the call is still up after a refused transfer")
         // Success: the far end (server) ends our call once the target answered.
-        engine.onCallEnded?("Call transfered")
+        engine.onCallEnded?("e1", "Call transfered")
         XCTAssertTrue(c.activeCalls.isEmpty)
         XCTAssertEqual(ui.ended.map { $0.0 }, ["sip-1"])
     }
@@ -92,23 +103,26 @@ final class HoldTests: XCTestCase {
         // Not yet answered: a hold makes no sense and must not reach the engine.
         c.setHeld(callID: "out-1", true)
         XCTAssertTrue(engine.held.isEmpty)
-        engine.onCallEstablished?()
+        engine.onCallEstablished?("e-out-1")
         c.setHeld(callID: "out-1", true)
         c.setHeld(callID: "out-1", false)
-        XCTAssertEqual(engine.held, [true, false])
+        XCTAssertEqual(engine.held.map { $0.1 }, [true, false])
+        XCTAssertEqual(engine.held.map { $0.0 }, ["e-out-1", "e-out-1"])
+        XCTAssertEqual(c.activeCalls.first?.held, false)
         // Unknown call ids are ignored.
         c.setHeld(callID: "nope", true)
-        XCTAssertEqual(engine.held, [true, false])
+        XCTAssertEqual(engine.held.count, 2)
     }
 
     func testHoldOnAnsweredIncomingCall() {
         let ui = FakeCallUI(), engine = FakeEngine()
         let c = CallController(ui: ui, engine: engine)
         c.setAccount(user: "201@dialler", sip: sip)
-        c.handle(sipIncoming: "sip:202@dialler")
+        c.handle(sipIncoming: "sip:202@dialler", engineCallID: "e1")
         c.userAnswered(callID: "sip-1")
         c.setHeld(callID: "sip-1", true)
-        XCTAssertEqual(engine.held, [true])
+        XCTAssertEqual(engine.held.map { $0.0 }, ["e1"])
+        XCTAssertEqual(c.activeCalls.first?.held, true)
     }
 }
 
@@ -134,15 +148,16 @@ final class OutboundCallTests: XCTestCase {
 
         c.userStarted(callID: "out-1")
         XCTAssertEqual(engine.dialled.map { $0.1 }, ["202"])
+        XCTAssertEqual(c.activeCalls.first?.engineCallID, "e-out-1", "the stack's id is kept for the call")
 
-        engine.onOutgoingRinging?()
+        engine.onOutgoingRinging?("e-out-1")
         XCTAssertEqual(ui.connecting, ["out-1"])
-        engine.onCallEstablished?()
+        engine.onCallEstablished?("e-out-1")
         XCTAssertEqual(ui.connected, ["out-1"])
         XCTAssertEqual(c.activeCalls.first?.phase, .answered)
         XCTAssertEqual(c.activeCalls.first?.direction, .outgoing)
 
-        engine.onCallEnded?("BYE")
+        engine.onCallEnded?("e-out-1", "BYE")
         XCTAssertEqual(ui.ended.map { $0.0 }, ["out-1"])
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
@@ -152,7 +167,17 @@ final class OutboundCallTests: XCTestCase {
         c.startCall(to: "sip:202@dialler")
         c.userStarted(callID: "out-1")
         c.userEnded(callID: "out-1")
-        XCTAssertEqual(engine.hungUp, ["out-1"])
+        XCTAssertEqual(engine.hungUp, ["e-out-1"])
+        XCTAssertTrue(c.activeCalls.isEmpty)
+    }
+
+    func testDialFailureEndsTheCallInTheSystemUI() {
+        let (c, ui, engine) = make()
+        engine.dialFails = true
+        c.startCall(to: "202")
+        c.userStarted(callID: "out-1")
+        XCTAssertEqual(ui.ended.map { $0.0 }, ["out-1"])
+        XCTAssertEqual(ui.ended.first?.1, .failed)
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
 
@@ -162,7 +187,7 @@ final class OutboundCallTests: XCTestCase {
         XCTAssertNil(c.startCall(to: "202"), "no SIP account yet")
         c.setAccount(user: "201@dialler", sip: sip)
         XCTAssertNotNil(c.startCall(to: "202"))
-        XCTAssertNil(c.startCall(to: "203"), "one call at a time")
+        XCTAssertNil(c.startCall(to: "203"), "one outgoing call at a time (a second outgoing call is a later phase)")
         XCTAssertNil(c.startCall(to: "   "))
     }
 
@@ -185,8 +210,8 @@ final class OutboundCallTests: XCTestCase {
 final class CallControllerTests: XCTestCase {
     let t0 = Date(timeIntervalSince1970: 1_800_000_000)
 
-    func wake(_ id: String, expiresIn: TimeInterval = 30, name: String? = "Reception") -> Wake {
-        Wake(callID: id, from: Party(displayName: name, uri: "sip:100@pbx"), to: Party(uri: "sip:201@dialler"),
+    func wake(_ id: String, expiresIn: TimeInterval = 30, name: String? = "Reception", from: String = "sip:100@pbx") -> Wake {
+        Wake(callID: id, from: Party(displayName: name, uri: from), to: Party(uri: "sip:201@dialler"),
              sip: SIPTarget(host: "dialler", port: 5061, transport: "tls"), expiresAt: t0.addingTimeInterval(expiresIn))
     }
 
@@ -223,16 +248,21 @@ final class CallControllerTests: XCTestCase {
         XCTAssertEqual(tr.sent, [.wakeAck(WakeAck(callID: "c1", action: .willAnswer))])
         XCTAssertEqual(c.activeCalls.map(\.phase), [.ringing])
 
+        // Answered before the INVITE (wake path): the engine registers; the
+        // INVITE is answered the moment it arrives.
         c.userAnswered(callID: "c1")
-        XCTAssertEqual(engine.prepared.map { $0.0 }, ["c1"])
-        XCTAssertEqual(engine.prepared.first?.1.port, 5061)
-        XCTAssertEqual(engine.users, ["201@dialler"], "user part of the wake's to URI")
+        XCTAssertEqual(engine.registered, ["201@dialler"], "user part of the wake's to URI")
+        XCTAssertTrue(engine.answered.isEmpty, "nothing to answer yet")
         XCTAssertEqual(CallController.userPart(of: "\"Matt\" <sip:201@dialler;transport=tls>;tag=x"), "201@dialler")
         XCTAssertEqual(CallController.userPart(of: "201"), "201")
         XCTAssertEqual(c.activeCalls.map(\.phase), [.answered])
 
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "c1")
+        XCTAssertEqual(engine.answered, ["e1"], "the INVITE that arrives is answered at once")
+        XCTAssertEqual(ui.reported.count, 1, "it joined the ringing call; nothing rang twice")
+
         c.userEnded(callID: "c1")
-        XCTAssertEqual(engine.hungUp, ["c1"])
+        XCTAssertEqual(engine.hungUp, ["e1"])
         XCTAssertTrue(c.activeCalls.isEmpty)
         XCTAssertEqual(tr.sent.count, 1, "no decline ack after an answered call")
     }
@@ -251,7 +281,7 @@ final class CallControllerTests: XCTestCase {
         c.handle(.wakeCancel(WakeCancel(callID: "c1", reason: .callerHangup)))
         XCTAssertEqual(ui.ended.map { $0.0 }, ["c1"])
         XCTAssertEqual(ui.ended.first?.1, .remoteEnded)
-        XCTAssertEqual(engine.hungUp, ["c1"])
+        XCTAssertTrue(engine.hungUp.isEmpty, "no INVITE had arrived: nothing in the stack to hang up")
         XCTAssertTrue(c.activeCalls.isEmpty)
         c.handle(.wakeCancel(WakeCancel(callID: "ghost", reason: .timeout)))
         XCTAssertEqual(ui.ended.count, 1, "unknown call cancel is ignored")
@@ -262,13 +292,14 @@ final class CallControllerTests: XCTestCase {
     // must still end it.
     func testCancelByWakeIDEndsACallThatRangFromItsINVITE() {
         let (c, ui, engine, _) = make()
-        c.handle(sipIncoming: "sip:100@pbx", displayName: "Reception")
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        c.handle(sipIncoming: "sip:100@pbx", displayName: "Reception", engineCallID: "e1", diallerCallID: "c1")
         c.handle(.wake(wake("c1")))
         XCTAssertEqual(c.activeCalls.count, 1)
         c.handle(.wakeCancel(WakeCancel(callID: "c1", reason: .callerHangup)))
         XCTAssertEqual(ui.ended.count, 1, "the cancel must resolve through the merged wake id")
         XCTAssertEqual(ui.ended.first?.1, .remoteEnded)
-        XCTAssertEqual(engine.hungUp.count, 1)
+        XCTAssertEqual(engine.hungUp, ["e1"])
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
 
@@ -298,20 +329,21 @@ final class CallControllerTests: XCTestCase {
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
         XCTAssertEqual(engine.registered, ["201@dialler"])
 
-        engine.onIncomingCall?("sip:202@dialler", nil)
+        engine.onIncomingCall?("e1", "sip:202@dialler", nil, nil)
         XCTAssertEqual(ui.reported.count, 1)
         XCTAssertEqual(ui.reported.first?.1, "202", "no name, no directory → bare number, never the raw URI")
         XCTAssertTrue(tr.sent.isEmpty, "no wake → nothing to ack")
         let id = ui.reported.first!.0
 
-        // A late wake for the same call must not ring a second time.
+        // A late wake for the same call (no header on this INVITE: the one
+        // unclaimed INVITE-first call is the match) must not ring again.
         c.handle(.wake(wake("late")))
         XCTAssertEqual(ui.reported.count, 1)
 
         c.userAnswered(callID: id)
-        XCTAssertEqual(engine.prepared.map { $0.0 }, [id])
+        XCTAssertEqual(engine.answered, ["e1"])
 
-        engine.onCallEnded?("BYE")
+        engine.onCallEnded?("e1", "BYE")
         XCTAssertEqual(ui.ended.map { $0.0 }, [id])
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
@@ -320,10 +352,11 @@ final class CallControllerTests: XCTestCase {
         let (c, ui, engine, _) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
         c.handle(.wake(wake("c1")))
-        engine.onIncomingCall?("sip:100@pbx", nil)
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "c1")
         XCTAssertEqual(ui.reported.count, 1, "wake + INVITE for one call ring once")
         XCTAssertEqual(c.activeCalls.first?.sipArrived, true)
-        engine.onCallEnded?("caller hung up")
+        XCTAssertEqual(c.activeCalls.first?.engineCallID, "e1")
+        engine.onCallEnded?("e1", "caller hung up")
         XCTAssertEqual(ui.ended.map { $0.0 }, ["c1"])
     }
 
@@ -341,10 +374,11 @@ final class CallControllerTests: XCTestCase {
         c.handle(.disconnected(reason: "read failed: ECONNABORTED"))
         XCTAssertTrue(ui.ended.isEmpty, "the stale app session's drop must not end the ringing wake")
         c.userAnswered(callID: "c1")
-        XCTAssertEqual(engine.prepared.map { $0.0 }, ["c1"], "answer arms the engine and registers")
-        engine.onIncomingCall?("sip:100@pbx", nil)
+        XCTAssertEqual(engine.registered.count, 2, "answer registers (again) so the server dials us")
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "c1")
         XCTAssertEqual(ui.reported.count, 1, "the INVITE joins the ringing call; nothing rings twice")
         XCTAssertEqual(c.activeCalls.first?.sipArrived, true)
+        XCTAssertEqual(engine.answered, ["e1"], "and is answered, since the user already said yes")
         XCTAssertTrue(engine.hungUp.isEmpty)
     }
 
@@ -360,7 +394,7 @@ final class CallControllerTests: XCTestCase {
         c.userAnswered(callID: "c1")
         c.handle(.disconnected(reason: "server closed"))
         XCTAssertTrue(ui.ended.isEmpty, "answered, INVITE pending: the registration will bring it")
-        engine.onIncomingCall?("sip:100@pbx", nil)
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "c1")
         c.handle(.disconnected(reason: "server closed"))
         XCTAssertTrue(ui.ended.isEmpty, "the call lives on its SIP dialog, not the session")
         XCTAssertTrue(engine.hungUp.isEmpty)
@@ -375,14 +409,14 @@ final class CallControllerTests: XCTestCase {
         let (c, ui, engine, _) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
         c.resolveDisplayName = { uri, provided in uri.contains("101") ? "SIP phone (101)" : provided }
-        engine.onIncomingCall?("sip:101@10.18.0.5", nil)
+        engine.onIncomingCall?("e1", "sip:101@10.18.0.5", nil, nil)
         XCTAssertEqual(ui.reported.first?.1, "SIP phone (101)", "INVITE-first banner uses the directory, not the raw URI")
     }
 
     func testInviteFirstUsesCallerDisplayNameWhenNotInDirectory() {
         let (c, ui, engine, _) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
-        engine.onIncomingCall?("sip:101@10.18.0.5", "SIP phone")
+        engine.onIncomingCall?("e1", "sip:101@10.18.0.5", "SIP phone", nil)
         XCTAssertEqual(ui.reported.first?.1, "SIP phone", "middle tier: the From display name baresip supplied")
         XCTAssertEqual(c.activeCalls.first?.wake.from.displayName, "SIP phone", "kept for the in-call title")
     }
@@ -394,18 +428,18 @@ final class CallControllerTests: XCTestCase {
     func testDecliningAnInviteOnlyCallSendsNoWakeAck() {
         let (c, ui, engine, tr) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
-        engine.onIncomingCall?("sip:100@pbx", nil)
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, nil)
         let id = ui.reported.first!.0
         c.userEnded(callID: id)
         XCTAssertTrue(tr.sent.isEmpty, "no wake was issued for \(id); an ack would be refused as unknown_call")
-        XCTAssertEqual(engine.hungUp, [id], "the engine rejects the INVITE (486)")
+        XCTAssertEqual(engine.hungUp, ["e1"], "the engine rejects the INVITE (486)")
     }
 
     func testDecliningAfterALateWakeAcksTheWakeId() {
         let (c, ui, engine, tr) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
-        engine.onIncomingCall?("sip:100@pbx", nil)   // rings as sip-1
-        c.handle(.wake(wake("late")))                 // the server's id for the same call
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "late") // rings as sip-1, header names the server's id
+        c.handle(.wake(wake("late")))                            // the same call's wake
         let id = ui.reported.first!.0
         c.userEnded(callID: id)
         XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "late", action: .decline)), "acked under the server's id")
@@ -414,7 +448,7 @@ final class CallControllerTests: XCTestCase {
     func testLateWakeCorrectsTheBannerName() {
         let (c, ui, engine, _) = make()
         c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
-        engine.onIncomingCall?("sip:100@pbx", nil) // INVITE wins the race: only the URI is known
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "late") // INVITE wins the race: only the URI is known
         XCTAssertEqual(ui.reported.first?.1, "100")
         let id = ui.reported.first!.0
         c.handle(.wake(wake("late"))) // the wake knows the caller is "Reception"
@@ -434,5 +468,182 @@ final class CallControllerTests: XCTestCase {
         XCTAssertEqual(CallController.numberPart(of: "\"Alice\" <sip:1001@pbx>"), "1001")
         XCTAssertEqual(CallController.numberPart(of: "sip:101@10.18.0.5;transport=udp"), "101")
         XCTAssertEqual(CallController.numberPart(of: "201"), "201")
+    }
+}
+
+// Call waiting (plan Phase I): a second incoming call while one is up rings
+// as its own call; answering it holds the first; each call ends, is held or
+// is declined on its own; a third caller, or any second caller with call
+// waiting off, is refused with 486.
+final class CallWaitingTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    let sip = SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls")
+
+    func wake(_ id: String, from: String) -> Wake {
+        Wake(callID: id, from: Party(displayName: nil, uri: from), to: Party(uri: "sip:201@dialler"),
+             sip: sip, expiresAt: t0.addingTimeInterval(30))
+    }
+
+    /// A controller with call 1 (from 101) answered and active.
+    func makeInCall() -> (CallController, FakeCallUI, FakeEngine, FakeTransport) {
+        let ui = FakeCallUI(), engine = FakeEngine(), tr = FakeTransport()
+        let c = CallController(ui: ui, engine: engine, now: { self.t0 })
+        c.attach(transport: tr)
+        c.setAccount(user: "201@dialler", sip: sip)
+        engine.onIncomingCall?("e1", "sip:101@pbx", nil, "c1")
+        c.userAnswered(callID: "sip-1")
+        XCTAssertEqual(engine.answered, ["e1"])
+        return (c, ui, engine, tr)
+    }
+
+    func testSecondInviteRingsItsOwnCallAndAnsweringHoldsTheFirst() {
+        let (c, ui, engine, _) = makeInCall()
+        engine.onIncomingCall?("e2", "sip:100@pbx", "Reception", "c2")
+        XCTAssertEqual(ui.reported.map { $0.0 }, ["sip-1", "sip-2"], "the second caller rings as a second call")
+        XCTAssertEqual(ui.reported.last?.1, "Reception")
+        XCTAssertEqual(c.activeCalls.count, 2)
+
+        // Hold & Accept: the first call goes on hold, then the second is answered.
+        c.userAnswered(callID: "sip-2")
+        XCTAssertEqual(engine.held.map { $0.0 }, ["e1"])
+        XCTAssertEqual(engine.held.map { $0.1 }, [true])
+        XCTAssertEqual(engine.answered, ["e1", "e2"])
+        let first = c.activeCalls.first { $0.wake.callID == "sip-1" }
+        XCTAssertEqual(first?.held, true)
+        XCTAssertEqual(c.activeCalls.first { $0.wake.callID == "sip-2" }?.held, false)
+    }
+
+    /// Call 1 answered, call 2 taken with Hold & Accept: call 1 held, call 2 active.
+    func makeTwoCalls() -> (CallController, FakeCallUI, FakeEngine) {
+        let (c, ui, engine, _) = makeInCall()
+        engine.onIncomingCall?("e2", "sip:100@pbx", "Reception", "c2")
+        c.userAnswered(callID: "sip-2")
+        XCTAssertEqual(engine.held.map { $0.0 }, ["e1"])
+        return (c, ui, engine)
+    }
+
+    func testEndingTheActiveCallResumesTheHeldOne() {
+        let (c, ui, engine) = makeTwoCalls()
+        c.userEnded(callID: "sip-2")
+        XCTAssertEqual(engine.hungUp, ["e2"])
+        XCTAssertEqual(ui.resumed, ["sip-1"], "the only call left was on hold: the controller asks the system to resume it")
+        // The system performs the resume and calls back, as CallKit does.
+        c.setHeld(callID: "sip-1", false)
+        XCTAssertEqual(engine.held.last?.0, "e1")
+        XCTAssertEqual(engine.held.last?.1, false)
+        XCTAssertEqual(c.activeCalls.first?.held, false)
+    }
+
+    func testFarEndEndingTheActiveCallResumesTheHeldOne() {
+        let (c, ui, engine) = makeTwoCalls()
+        engine.onCallEnded?("e2", "Connection reset by peer")
+        XCTAssertEqual(ui.ended.map { $0.0 }, ["sip-2"])
+        XCTAssertEqual(ui.resumed, ["sip-1"])
+    }
+
+    func testEndingTheHeldCallLeavesTheActiveOneAlone() {
+        let (c, ui, engine) = makeTwoCalls()
+        c.userEnded(callID: "sip-1")
+        XCTAssertEqual(engine.hungUp, ["e1"])
+        XCTAssertEqual(ui.resumed, [], "the remaining call is active, nothing to resume")
+    }
+
+    func testDecliningARingingSecondCallDoesNotResumeACallHeldOnPurpose() {
+        let (c, ui, engine, _) = makeInCall()
+        c.setHeld(callID: "sip-1", true) // the user held call 1 themselves
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        c.userEnded(callID: "sip-2") // Decline
+        XCTAssertEqual(engine.hungUp, ["e2"])
+        XCTAssertEqual(ui.resumed, [], "no conversation ended; the held call stays as the user left it")
+    }
+
+    func testSecondWakeMatchesItsOwnInviteByHeaderNotTheActiveCall() {
+        let (c, ui, engine, tr) = makeInCall()
+        XCTAssertEqual(c.handle(wake: wake("c2", from: "sip:100@pbx")), .rang)
+        XCTAssertEqual(ui.reported.map { $0.0 }, ["sip-1", "c2"])
+        XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "c2", action: .willAnswer)))
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        XCTAssertEqual(ui.reported.count, 2, "the INVITE joined the second call, it did not ring a third")
+        XCTAssertEqual(c.activeCalls.first { $0.wake.callID == "c2" }?.engineCallID, "e2")
+        XCTAssertEqual(c.activeCalls.first { $0.wake.callID == "sip-1" }?.wakeCallID, nil, "the active call is untouched")
+    }
+
+    func testByeOnOneCallLeavesTheOther() {
+        let (c, ui, engine, _) = makeInCall()
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        c.userAnswered(callID: "sip-2")
+        engine.onCallEnded?("e2", "BYE")
+        XCTAssertEqual(ui.ended.map { $0.0 }, ["sip-2"])
+        XCTAssertEqual(c.activeCalls.map { $0.wake.callID }, ["sip-1"], "the first call stays (on hold, for the user to resume)")
+        XCTAssertEqual(c.activeCalls.first?.held, true)
+    }
+
+    func testCancelOfTheWaitingCallLeavesTheActiveOne() {
+        let (c, ui, engine, _) = makeInCall()
+        c.handle(.wake(wake("c2", from: "sip:100@pbx")))
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        c.handle(.wakeCancel(WakeCancel(callID: "c2", reason: .callerHangup)))
+        XCTAssertEqual(ui.ended.map { $0.0 }, ["c2"])
+        XCTAssertEqual(engine.hungUp, ["e2"])
+        XCTAssertEqual(c.activeCalls.map { $0.wake.callID }, ["sip-1"])
+        XCTAssertTrue(engine.held.isEmpty, "the active call was never touched")
+    }
+
+    func testDecliningTheWaitingCallRejectsOnlyIt() {
+        let (c, ui, engine, tr) = makeInCall()
+        c.handle(.wake(wake("c2", from: "sip:100@pbx")))
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        c.userEnded(callID: "c2")
+        XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "c2", action: .decline)))
+        XCTAssertEqual(engine.hungUp, ["e2"], "486 for the second call only")
+        XCTAssertEqual(c.activeCalls.map { $0.wake.callID }, ["sip-1"])
+        XCTAssertTrue(ui.ended.isEmpty)
+    }
+
+    func testSwapIsAHoldAndAResumeOnTheRightCalls() {
+        let (c, _, engine, _) = makeInCall()
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        c.userAnswered(callID: "sip-2") // holds e1
+        engine.held.removeAll()
+        // CallKit's swap: hold the active, resume the held.
+        c.setHeld(callID: "sip-2", true)
+        c.setHeld(callID: "sip-1", false)
+        XCTAssertEqual(engine.held.map { $0.0 }, ["e2", "e1"])
+        XCTAssertEqual(engine.held.map { $0.1 }, [true, false])
+        XCTAssertEqual(c.activeCalls.first { $0.wake.callID == "sip-1" }?.held, false)
+        XCTAssertEqual(c.activeCalls.first { $0.wake.callID == "sip-2" }?.held, true)
+    }
+
+    func testCallWaitingOffRefusesASecondCaller() {
+        let (c, ui, engine, tr) = makeInCall()
+        c.callWaitingEnabled = false
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, nil)
+        XCTAssertEqual(engine.rejected, ["e2"], "486 Busy Here for the second INVITE")
+        XCTAssertEqual(ui.reported.count, 1, "nothing rang")
+        XCTAssertEqual(c.activeCalls.count, 1)
+        // A wake for another call is refused the same way, through the server.
+        XCTAssertEqual(c.handle(wake: wake("c3", from: "sip:100@pbx")), .refused)
+        XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "c3", action: .busy)))
+        XCTAssertEqual(ui.reported.count, 1)
+    }
+
+    func testAThirdCallerIsRefused() {
+        let (c, ui, engine, _) = makeInCall()
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
+        c.userAnswered(callID: "sip-2")
+        engine.onIncomingCall?("e3", "sip:102@pbx", nil, "c3")
+        XCTAssertEqual(engine.rejected, ["e3"])
+        XCTAssertEqual(ui.reported.count, 2)
+        XCTAssertEqual(c.activeCalls.count, 2)
+        XCTAssertEqual(c.handle(wake: wake("c4", from: "sip:102@pbx")), .refused)
+    }
+
+    func testTheEngineEndOfARefusedCallIsIgnored() {
+        let (c, ui, engine, _) = makeInCall()
+        c.callWaitingEnabled = false
+        engine.onIncomingCall?("e2", "sip:100@pbx", nil, nil)
+        engine.onCallEnded?("e2", "rejected 486 Busy Here") // the stack reports the end of what we refused
+        XCTAssertTrue(ui.ended.isEmpty)
+        XCTAssertEqual(c.activeCalls.count, 1)
     }
 }

@@ -19,6 +19,32 @@ device build; the simulator needs no team.
 
 ## How a call reaches the screen
 
+**Call waiting.** Two calls can be up at once, one active and one on hold.
+A second incoming call rings through CallKit's own UI — on iOS 26 that is
+the ordinary Accept / Decline, and Accept holds the current call before
+answering (the app receives `CXSetHeldCallAction` + `CXAnswerCallAction`
+in one transaction); "End & Accept" is shown only when holding is not
+allowed, which for two calls of one app means `maximumCallGroups < 2`
+(SPEC §4.4 rule 8 has the rule and where it was read from). While a call
+is held, iOS 26 shows its own **Swap** banner over the app, so the in-call
+screen adds no control of its own: it names the held party under the
+active one and hides Hold; on iOS 17/18, which show no banner, Hold reads
+Swap. When the call in progress ends and the only call left is on hold,
+the controller asks CallKit to resume it, so the user is back in that
+call without a tap. The app plays the call-waiting beep (iOS plays none
+for VoIP apps).
+A held call owns no
+audio units: the shim's hold stops the call's audio and keeps baresip from
+re-creating its source, because iOS allows one VoiceProcessingIO input and
+the active call must have it (SPEC §4.4 rule 8).
+Every layer addresses calls by
+id: baresip's SIP Call-ID in the shim and engine (`cb_event_info`,
+`answer(engineCallID:)` …), the server's `X-Dialler-Call-ID` header to pair
+an INVITE with its wake, and the controller's own ids for CallKit. A third
+caller, or any second caller while Settings › Call waiting is off, gets
+486 and hears busy. `make sim-call-cw` is the headless twin of the device
+checklist (SPEC §7.3 item 5).
+
 - **Foreground (registered):** the gateway's `welcome` names the device's
   SIP account, so the app registers its user agent as soon as it connects
   and stays registered while it runs. An incoming call then arrives as a SIP

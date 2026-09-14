@@ -42,7 +42,23 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         Breadcrumb.drop("CallKit: creating the provider")
         let config = CXProviderConfiguration()
         config.supportsVideo = false
-        config.maximumCallGroups = 1
+        // Call waiting (plan Phase I): TWO call groups of ONE call each —
+        // two independent calls, one active and one held. A *group* is a
+        // conference: `maximumCallsPerCallGroup = 1` says we do not merge
+        // calls. `maximumCallGroups` is what decides the second call's
+        // answer UI: iOS's own rule (TelephonyUtilities,
+        // `-[TUCallCenter isHoldAndAnswerAllowed]`, read from the iOS 26.5
+        // runtime on 2026-09-14) is that for two calls of the SAME provider
+        // hold-and-answer is allowed exactly when the provider's
+        // `maximumCallGroups` is greater than one — the call's
+        // `supportsHolding` is only consulted between different providers.
+        // With one group of two calls iOS could only offer "End & Accept"
+        // (device, 2026-09-14). With two groups, iOS 26 shows its plain
+        // Accept for the second call and, on Accept, performs
+        // `holdActiveAndAnswerCall`: a hold for the current call and the
+        // answer for the new one. That is the "Hold & Accept" of older
+        // releases, relabelled — the app sees the same two actions.
+        config.maximumCallGroups = 2
         config.maximumCallsPerCallGroup = 1
         config.supportedHandleTypes = [.generic]
         config.includesCallsInRecents = true
@@ -113,6 +129,17 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         guard let uuid = uuids[callID] else { return }
         controller.request(CXTransaction(action: CXSetMutedCallAction(call: uuid, muted: muted))) { [weak self] err in
             if let err { self?.onLog("callkit: mute request failed: \(err.localizedDescription)") }
+        }
+    }
+
+    /// Swap: hold the active call and resume the held one, as one CallKit
+    /// transaction (the same two actions the system's own swap control
+    /// sends), so the two hold changes are performed together.
+    func requestSwap(active: String, held: String) {
+        guard let a = uuids[active], let h = uuids[held] else { return }
+        let tx = CXTransaction(actions: [CXSetHeldCallAction(call: a, onHold: true), CXSetHeldCallAction(call: h, onHold: false)])
+        controller.request(tx) { [weak self] err in
+            if let err { self?.onLog("callkit: swap request failed: \(err.localizedDescription)") }
         }
     }
 
@@ -188,14 +215,15 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
                 completion(nil)
                 return
             }
-            configureAudioSession()
+            // Not while another call is up: the session is live for it and
+            // re-configuring the category mid-call is the hardware
+            // reconfiguration hazard noted at the top of this file.
+            let callWaiting = !uuids.isEmpty
+            if !callWaiting { configureAudioSession() }
             let uuid = UUID()
             uuids[callID] = uuid
             callIDs[uuid] = callID
-            let update = CXCallUpdate()
-            update.remoteHandle = CXHandle(type: .generic, value: handle)
-            update.localizedCallerName = displayName
-            update.hasVideo = false
+            let update = callUpdate(handle: CXHandle(type: .generic, value: handle), name: displayName)
             lastUpdate[uuid] = update
             onLog("callkit: reporting \(callID) as \(short(uuid)) (app \(appState))")
             provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
@@ -207,6 +235,11 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
                     self.lastUpdate[uuid] = nil
                 } else {
                     self.onLog("callkit: report of \(callID) accepted")
+                    if callWaiting {
+                        self.onLog("callkit: \(callID) is waiting behind another call; playing the call-waiting tone")
+                        self.waitingCallID = callID
+                        self.onCallWaiting(true)
+                    }
                 }
                 completion(error)
             }
@@ -274,6 +307,7 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             case .failed: cxReason = .failed
             }
             onLog("callkit: ending \(callID) (\(reason))")
+            clearWaiting(callID)
             provider.reportCall(with: uuid, endedAt: Date(), reason: cxReason)
             onEnded(callID)
         }
@@ -281,6 +315,48 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
 
     /// A call was ended by the far end or failed (not by the user).
     var onEnded: (String) -> Void = { _ in }
+
+    /// The controller wants the last remaining call off hold (the call in
+    /// progress ended). Requested as a hold action of its own so CallKit's
+    /// state and iOS's banner follow, and after the end action that led
+    /// here has been fulfilled.
+    func resume(callID: String) {
+        DispatchQueue.main.async { [self] in
+            onLog("callkit: resuming \(callID), the only call left")
+            requestHold(callID: callID, held: false)
+        }
+    }
+
+    /// A second call is ringing while another is up (call waiting), or that
+    /// call has stopped ringing. iOS suppresses the ringtone for it and
+    /// shows its own answer UI, but plays no tone for a VoIP app (device,
+    /// 2026-09-14), so the app puts the call-waiting beep into the ear of
+    /// the person already talking, as a desk phone does.
+    var onCallWaiting: (Bool) -> Void = { _ in }
+    private var waitingCallID: String?
+
+    /// A call's capabilities as this app supports them. `supportsHolding`
+    /// is, in CallKit's words, "whether the call can be held on its own or
+    /// swapped with another call"; grouping is off because the app does
+    /// not conference calls (SPEC §4.4 rule 8).
+    private func callUpdate(handle: CXHandle?, name: String?) -> CXCallUpdate {
+        let update = CXCallUpdate()
+        if let handle { update.remoteHandle = handle }
+        if let name { update.localizedCallerName = name }
+        update.hasVideo = false
+        update.supportsHolding = true
+        update.supportsGrouping = false
+        update.supportsUngrouping = false
+        update.supportsDTMF = false
+        return update
+    }
+
+    /// Called on the main thread whenever a reported call stops ringing.
+    private func clearWaiting(_ callID: String) {
+        guard waitingCallID == callID else { return }
+        waitingCallID = nil
+        onCallWaiting(false)
+    }
 
     /// Set the category and mode for the call; never activate the session —
     /// CallKit activates it and calls didActivate.
@@ -353,7 +429,8 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         let names = transaction.actions.map { action -> String in
             let name = String(describing: type(of: action)).replacingOccurrences(of: "CX", with: "")
             let call = (action as? CXCallAction).map { short($0.callUUID) } ?? "-"
-            return "\(name)(\(call))"
+            let held = (action as? CXSetHeldCallAction).map { $0.isOnHold ? " hold" : " resume" } ?? ""
+            return "\(name)(\(call)\(held))"
         }
         onLog("callkit: transaction \(names.joined(separator: ",")) (app \(appState))")
         return false
@@ -403,6 +480,7 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         // activates the session and calls didActivate; the engine binds its
         // audio devices once both the call and the session are up.
         onLog("callkit: answer accepted for \(id)")
+        clearWaiting(id)
         onAnswer(id)
         action.fulfill()
     }
@@ -412,6 +490,7 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             uuids[id] = nil
             lastUpdate[action.callUUID] = nil
             onLog("callkit: end for \(id)")
+            clearWaiting(id)
             onEnd(id)
         } else {
             onLog("callkit: end for unknown call \(short(action.callUUID))")
@@ -430,6 +509,16 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         // then activates the session and the engine releases its audio.
         onStart(id)
         action.fulfill()
+        // Only now does CallKit have this call, so only now can it keep an
+        // update for it. The update gives the outgoing call the same
+        // capabilities as an incoming one (holdable, no conference, no
+        // DTMF) instead of CallKit's defaults, which allow all four. It
+        // does not decide the answer UI for a second call — see the
+        // provider configuration above.
+        let update = callUpdate(handle: action.handle, name: action.contactIdentifier)
+        lastUpdate[action.callUUID] = update
+        provider.reportCall(with: action.callUUID, updated: update)
+        onLog("callkit: \(id) capabilities reported")
     }
 
     func provider(_: CXProvider, perform action: CXSetMutedCallAction) {

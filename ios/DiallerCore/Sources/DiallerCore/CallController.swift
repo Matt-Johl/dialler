@@ -20,6 +20,11 @@ public protocol CallUI: AnyObject {
     /// The far end is being alerted / has answered our outgoing call.
     func outgoingConnecting(callID: String)
     func outgoingConnected(callID: String)
+    /// Take a held call off hold on the controller's initiative (the call
+    /// in progress ended and this is the only one left). On iOS it maps to
+    /// a `CXSetHeldCallAction`, so the system performs the resume and calls
+    /// back through `CallController.setHeld` like any other hold change.
+    func resume(callID: String)
 }
 
 public enum CallEndReason: Equatable, Sendable {
@@ -32,19 +37,22 @@ public enum CallEndReason: Equatable, Sendable {
 /// What the app would do with the SIP stack once the user answers. Phase 1
 /// (signalling + CallKit) logs; the baresip-backed engine plugs in here.
 public protocol CallEngine: AnyObject {
-    /// An INVITE arrived at the SIP stack; `peer` is the caller's URI and
-    /// `displayName` the From display name if the caller sent one. The
+    /// An INVITE arrived at the SIP stack. `engineCallID` is the stack's
+    /// handle for it (every per-call operation below takes it), `peer` the
+    /// caller's URI, `displayName` the From display name if the caller sent
+    /// one, and `diallerCallID` the server's call id from the INVITE's
+    /// X-Dialler-Call-ID header — the id the same call's wake carries. The
     /// controller decides whether it belongs to a call already ringing
     /// (from a wake) or must ring the system UI itself.
-    var onIncomingCall: ((_ peer: String, _ displayName: String?) -> Void)? { get set }
+    var onIncomingCall: ((_ engineCallID: String, _ peer: String, _ displayName: String?, _ diallerCallID: String?) -> Void)? { get set }
     /// The SIP call ended (remote hangup, failure); `reason` is free text.
-    var onCallEnded: ((_ reason: String) -> Void)? { get set }
+    var onCallEnded: ((_ engineCallID: String, _ reason: String) -> Void)? { get set }
     /// Our outgoing call: the far end is ringing (180/183) / has answered.
-    var onOutgoingRinging: (() -> Void)? { get set }
-    var onCallEstablished: (() -> Void)? { get set }
+    var onOutgoingRinging: ((_ engineCallID: String) -> Void)? { get set }
+    var onCallEstablished: ((_ engineCallID: String) -> Void)? { get set }
     /// A transfer we asked for was refused; `reason` is the SIP status. The
     /// call continues.
-    var onTransferFailed: ((_ reason: String) -> Void)? { get set }
+    var onTransferFailed: ((_ engineCallID: String, _ reason: String) -> Void)? { get set }
     /// The device's enrolment credential, presented as SIP Digest username /
     /// password on the app leg (username = device id, password = token). The
     /// server refuses registrations and calls without it.
@@ -57,19 +65,25 @@ public protocol CallEngine: AnyObject {
     /// drop, and the SIP connection died in the same suspension. A no-op
     /// during a call.
     func resetRegistration()
-    /// The user accepted a call: make sure we are registered and answer the
-    /// INVITE (now if it has already arrived, else as soon as it does).
-    func prepareForIncomingCall(callID: String, user: String, sip: SIPTarget)
+    /// Answer the incoming call `engineCallID` (its INVITE has arrived).
+    func answer(engineCallID: String)
+    /// Refuse the incoming call `engineCallID` with 486 Busy Here, so the
+    /// PBX applies its busy rule: a caller the app will not take (call
+    /// waiting off, or a third call).
+    func reject(engineCallID: String)
     /// Place a call to `target`: a full SIP URI, "user@domain", or a bare
     /// user / number, which the engine completes with the account's domain.
-    func dial(callID: String, to target: String)
-    func hangup(callID: String)
+    /// Returns the stack's id for the new call, nil if it could not start.
+    @discardableResult
+    func dial(callID: String, to target: String) -> String?
+    func hangup(engineCallID: String)
+    /// One microphone: mute applies to every call.
     func setMuted(_ muted: Bool)
-    /// Hold (re-INVITE sendonly, audio stopped) / resume the current call.
-    func setHeld(_ held: Bool)
+    /// Hold (re-INVITE sendonly, audio stopped) / resume one call.
+    func setHeld(engineCallID: String, _ held: Bool)
     /// Blind transfer: ask the server to connect the far end to `target`
     /// and end our call (REFER; the server routes the target like a call).
-    func transfer(callID: String, to target: String)
+    func transfer(engineCallID: String, to target: String)
     /// The system audio session became available / was taken away (CallKit
     /// didActivate / didDeactivate, AVAudioSession interruptions). Engines
     /// with their own audio units restart or stop them here.
@@ -83,8 +97,9 @@ public extension CallEngine {
     func audioSessionActivated() {}
     func audioSessionDeactivated() {}
     func setMuted(_: Bool) {}
-    func setHeld(_: Bool) {}
-    func transfer(callID _: String, to _: String) {}
+    func setHeld(engineCallID _: String, _: Bool) {}
+    func transfer(engineCallID _: String, to _: String) {}
+    func reject(engineCallID _: String) {}
 }
 
 public extension CallUI {
@@ -109,6 +124,17 @@ public struct TrackedCall: Equatable, Sendable {
     public var direction: Direction = .incoming
     /// Outgoing only: what the user asked to call.
     public var target: String = ""
+    /// The SIP stack's handle for this call, once its INVITE has arrived
+    /// (incoming) or been sent (outgoing). Every engine operation names it.
+    public var engineCallID: String? = nil
+    /// The server's call id carried by the INVITE (X-Dialler-Call-ID): the
+    /// id the same call's wake carries, so wake and INVITE meet exactly.
+    public var diallerCallID: String? = nil
+    /// The user answered before the INVITE arrived (wake path): answer the
+    /// moment it does.
+    public var answerWhenInvite: Bool = false
+    /// On hold (re-INVITE sendonly). The other call is the active one.
+    public var held: Bool = false
 }
 
 /// Turns gateway events into system-call-UI actions and acks, and user UI
@@ -125,19 +151,32 @@ public final class CallController {
     private let now: () -> Date
     private let log: (String) -> Void
 
+    /// Call waiting: a second incoming call rings (CallKit offers Hold &
+    /// Accept / End & Accept / Decline) while one is up. Off, a second
+    /// caller is refused with 486 at once and hears busy. A third caller is
+    /// always refused: `maxCalls` is what CallKit and the SIP stack are
+    /// configured for (one active, one held).
+    public var callWaitingEnabled = true
+    public static let maxCalls = 2
+
     public init(ui: CallUI, engine: CallEngine? = nil, now: @escaping () -> Date = Date.init, log: @escaping (String) -> Void = { _ in }) {
         self.ui = ui
         self.engine = engine
         self.now = now
         self.log = log
-        engine?.onIncomingCall = { [weak self] peer, name in self?.handle(sipIncoming: peer, displayName: name) }
-        engine?.onCallEnded = { [weak self] reason in self?.handle(sipEnded: reason) }
-        engine?.onOutgoingRinging = { [weak self] in self?.handle(outgoingRinging: ()) }
-        engine?.onCallEstablished = { [weak self] in self?.handle(established: ()) }
-        engine?.onTransferFailed = { [weak self] reason in
+        engine?.onIncomingCall = { [weak self] id, peer, name, dialler in self?.handle(sipIncoming: peer, displayName: name, engineCallID: id, diallerCallID: dialler) }
+        engine?.onCallEnded = { [weak self] id, reason in self?.handle(sipEnded: reason, engineCallID: id) }
+        engine?.onOutgoingRinging = { [weak self] id in self?.handle(outgoingRinging: id) }
+        engine?.onCallEstablished = { [weak self] id in self?.handle(established: id) }
+        engine?.onTransferFailed = { [weak self] _, reason in
             self?.log("transfer refused: \(reason); the call continues")
             self?.onTransferFailed?(reason)
         }
+    }
+
+    /// The tracked call the stack knows as `engineCallID`.
+    private func trackedID(forEngineCallID engineCallID: String) -> String? {
+        lock.withLock { calls.first { $0.value.engineCallID == engineCallID }?.key }
     }
 
     /// The app is told when a transfer it asked for was refused.
@@ -162,13 +201,13 @@ public final class CallController {
     /// On success the server ends our call once the target answers.
     public func transfer(callID: String, to target: String) {
         let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        let answered: Bool = lock.withLock { calls[callID]?.phase == .answered }
-        guard answered, !t.isEmpty else {
+        let engineID: String? = lock.withLock { calls[callID].flatMap { $0.phase == .answered ? $0.engineCallID : nil } }
+        guard let engineID, !t.isEmpty else {
             log("transfer of \(callID) to \(t) ignored: not an answered call")
             return
         }
         log("\(callID): transferring to \(t)")
-        engine?.transfer(callID: callID, to: t)
+        engine?.transfer(engineCallID: engineID, to: t)
     }
 
     // MARK: Outgoing calls
@@ -201,7 +240,14 @@ public final class CallController {
     /// The system UI approved the outgoing call: dial now.
     public func userStarted(callID: String) {
         guard let call: TrackedCall = lock.withLock({ calls[callID] }), call.direction == .outgoing else { return }
-        engine?.dial(callID: callID, to: call.target)
+        guard let engine else { return }
+        if let engineID = engine.dial(callID: callID, to: call.target) {
+            lock.withLock { calls[callID]?.engineCallID = engineID }
+        } else {
+            lock.withLock { calls[callID] = nil }
+            log("call \(callID) to \(call.target) could not be started")
+            ui.end(callID: callID, reason: .failed)
+        }
     }
 
     /// The system UI could not start the call (CallKit refused the action).
@@ -214,32 +260,33 @@ public final class CallController {
         engine?.setMuted(muted)
     }
 
-    /// System UI held / resumed the call (CallKit CXSetHeldCallAction).
+    /// System UI held / resumed one call (CallKit CXSetHeldCallAction). A
+    /// swap is two of these from CallKit: hold the active, resume the held.
     public func setHeld(callID: String, _ held: Bool) {
-        let known: Bool = lock.withLock { calls[callID]?.phase == .answered }
-        guard known else {
+        let engineID: String? = lock.withLock {
+            guard let c = calls[callID], c.phase == .answered, let e = c.engineCallID else { return nil }
+            calls[callID]?.held = held
+            return e
+        }
+        guard let engineID else {
             log("hold=\(held) for \(callID) ignored: not an answered call")
             return
         }
         log("\(callID): \(held ? "hold" : "resume")")
-        engine?.setHeld(held)
+        engine?.setHeld(engineCallID: engineID, held)
     }
 
-    private func handle(outgoingRinging _: Void) {
-        guard let id = outgoingCallID() else { return }
+    private func handle(outgoingRinging engineCallID: String) {
+        guard let id = trackedID(forEngineCallID: engineCallID) else { return }
         log("\(id): far end ringing")
         ui.outgoingConnecting(callID: id)
     }
 
-    private func handle(established _: Void) {
-        guard let id = outgoingCallID() else { return }
+    private func handle(established engineCallID: String) {
+        guard let id = trackedID(forEngineCallID: engineCallID) else { return }
         lock.withLock { calls[id]?.phase = .answered }
         log("\(id): connected")
         ui.outgoingConnected(callID: id)
-    }
-
-    private func outgoingCallID() -> String? {
-        lock.withLock { calls.first { $0.value.direction == .outgoing && $0.value.phase != .ended }?.key }
     }
 
     public var activeCalls: [TrackedCall] { lock.withLock { Array(calls.values) } }
@@ -259,9 +306,18 @@ public final class CallController {
 
     // MARK: SIP stack → UI
 
+    /// Whether one more incoming call may ring, given what is tracked.
+    /// Caller holds the lock.
+    private func admitsAnotherCallLocked() -> Bool {
+        let live = calls.values.filter { $0.phase != .ended }.count
+        if live == 0 { return true }
+        return callWaitingEnabled && live < Self.maxCalls
+    }
+
     /// An INVITE reached the SIP stack. If a wake already rang for this
-    /// call, just note it; otherwise ring the system UI from the INVITE.
-    public func handle(sipIncoming peer: String, displayName: String? = nil) {
+    /// call, just note it; otherwise ring the system UI from the INVITE —
+    /// or refuse it when the app will not take another call.
+    public func handle(sipIncoming peer: String, displayName: String? = nil, engineCallID: String, diallerCallID: String? = nil) {
         // Same naming as the wake path (directory → caller's own display name
         // → bare number), so the banner does not depend on which of the two
         // arrives first. The caller's own name is kept on the synthetic wake
@@ -273,31 +329,53 @@ public final class CallController {
         // check and the insert as separate critical sections both passed
         // their check before either inserted — one call rang twice
         // (2026-09-13 05:52:58, f512… and sip-4 reported 10 ms apart).
-        enum Outcome { case merged(TrackedCall), created(String, Wake), noAccount }
+        enum Outcome { case merged(String, TrackedCall), created(String), refused, noAccount }
         let outcome: Outcome = lock.withLock {
-            if let (id, c) = calls.first(where: { $0.value.phase != .ended }) {
-                var updated = c
-                updated.sipArrived = true
-                calls[id] = updated
-                return .merged(updated)
+            // The wake for this call rang first: the INVITE carries the
+            // server's id (X-Dialler-Call-ID), which the wake was keyed by.
+            // Without the header (a peer that is not our server), the one
+            // wake-only ringing call is the match.
+            let match: String? = diallerCallID.flatMap { d in
+                calls[d] != nil ? d : calls.first { $0.value.wakeCallID == d }?.key
+            } ?? {
+                let ringing = calls.filter { $0.value.phase == .ringing && $0.value.direction == .incoming && !$0.value.sipArrived }
+                return ringing.count == 1 ? ringing.keys.first : nil
+            }()
+            if let id = match, var c = calls[id] {
+                c.sipArrived = true
+                c.engineCallID = engineCallID
+                c.diallerCallID = diallerCallID
+                calls[id] = c
+                return .merged(id, c)
             }
             guard let account else { return .noAccount }
+            guard admitsAnotherCallLocked() else { return .refused }
             sipCallSeq += 1
             let id = "sip-\(sipCallSeq)"
             let wake = Wake(callID: id, from: from, to: Party(uri: "sip:\(account.user)"),
                             sip: account.sip, expiresAt: now().addingTimeInterval(60))
-            calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, reportedName: name)
-            return .created(id, wake)
+            calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, reportedName: name,
+                                    engineCallID: engineCallID, diallerCallID: diallerCallID)
+            return .created(id)
         }
         let id: String
         switch outcome {
-        case .merged(let ringing):
-            log("INVITE from \(peer) for call \(ringing.wake.callID) (already \(ringing.phase))")
+        case .merged(let mergedID, let call):
+            log("INVITE from \(peer) for call \(mergedID) (already \(call.phase))")
+            if call.phase == .answered || call.answerWhenInvite {
+                // The user answered on the wake before the INVITE got here.
+                lock.withLock { calls[mergedID]?.answerWhenInvite = false }
+                engine?.answer(engineCallID: engineCallID)
+            }
+            return
+        case .refused:
+            log("INVITE from \(peer) refused with 486: \(callWaitingEnabled ? "no room for another call" : "call waiting is off")")
+            engine?.reject(engineCallID: engineCallID)
             return
         case .noAccount:
             log("INVITE from \(peer) but no SIP account is known; ignoring")
             return
-        case .created(let newID, _):
+        case .created(let newID):
             id = newID
         }
         log("incoming SIP call \(id) from \(name) (no wake)")
@@ -305,21 +383,36 @@ public final class CallController {
             guard let self, let err else { return }
             self.log("CallKit refused SIP call \(id): \(err)")
             self.lock.withLock { self.calls[id] = nil }
-            self.engine?.hangup(callID: id)
+            self.engine?.hangup(engineCallID: engineCallID)
         }
     }
 
-    /// The SIP call ended on the far side.
-    public func handle(sipEnded reason: String) {
-        let ended: [String] = lock.withLock {
-            let ids = calls.filter { $0.value.sipArrived || $0.value.phase == .answered }.map(\.key)
-            for id in ids { calls[id] = nil }
-            return ids
+    /// A SIP call ended on the far side (or failed).
+    public func handle(sipEnded reason: String, engineCallID: String) {
+        let (ended, wasAnswered): (String?, Bool) = lock.withLock {
+            guard let (id, c) = calls.first(where: { $0.value.engineCallID == engineCallID }) else { return (nil, false) }
+            calls[id] = nil
+            return (id, c.phase == .answered)
         }
-        for id in ended {
-            log("call \(id) ended by SIP: \(reason)")
-            ui.end(callID: id, reason: .remoteEnded)
+        guard let ended else { return } // a call we never tracked (e.g. one we refused)
+        log("call \(ended) ended by SIP: \(reason)")
+        ui.end(callID: ended, reason: .remoteEnded)
+        if wasAnswered { resumeLoneHeldCall() }
+    }
+
+    /// The conversation just ended and the only call left is on hold: take
+    /// it off hold, so the user is back in that call without touching the
+    /// screen (product decision, 2026-09-14; the phone is at their ear).
+    /// Only after an *answered* call ends — declining a ringing second call
+    /// leaves a call the user held on purpose as it is.
+    private func resumeLoneHeldCall() {
+        let survivor: String? = lock.withLock {
+            guard calls.count == 1, let (id, c) = calls.first, c.phase == .answered, c.held else { return nil }
+            return id
         }
+        guard let survivor else { return }
+        log("\(survivor) is the only call left and on hold; resuming it")
+        ui.resume(callID: survivor)
     }
 
     // MARK: Gateway → UI
@@ -362,29 +455,45 @@ public final class CallController {
         case duplicate(of: String)
         /// Past its expiry; nothing rang.
         case expired
+        /// Refused: the app will not take another call (call waiting off,
+        /// or already at its limit). The server was told busy.
+        case refused
     }
 
     /// Entry point shared by the transport path and the PushKit path.
     @discardableResult
     public func handle(wake w: Wake) -> WakeOutcome {
         let name = callerName(for: w.from)
-        let existing: (id: String, reported: String)? = lock.withLock {
-            if let c = calls[w.callID] { return (w.callID, c.reportedName) }
+        enum Found { case existing(id: String, reported: String), created, refused }
+        let found: Found = lock.withLock {
+            if let c = calls[w.callID] { return .existing(id: w.callID, reported: c.reportedName) }
             // The INVITE for this call may already be ringing under a
-            // synthetic id (registered app, wake arrived second): one call.
-            // The INVITE knew only the peer URI; the wake carries the caller's
-            // display name, so keep the richer identity for the in-call title.
-            if let (id, c) = calls.first(where: { $0.value.sipArrived && $0.value.phase != .ended }) {
+            // synthetic id (registered app, wake arrived second): it carried
+            // the server's id, which is this wake's. The INVITE knew only
+            // the peer URI; the wake carries the caller's display name, so
+            // keep the richer identity for the in-call title.
+            let byHeader = calls.first { $0.value.diallerCallID == w.callID && $0.value.phase != .ended }
+            // Without the header (a peer that is not our server) the one
+            // INVITE-first ringing call that no wake has claimed is the match.
+            let unclaimed = calls.filter { $0.value.sipArrived && $0.value.phase == .ringing && $0.value.direction == .incoming && $0.value.diallerCallID == nil && $0.value.wakeCallID == nil }
+            if let (id, c) = byHeader ?? (unclaimed.count == 1 ? unclaimed.first : nil) {
                 var merged = c
                 if merged.wake.from.displayName?.isEmpty != false { merged.wake.from.displayName = w.from.displayName }
                 merged.wakeCallID = w.callID
                 calls[id] = merged
-                return (id, c.reportedName)
+                return .existing(id: id, reported: c.reportedName)
             }
+            guard admitsAnotherCallLocked() else { return .refused }
             calls[w.callID] = TrackedCall(wake: w, phase: .ringing, reportedName: name, wakeCallID: w.callID)
-            return nil
+            return .created
         }
-        if let existing { // de-duplicated across app + extension delivery
+        if case .refused = found {
+            log("wake \(w.callID) refused: \(callWaitingEnabled ? "no room for another call" : "call waiting is off")")
+            transport?.send(.wakeAck(WakeAck(callID: w.callID, action: .busy)))
+            return .refused
+        }
+        if case .existing(let id, let reported) = found { // de-duplicated across app + extension delivery
+            let existing = (id: id, reported: reported)
             // A wake that resolves to a better name than the INVITE managed
             // corrects the banner while the call is still ringing.
             if name != existing.reported {
@@ -416,17 +525,39 @@ public final class CallController {
 
     // MARK: UI → engine
 
-    /// User accepted the call in the system UI.
+    /// User accepted the call in the system UI. Any other call that is up
+    /// goes on hold first (CallKit's Hold & Accept sends the hold action
+    /// itself; this makes the order certain either way), then the INVITE is
+    /// answered — now if it has arrived, else the moment it does (wake
+    /// path: register so the server dials us).
     public func userAnswered(callID: String) {
-        guard let call: TrackedCall = lock.withLock({
-            guard var c = calls[callID], c.phase == .ringing else { return nil }
+        let (call, others): (TrackedCall?, [String]) = lock.withLock {
+            guard var c = calls[callID], c.phase == .ringing else { return (nil, []) }
             c.phase = .answered
+            c.answerWhenInvite = c.engineCallID == nil
             calls[callID] = c
-            return c
-        }) else { return }
-        let user = Self.userPart(of: call.wake.to.uri)
-        log("answered \(callID); registering \(user) to \(call.wake.sip.host):\(call.wake.sip.port)")
-        engine?.prepareForIncomingCall(callID: callID, user: user, sip: call.wake.sip)
+            var held: [String] = []
+            for (id, other) in calls where id != callID && other.phase == .answered && !other.held {
+                if let e = other.engineCallID {
+                    calls[id]?.held = true
+                    held.append(e)
+                }
+            }
+            return (c, held)
+        }
+        guard let call else { return }
+        for e in others {
+            log("\(callID): holding the other call first")
+            engine?.setHeld(engineCallID: e, true)
+        }
+        if let engineID = call.engineCallID {
+            log("answered \(callID)")
+            engine?.answer(engineCallID: engineID)
+        } else {
+            let user = Self.userPart(of: call.wake.to.uri)
+            log("answered \(callID); registering \(user) to \(call.wake.sip.host):\(call.wake.sip.port); answering when its INVITE arrives")
+            engine?.register(user: user, sip: call.wake.sip)
+        }
     }
 
     /// User declined or hung up in the system UI.
@@ -436,16 +567,17 @@ public final class CallController {
         // registration), using the wake's own id. A call that rang from the
         // INVITE alone has no wake to ack; the 486 the engine sends is the
         // whole answer.
-        let declineAckID: String? = lock.withLock {
-            guard let c = calls[callID] else { return nil }
+        let (declineAckID, engineID, wasAnswered): (String?, String?, Bool) = lock.withLock {
+            guard let c = calls[callID] else { return (nil, nil, false) }
             calls[callID] = nil
-            return c.phase == .ringing && c.direction == .incoming ? c.wakeCallID : nil
+            return (c.phase == .ringing && c.direction == .incoming ? c.wakeCallID : nil, c.engineCallID, c.phase == .answered)
         }
         if let declineAckID {
             transport?.send(.wakeAck(WakeAck(callID: declineAckID, action: .decline)))
         }
-        engine?.hangup(callID: callID)
+        if let engineID { engine?.hangup(engineCallID: engineID) }
         log("ended \(callID) by user")
+        if wasAnswered { resumeLoneHeldCall() }
     }
 
     /// "sip:201@dialler;transport=tls" → "201@dialler"; "201" → "201".
@@ -468,15 +600,16 @@ public final class CallController {
     }
 
     private func end(callID: String, reason: CallEndReason) {
-        let known: Bool = lock.withLock {
-            guard calls[callID] != nil else { return false }
+        let (known, engineID, wasAnswered): (Bool, String?, Bool) = lock.withLock {
+            guard let c = calls[callID] else { return (false, nil, false) }
             calls[callID] = nil
-            return true
+            return (true, c.engineCallID, c.phase == .answered)
         }
         guard known else { return }
         log("call \(callID) ended: \(reason)")
         ui.end(callID: callID, reason: reason)
-        engine?.hangup(callID: callID)
+        if let engineID { engine?.hangup(engineCallID: engineID) }
+        if wasAnswered { resumeLoneHeldCall() }
     }
 }
 

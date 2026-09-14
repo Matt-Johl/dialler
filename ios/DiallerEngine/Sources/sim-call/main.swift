@@ -63,11 +63,16 @@ let transferTo: String? = args.count > 12 && !args[12].isEmpty ? args[12] : nil
 /// caller must then get 486 Busy Here, which sim_call.sh asserts on phone-b's
 /// log; here we assert the call rang, was never established, and ended.
 let declineMode = args.count > 13 && args[13] == "decline"
+/// Call-waiting test (plan Phase I): while call 1 is up, a second caller
+/// rings; the scripted user takes Hold & Accept, talks on call 2, swaps
+/// back to call 1, then ends both. Asserted on RTP reaching whichever call
+/// is active and on the two calls carrying distinct stack ids.
+let callWaitingMode = args.count > 13 && args[13] == "callwaiting"
 
 /// RTP received on the current call so far (cumulative).
 func rtpReceived() -> UInt32 {
     var m = cb_media_stats_t()
-    cb_media_stats(&m)
+    cb_media_stats(engine.activeEngineCallID, &m)
     return m.rx_packets
 }
 
@@ -83,8 +88,9 @@ var lastCloseReason = ""
 engine.onCallEnded = nil // set by the controller below; we observe through the log instead
 let engineLog: (String) -> Void = { line in
     print("\(stamp())   \(line)")
-    if line.hasPrefix("engine: call closed (") {
-        lastCloseReason = String(line.dropFirst("engine: call closed (".count).dropLast())
+    // "engine: call <id> closed (<reason>)"
+    if line.hasPrefix("engine: call "), let open = line.range(of: " closed (") {
+        lastCloseReason = String(line[open.upperBound...].dropLast())
     }
 }
 engine.log = engineLog
@@ -114,10 +120,23 @@ final class ScriptedCallKit: CallUI {
     /// wait for the NEXT call rather than react to the previous one's end.
     var reported = 0
     var current: String?
+    /// Call-waiting mode: the second call, ringing while the first is up;
+    /// the main loop performs Hold & Accept on it.
+    var waiting: String?
+    /// Whether the controller still tracks any call (set once it exists).
+    var noCallsLeft: () -> Bool = { true }
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
         out("callkit: reporting \(callID) from \(displayName)")
-        lock.lock(); reported += 1; current = callID; ended = false; lock.unlock()
+        lock.lock()
+        reported += 1
+        let second = callWaitingMode && inCall && current != nil
+        if second { waiting = callID } else { current = callID; ended = false }
+        lock.unlock()
         completion(nil)
+        if second {
+            out("callkit: \(callID) is waiting (call-waiting banner: Hold & Accept / End & Accept / Decline)")
+            return
+        }
         if declineMode {
             // The user taps the red button while it rings: CallKit's end
             // action → controller.userEnded → wake_ack{decline} on the wire
@@ -138,10 +157,16 @@ final class ScriptedCallKit: CallUI {
             }
         }
     }
+    func resume(callID: String) {
+        // CallKit would perform the hold action and call back; do the same.
+        out("callkit: resume action for \(callID) (the only call left)")
+        controller.setHeld(callID: callID, false)
+    }
     func end(callID: String, reason: CallEndReason) {
         out("callkit: ended \(callID) (\(reason))")
         lock.lock(); if current == callID { ended = true }; lock.unlock()
-        engine.audioSessionDeactivated()
+        // CallKit deactivates the session only after the last call ends.
+        if noCallsLeft() { engine.audioSessionDeactivated() }
     }
     /// Outgoing: CallKit approves the start action at once, then activates
     /// the session shortly after (as on the device).
@@ -210,6 +235,7 @@ let controller = CallController(ui: callKit, engine: engine, log: { print("\(sta
 callKit.onAnswer = { controller.userAnswered(callID: $0) }
 callKit.onDecline = { controller.userEnded(callID: $0) }
 callKit.onStart = { controller.userStarted(callID: $0) }
+callKit.noCallsLeft = { controller.activeCalls.isEmpty }
 
 let cfg = AppConfig(gateway: GatewayEndpoint(host: host, port: port, acceptAnyCertificate: true), deviceID: deviceID, token: token)
 // The same session keeper as the app: reconnects after a drop, so a server
@@ -307,6 +333,50 @@ for index in 1...callsWanted {
                 break
             }
         }
+        if callWaitingMode, holdResult == nil, let v = engine.audioVerdicts.first(where: { $0.seconds == 2 }), v.rtpRx > 0 {
+            // Call 1 is up and audible. The script now has the second
+            // phone dial us; wait for its ring, then behave as the user
+            // tapping Hold & Accept, talk, swap back, and end both.
+            lock.lock(); let first = callKit.current ?? ""; lock.unlock()
+            var second: String?
+            let ringDeadline = Date().addingTimeInterval(20)
+            while Date() < ringDeadline {
+                lock.lock(); second = callKit.waiting; lock.unlock()
+                if second != nil { break }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            guard let second else {
+                holdResult = "FAIL: no second call rang within 20 s"
+                out("callwaiting: \(holdResult!)")
+                break
+            }
+            out("callwaiting: Hold & Accept — hold \(first), answer \(second)")
+            controller.setHeld(callID: first, true) // CallKit's own hold action
+            callKit.onAnswer(second)                // → userAnswered → engine answers call 2
+            Thread.sleep(forTimeInterval: 1.0)      // let the answer and the re-INVITE settle
+            let ids = controller.activeCalls.map { $0.engineCallID ?? "" }
+            let a = rtpReceived()
+            Thread.sleep(forTimeInterval: 3.0)
+            let rx2 = rtpReceived() - a             // media on call 2 (the active one)
+            out("callwaiting: swap — hold \(second), resume \(first)")
+            controller.setHeld(callID: second, true)
+            controller.setHeld(callID: first, false)
+            Thread.sleep(forTimeInterval: 1.0)
+            let b = rtpReceived()
+            Thread.sleep(forTimeInterval: 2.0)
+            let rx1 = rtpReceived() - b             // media back on call 1
+            out("callwaiting: stack ids \(ids); rx on call 2 while active: \(rx2) packets in 3 s; rx on call 1 after the swap: \(rx1) packets in 2 s")
+            if ids.count != 2 || ids.contains("") || ids[0] == ids[1] { holdResult = "FAIL: the two calls do not carry two distinct stack ids: \(ids)" }
+            else if rx2 < 40 { holdResult = "FAIL: only \(rx2) packets on the second call while it was active" }
+            else if rx1 < 40 { holdResult = "FAIL: only \(rx1) packets on the first call after swapping back" }
+            else { holdResult = "PASS: second call rang, Hold & Accept took it, swap restored the first" }
+            out("callwaiting: \(holdResult!)")
+            out("callwaiting: ending both calls")
+            controller.userEnded(callID: second)
+            controller.userEnded(callID: first)
+            sawVerdict = true
+            break
+        }
         if holdMs > 0, holdResult == nil, let v = engine.audioVerdicts.first(where: { $0.seconds == 2 }), v.rtpRx > 0 {
             // Hold: our re-INVITE goes sendonly; the server must stop
             // sending to us. Resume: it must start again.
@@ -343,7 +413,7 @@ for index in 1...callsWanted {
     // Judge the LAST window: a call that degrades late must show it. The
     // hold test is the exception — its last window is the held stretch,
     // where silence is the expected result — so it keeps the best window.
-    let best = holdMs > 0
+    let best = holdMs > 0 || callWaitingMode
         ? verdicts.max { ($0.rtpRx, $0.playEnergy) < ($1.rtpRx, $1.playEnergy) }
         : verdicts.last
     lock.lock(); let wasDeclined = ended; lock.unlock()
@@ -373,12 +443,13 @@ func result() -> (String, Int32) {
     for r in results where !judge(r).1 { allOK = false }
     if !allOK { return ("FAIL: see per-call lines above", 1) }
     if declineMode { return ("PASS: \(callsWanted) call(s) declined from the banner", 0) }
+    if callWaitingMode { return ("PASS: call waiting — second call taken with Hold & Accept and swapped back", 0) }
     return ("PASS: \(callsWanted) call(s) received and rendered", 0)
 }
 let (line, code) = result()
 out(line)
 
-engine.hangup(callID: "sim")
+engine.hangupAll()
 transport.disconnect()
 eventTask.cancel()
 // Independent exit watchdog: baresip teardown must not hang the process.

@@ -51,7 +51,9 @@ engine.onStateChange = { state in
 }
 
 print("probe: registering \(user) via \(host):\(port)/tls, waiting up to \(seconds)s")
-engine.prepareForIncomingCall(callID: "probe", user: user, sip: SIPTarget(host: host, port: port, transport: "tls"))
+// No controller here: the engine answers whatever INVITE arrives.
+engine.autoAnswer = true
+engine.register(user: user, sip: SIPTarget(host: host, port: port, transport: "tls"))
 // No CallKit on macOS: the audio session is always available, so release
 // the engine's manual-audio hold here (the app does this from didActivate).
 engine.audioSessionActivated()
@@ -78,6 +80,6 @@ let watchdog = Thread {
     exit(exitCode)
 }
 watchdog.start()
-engine.hangup(callID: "probe")
+engine.hangupAll()
 engine.stop()
 exit(exitCode)

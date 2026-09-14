@@ -38,7 +38,7 @@ final class StackConfigTests: XCTestCase {
             "sip_tos": "96", // DSCP CS3 on signalling (baresip's default would be CS5)
             "audio_player": "audiounit,default",
             "audio_source": "audiounit,default",
-            "call_max_calls": "1",
+            "call_max_calls": "2", // call waiting: one active, one held; a third caller gets 486
         ]
         for (k, v) in expected {
             XCTAssertEqual(value(k, in: c), v, "config key \(k)")

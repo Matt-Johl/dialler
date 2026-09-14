@@ -41,6 +41,19 @@ Verified by `make audio-probe` (macOS, HAL unit) and
 the driver through both event orderings and fail if no frames flow, and
 end to end by `make sim-call`.
 
+### audiounit: a failed setup defers instead of failing the call
+
+`player_setup` / `recorder_setup` run inside the alloc when the host has
+not held the audio. CallKit can have the session live for one call and in
+flux at the same instant: "End & Accept" ends call A and answers call B,
+deactivating and reactivating the session within ~150 ms, and CoreAudio
+refuses a new unit in that window. Returning `ENODEV` there made baresip
+give up on the answered call's audio entirely — the device logged
+`start_player failed … [19]`, then `UNITS DEAD` and `rtp tx=0`
+(2026-09-14). Both alloc paths now log the failure and leave the unit
+unconfigured; `interrupt_handler(false)` already sets up a unit it finds
+missing, so the next `didActivate` builds and starts it.
+
 ## apply-baresip.sh — `ua_refresh_register()`
 
 baresip's `ua_register()` on an already registered user agent destroys

@@ -442,8 +442,17 @@ int audiounit_recorder_alloc(struct ausrc_st **stp, const struct ausrc *as,
 	}
 	else {
 		ret = recorder_setup(st);
-		if (ret)
-			goto out;
+		if (ret) {
+			/* See player.c: the session is in flux while CallKit
+			 * swaps calls ("End & Accept"), CoreAudio refuses a
+			 * new unit, and failing here left the answered call
+			 * with no microphone (rtp tx=0). The release path
+			 * sets it up and starts it. */
+			warning("audiounit: record setup deferred after a "
+				"failed attempt: %d (%c%c%c%c)\n", ret,
+				ret>>24, ret>>16, ret>>8, ret);
+			ret = 0;
+		}
 	}
 
 	/* Never started here: all units start together, after the whole

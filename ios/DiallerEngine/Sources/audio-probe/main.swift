@@ -62,8 +62,8 @@ func flow(over seconds: Double) -> (play: UInt64, rec: UInt64) {
     return (b.play - a.play, b.rec - a.rec)
 }
 
-let rc = cb_start(config, { _, ev, _, text in
-    if ev == CB_EVENT_LOG, let text, String(cString: text).contains("audiounit") {
+let rc = cb_start(config, { _, ev, info in
+    if ev == CB_EVENT_LOG, let text = info?.pointee.text, String(cString: text).contains("audiounit") {
         print("  [driver] \(String(cString: text))")
     }
 }, nil)

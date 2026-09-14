@@ -148,6 +148,9 @@ services:
       # The trunk transfer test recreates this phone silent, so the desk
       # phone's recording can only contain audio the PBX sent it.
       AUDIO_SOURCE: ${AUDIO_SOURCE:-aufile,/media/in.wav}
+      # As for phone-b: <mac-ip>:5061 registers it with a native server
+      # (SERVER=native make sim-call-cw).
+      OUTBOUND: "${BARESIP_A_OUTBOUND:-}"
     volumes:
       - ./baresip/media:/media
 

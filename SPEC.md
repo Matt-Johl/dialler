@@ -243,6 +243,63 @@ are already implemented — do not remove them because remote reach is deferred.
    itself. The app's leg is unaffected either way.
 7. The `PBXAdapter` speaks **trunk SIP and nothing else**. AMI/ESL remain
    dev-only.
+8. **Call waiting** (plan Phase I, 2026-09-14): an app holds up to two
+   calls, one active and one on hold — the handset norm and what CallKit's
+   own UI models (two call groups of one call, `supportsHolding` on every
+   call; the second call's answer UI and the swap are CallKit's, the
+   call-waiting tone is the app's). Every layer addresses calls by id:
+   baresip's SIP Call-ID through the shim and engine, the server's
+   `X-Dialler-Call-ID` header to pair an INVITE with its wake, the
+   controller's ids for CallKit; nothing is matched by "the call that is
+   ringing". Answering a second call holds the first; when the call in
+   progress ends and the only call left is on hold, the controller asks
+   the system to resume it (a hold action of its own, so CallKit's state
+   follows) — the phone is at the user's ear, so they are back in that
+   call without touching the screen; a call the user held on purpose is
+   left alone when a merely ringing second call is declined. Switching is the
+   system's control (iOS 26's swap banner, shown over the app while a call
+   is held), so the in-call screen only names the held party and hides
+   Hold — on iOS 17/18, which show no such banner, Hold reads Swap. Ending
+   the held call is swap, then End. A third caller, or any second
+   caller while Settings › Call waiting is off, is refused with 486 (the
+   INVITE) or `wake_ack{busy}` (the wake) and the PBX applies its busy
+   rule. Deferred to a follow-up: a second *outgoing* call while on a
+   call, and attended transfer built on two calls. Gate: `make
+   sim-call-cw` (in `sim-call-all`); device items in §7.3.
+   *What the device runs of 2026-09-14 settled, and how iOS decides the
+   second call's UI.* CallKit needs **two call groups of one call each**
+   — `maximumCallGroups = 2`, `maximumCallsPerCallGroup = 1`. A *group* is
+   a conference; configured the other way round (one group of two calls)
+   iOS offered only "End & Accept". The rule behind that is iOS's own,
+   read from `-[TUCallCenter isHoldAndAnswerAllowed]` in the iOS 26.5
+   runtime's TelephonyUtilities: for two calls of the *same* provider,
+   hold-and-answer is allowed exactly when the provider's
+   `maximumCallGroups` exceeds one; a call's `supportsHolding` is
+   consulted only between different providers. On iOS 26 the second
+   call is then presented with the ordinary **Accept / Decline** — there
+   is no "Hold & Accept" label any more — and Accept runs
+   `holdAndAnswerIfNeeded`: a hold for the current call and the answer
+   for the new one, delivered to the app as `CXSetHeldCallAction` +
+   `CXAnswerCallAction` (the same pair `make sim-call-cw` drives); "End &
+   Accept" appears only when holding is not allowed. The app was
+   reporting everything correctly on the second and third runs; the
+   missing label was iOS 26's design, not a missing capability, and the
+   two "advertise as holdable" work-arounds tried on the way were
+   reverted. *A held call owns no audio units.* Hold stays `sendonly` on
+   the wire, but the shim stops the held call's audio at once and sets
+   baresip's audio-hold flag so the hold re-INVITE's answer does not
+   re-create its source: iOS refuses a second VoiceProcessingIO input
+   (`kAudioUnitErr_MultipleVoiceProcessors`, −66635), and with the held
+   call's recorder still running the call answered next had no
+   microphone (device, 2026-09-14). The resume re-INVITE's answer restarts
+   audio for the resumed call; CallKit always holds before it answers or
+   resumes, so the one microphone follows the active call. And iOS plays
+   **no tone** for a VoIP app's second call — it
+   suppresses the ringtone and shows its answer UI, nothing more — so the
+   app plays the call-waiting beep itself into the call's audio session
+   (`CallTones`, `TonePlayer`; two 100 ms bursts at 425 Hz every 5 s,
+   quiet because the phone is at someone's ear). That is the first piece
+   of the tone plan (Phase J).
 
 ### 4.5 Why SIP on the app leg
 SIP is kept on the app leg because baresip supplies SDP negotiation, codecs,
@@ -338,7 +395,10 @@ on by config — see §7.4.
   OpenSSL to XCFrameworks and `ios/DiallerEngine` wraps them as the
   `CallEngine`, building for device and simulator. Remaining: the first real
   device call with audio, and the killed-app wake through the extension.
-- **Phase 2** — Outbound + hold + transfer; PBX leg via Asterisk.
+- **Phase 2** — Outbound + hold + transfer; PBX leg via Asterisk. *Call
+  waiting done 2026-09-14* (rule 8): a second incoming call rings over the
+  current one and can be taken with Hold & Accept, swapped and ended on its
+  own.
   *2026-09-07:* Phase 1 closed on a real iPhone (first and subsequent calls,
   killed-app wake via the Local Push extension, lock screen); the root
   causes were the audio driver creating CoreAudio units before CallKit's
@@ -600,6 +660,23 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    cellular interruption); the restart path itself is headless in
    `make audio-probe` (scenarios C and D). Plan Phase H, 2026-09-14.
 4. `LPCTransport` passes the transport conformance suite on-device.
+5. Call waiting (rule 8; plan Phase I, 2026-09-14): on a call with 101,
+   call the app from 100 — the call-waiting tone plays; **Accept** on the
+   second call (iOS 26 shows plain Accept / Decline, see rule 8) holds 101
+   and takes 100 — the app log must show one transaction
+   `SetHeldCallAction(<call 1> hold),AnswerCallAction(<call 2>)` and the
+   desk phone shows hold and the app's screen reads "101 on hold" with no
+   banner of its own; Swap twice from iOS's banner, the microphone follows
+   the active call each time; end the active call → the held one resumes
+   by itself (log: "is the only call left and on hold; resuming it", then
+   the system's hold=false); Decline → 100 hears busy at once; 100 hangs up
+   while waiting → the call with 101 is untouched; Settings › Call waiting
+   off → 100 hears busy immediately. Each once with the phone unlocked
+   and once locked (the second call arrives by INVITE on the held session
+   and by wake; both must match by the INVITE's X-Dialler-Call-ID).
+   Done so far (2026-09-14): the tone, and both orders of arrival ring
+   the second call; Accept itself not yet pressed on a device. Headless
+   twin: `make sim-call-cw`.
 
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".

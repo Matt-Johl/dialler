@@ -124,6 +124,13 @@ client                                   server
 7. If no SIP registration arrives by `expires_at`, server sends
    `wake_cancel{timeout}` and releases the caller leg with 480 (busy /
    voicemail per trunk policy).
+8. Call waiting: an app may hold two calls at once (one active, one on
+   hold). Every INVITE and wake is matched by `call_id` /
+   `X-Dialler-Call-ID`, never by "the call that is ringing". A further
+   call, or any second call while the app's call waiting is off, is
+   refused: the app answers the INVITE 486 or replies `wake_ack{busy}`,
+   and the server relays 486 as in step 6. Nothing else changes on the
+   wire.
 
 `wake` is **idempotent** per `call_id`: a client that reconnects may receive the
 same wake again and MUST NOT ring twice.

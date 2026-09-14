@@ -4,6 +4,7 @@
 #define CBARESIP_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -29,11 +30,25 @@ typedef enum {
     CB_EVENT_LOG
 } cb_event_t;
 
-/// Event callback. `peer` is the remote URI for call events ("" otherwise);
-/// `text` is baresip's event text (reason, error) or "" — except for
-/// CB_EVENT_CALL_INCOMING, where it is the caller's From display name ("" if
-/// the caller sent none), so the app can name the call from it.
-typedef void (*cb_event_cb)(void *ctx, cb_event_t event, const char *peer, const char *text);
+/// What an event is about. Strings are valid for the callback's duration
+/// only; "" when not applicable.
+typedef struct {
+    /// The call's SIP Call-ID: the handle every per-call operation below
+    /// takes, unique for the life of the stack. "" for non-call events.
+    const char *call_id;
+    /// The remote URI for call events.
+    const char *peer;
+    /// baresip's event text (reason, error) — except for
+    /// CB_EVENT_CALL_INCOMING, where it is the caller's From display name
+    /// ("" if the caller sent none), so the app can name the call from it.
+    const char *text;
+    /// CB_EVENT_CALL_INCOMING only: the server's call id from the INVITE's
+    /// X-Dialler-Call-ID header ("" if absent) — the id the same call's
+    /// wake carries, so the app can match the two without guessing.
+    const char *dialler_call_id;
+} cb_event_info;
+
+typedef void (*cb_event_cb)(void *ctx, cb_event_t event, const cb_event_info *info);
 
 /// Initialise libre + baresip with the given config text (baresip `config`
 /// file syntax) and start the main loop on a background thread.
@@ -57,28 +72,39 @@ int cb_ua_alloc(const char *aor);
 /// user agent exists.
 int cb_ua_register(void);
 
-/// Answer the current incoming call (no-op if none).
-int cb_answer(void);
+/// Calls are addressed by the SIP Call-ID the events carry (`call_id`).
+/// Several calls may exist at once (call waiting: one active, one held);
+/// every operation names the one it means. -ENOENT for an unknown id.
 
-/// Place an outgoing call to `uri` (full SIP URI) from the user agent.
-/// Progress arrives as CB_EVENT_CALL_OUTGOING / RINGING / PROGRESS /
-/// ESTABLISHED / CLOSED. Returns 0 or a negative errno.
-int cb_dial(const char *uri);
+/// Answer the incoming call `call_id`.
+int cb_answer(const char *call_id);
 
-/// Mute / unmute the microphone of the current call (no-op if none).
+/// Place an outgoing call to `uri` (full SIP URI) from the user agent and
+/// return its call id in `call_id_out` (at least 128 bytes). Progress
+/// arrives as CB_EVENT_CALL_OUTGOING / RINGING / PROGRESS / ESTABLISHED /
+/// CLOSED with that id. Returns 0 or a negative errno.
+int cb_dial(const char *uri, char *call_id_out, size_t call_id_len);
+
+/// Mute / unmute the microphone. One microphone, every call: a muted user
+/// stays muted across a swap.
 void cb_mute(bool muted);
 
-/// Put the current call on hold / resume it (re-INVITE). Returns 0 or a
-/// negative errno.
-int cb_hold(bool hold);
+/// Put `call_id` on hold / resume it (re-INVITE). Returns 0 or a negative
+/// errno.
+int cb_hold(const char *call_id, bool hold);
 
-/// Blind transfer: REFER the far end of the current call to `uri` (the
-/// server, as B2BUA, connects the other party there and ends our call).
-/// Returns 0 or a negative errno.
-int cb_transfer(const char *uri);
+/// Blind transfer: REFER the far end of `call_id` to `uri` (the server, as
+/// B2BUA, connects the other party there and ends our call). Returns 0 or
+/// a negative errno.
+int cb_transfer(const char *call_id, const char *uri);
 
-/// Hang up the current call (no-op if none).
-void cb_hangup(void);
+/// Hang up `call_id`; NULL hangs up every call (teardown).
+void cb_hangup(const char *call_id);
+
+/// Refuse the incoming call `call_id` with a final response, e.g. 486
+/// "Busy Here" for a caller the app will not take (call waiting off, or a
+/// third call). Returns 0 or a negative errno.
+int cb_reject(const char *call_id, uint16_t status, const char *reason);
 
 /// Unregister and free the user agent.
 void cb_ua_free(void);
@@ -108,8 +134,8 @@ void cb_audio_interrupt(bool begin);
 /// flowing means the far end is silent (or we are decoding nothing).
 void cb_audio_stats(uint64_t *play_frames, uint64_t *rec_frames, uint64_t *play_energy);
 
-/// Media-path counters for the current call's audio stream (all zero when
-/// there is no call). Together with cb_audio_stats this locates a silent
+/// Media-path counters for `call_id`'s audio stream (all zero when there
+/// is no such call). Together with cb_audio_stats this locates a silent
 /// or glitchy call: units rendering but rx=0 is the media path, not audio;
 /// rx flowing with lost/late/underflow climbing is jitter or loss upstream.
 typedef struct {
@@ -123,7 +149,7 @@ typedef struct {
     uint32_t jb_underflow; ///< jitter buffer: player starved (an audible gap)
     uint32_t jb_overflow;  ///< jitter buffer: dropped as too many queued
 } cb_media_stats_t;
-void cb_media_stats(cb_media_stats_t *out);
+void cb_media_stats(const char *call_id, cb_media_stats_t *out);
 
 /// Test hooks (audio-probe): allocate / free a player + source through
 /// baresip's device layer without a SIP call, so the driver's start/hold

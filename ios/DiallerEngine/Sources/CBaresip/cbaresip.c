@@ -58,7 +58,8 @@ enum op_type {
     OP_MUTE,
     OP_HOLD,
     OP_TRANSFER,
-    OP_TRANSP_RESET
+    OP_TRANSP_RESET,
+    OP_REJECT
 };
 
 static cb_media_stats_t media_stats; /* filled by OP_MEDIA_STATS on the loop thread */
@@ -88,8 +89,12 @@ static void test_error_h(int err, const char *str, void *arg) { (void)err; (void
 
 struct op {
     enum op_type type;
-    const char *aor; /* account line, or the URI to dial */
+    const char *id;  /* the call (SIP Call-ID) an op is about; NULL = n/a */
+    const char *aor; /* account line, the URI to dial/transfer to, or a reject reason */
     bool flag;       /* mute / hold on-off */
+    uint16_t scode;  /* reject status */
+    char *out;       /* OP_DIAL: where the new call's id goes */
+    size_t outlen;
     int err;
     bool done;
     pthread_mutex_t mu;
@@ -103,16 +108,59 @@ static struct {
     void *ctx;
     struct mqueue *mq;
     struct ua *ua;
-    struct call *call;
     bool registered;
 } g;
 
+/* The header the server puts on every INVITE it sends us: its own call id,
+ * the one the same call's wake carries (PROTOCOL.md §6). */
+#define DIALLER_CALL_ID_HDR "X-Dialler-Call-ID"
+
+/* The call with this SIP Call-ID, or NULL. Calls live in the UA's list;
+ * baresip's uag_call_find searches every UA. */
+static struct call *find_call(const char *id)
+{
+    if (!id || !*id)
+        return NULL;
+    return uag_call_find(id);
+}
+
 /* ---- logging → app --------------------------------------------------------- */
+
+static void emit_info(cb_event_t ev, const cb_event_info *info)
+{
+    if (g.cb)
+        g.cb(g.ctx, ev, info);
+}
 
 static void emit(cb_event_t ev, const char *peer, const char *text)
 {
-    if (g.cb)
-        g.cb(g.ctx, ev, peer ? peer : "", text ? text : "");
+    cb_event_info info = { .call_id = "", .peer = peer ? peer : "", .text = text ? text : "", .dialler_call_id = "" };
+    emit_info(ev, &info);
+}
+
+/* A call event: carries the call's id and, for an INVITE, the server's id
+ * from the filtered X-Dialler-Call-ID header. */
+static void emit_call(cb_event_t ev, struct call *call, const char *text)
+{
+    char dialler_id[128] = "";
+    if (ev == CB_EVENT_CALL_INCOMING && call) {
+        const struct list *hdrs = call_get_custom_hdrs(call);
+        struct le *le;
+        for (le = hdrs ? list_head(hdrs) : NULL; le; le = le->next) {
+            const struct sip_hdr *h = le->data;
+            if (0 == pl_strcasecmp(&h->name, DIALLER_CALL_ID_HDR)) {
+                (void)pl_strcpy(&h->val, dialler_id, sizeof dialler_id);
+                break;
+            }
+        }
+    }
+    cb_event_info info = {
+        .call_id = call ? call_id(call) : "",
+        .peer = call ? call_peeruri(call) : "",
+        .text = text ? text : "",
+        .dialler_call_id = dialler_id,
+    };
+    emit_info(ev, &info);
 }
 
 static void emit_line(const char *p, size_t n)
@@ -168,32 +216,27 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
         emit(CB_EVENT_OTHER, "", "unregistering");
         break;
     case UA_EVENT_CALL_INCOMING:
-        g.call = call;
         /* text = the caller's From display name (may be empty), not the
          * event text: the app names the call from it (directory first). */
-        emit(CB_EVENT_CALL_INCOMING, peer, call ? call_peername(call) : "");
+        emit_call(CB_EVENT_CALL_INCOMING, call, call ? call_peername(call) : "");
         break;
     case UA_EVENT_CALL_OUTGOING:
-        g.call = call;
-        emit(CB_EVENT_CALL_OUTGOING, peer, txt);
+        emit_call(CB_EVENT_CALL_OUTGOING, call, txt);
         break;
     case UA_EVENT_CALL_RINGING:
-        emit(CB_EVENT_CALL_RINGING, peer, txt);
+        emit_call(CB_EVENT_CALL_RINGING, call, txt);
         break;
     case UA_EVENT_CALL_PROGRESS:
-        emit(CB_EVENT_CALL_PROGRESS, peer, txt);
+        emit_call(CB_EVENT_CALL_PROGRESS, call, txt);
         break;
     case UA_EVENT_CALL_TRANSFER_FAILED:
-        emit(CB_EVENT_CALL_TRANSFER_FAILED, peer, txt);
+        emit_call(CB_EVENT_CALL_TRANSFER_FAILED, call, txt);
         break;
     case UA_EVENT_CALL_ESTABLISHED:
-        g.call = call;
-        emit(CB_EVENT_CALL_ESTABLISHED, peer, txt);
+        emit_call(CB_EVENT_CALL_ESTABLISHED, call, txt);
         break;
     case UA_EVENT_CALL_CLOSED:
-        if (g.call == call)
-            g.call = NULL;
-        emit(CB_EVENT_CALL_CLOSED, peer, txt);
+        emit_call(CB_EVENT_CALL_CLOSED, call, txt);
         break;
     default:
         emit(CB_EVENT_OTHER, peer, txt);
@@ -215,6 +258,9 @@ static int do_op(struct op *op)
         info("cbaresip: ua_alloc: creating\n");
         err = ua_alloc(&g.ua, op->aor);
         info("cbaresip: ua_alloc: created (err=%d); registering\n", err);
+        /* Keep the server's call id from each INVITE (see emit_call). */
+        if (!err)
+            (void)ua_add_xhdr_filter(g.ua, DIALLER_CALL_ID_HDR);
         if (!err)
             err = ua_register(g.ua); /* ua_alloc only prepares the register clients */
         info("cbaresip: ua_alloc: register requested (err=%d)\n", err);
@@ -234,34 +280,90 @@ static int do_op(struct op *op)
         if (err == ENOENT)
             err = ua_register(g.ua);
         break;
-    case OP_ANSWER:
-        if (!g.ua || !g.call)
+    case OP_ANSWER: {
+        struct call *call = find_call(op->id);
+        if (!g.ua || !call)
             err = ENOENT;
         else
-            err = ua_answer(g.ua, g.call, VIDMODE_OFF);
+            err = ua_answer(g.ua, call, VIDMODE_OFF);
         break;
-    case OP_DIAL:
-        if (!g.ua)
+    }
+    case OP_DIAL: {
+        struct call *call = NULL;
+        if (!g.ua) {
             err = ENOENT;
-        else if (g.call)
-            err = EBUSY; /* one call at a time (call_max_calls 1) */
-        else
-            err = ua_connect(g.ua, &g.call, NULL, op->aor, VIDMODE_OFF);
+            break;
+        }
+        err = ua_connect(g.ua, &call, NULL, op->aor, VIDMODE_OFF);
+        if (!err && call && op->out && op->outlen)
+            str_ncpy(op->out, call_id(call), op->outlen);
         break;
-    case OP_MUTE:
-        if (g.call)
-            audio_mute(call_audio(g.call), op->flag);
+    }
+    case OP_MUTE: {
+        /* One microphone: every call's audio follows the mute state. */
+        struct le *le;
+        for (le = g.ua ? list_head(ua_calls(g.ua)) : NULL; le; le = le->next) {
+            struct audio *au = call_audio(le->data);
+            if (au)
+                audio_mute(au, op->flag);
+        }
         break;
-    case OP_HOLD:
-        err = g.call ? call_hold(g.call, op->flag) : ENOENT;
+    }
+    case OP_HOLD: {
+        struct call *call = find_call(op->id);
+        if (!call) {
+            err = ENOENT;
+            break;
+        }
+        /* One microphone, one earpiece: a held call owns no audio units.
+         * Hold is sendonly on the wire (RFC 3264 §8.4, what the server and
+         * PBXs expect), and baresip would keep the held call's source
+         * running for it — on iOS a second VoiceProcessingIO input is
+         * refused (kAudioUnitErr_MultipleVoiceProcessors, -66635), so the
+         * call answered next had no microphone (device, 2026-09-14). The
+         * audio hold flag stops start_source from re-creating the source
+         * when the hold re-INVITE is answered; audio_stop releases both
+         * units now, before the other call takes them (CallKit performs
+         * the hold before the answer, in one transaction). Resume clears
+         * the flag; the answer to the resume re-INVITE restarts audio. */
+        audio_set_hold(call_audio(call), op->flag);
+        if (op->flag)
+            audio_stop(call_audio(call));
+        err = call_hold(call, op->flag);
         break;
-    case OP_TRANSFER:
-        err = g.call ? call_transfer(g.call, op->aor) : ENOENT;
+    }
+    case OP_TRANSFER: {
+        struct call *call = find_call(op->id);
+        err = call ? call_transfer(call, op->aor) : ENOENT;
         break;
+    }
+    case OP_REJECT: {
+        struct call *call = find_call(op->id);
+        if (!call) {
+            err = ENOENT;
+            break;
+        }
+        /* call_hangup on an incoming call sends the final response; the
+         * CLOSED event follows from baresip like any other end. */
+        call_hangup(call, op->scode, op->aor);
+        bevent_call_emit(UA_EVENT_CALL_CLOSED, call, "rejected %u %s", op->scode, op->aor ? op->aor : "");
+        mem_deref(call);
+        break;
+    }
     case OP_HANGUP:
-        if (g.ua)
-            ua_hangup(g.ua, g.call, 0, NULL);
-        g.call = NULL;
+        if (!g.ua)
+            break;
+        if (op->id) {
+            struct call *call = find_call(op->id);
+            if (call)
+                ua_hangup(g.ua, call, 0, NULL);
+        } else {
+            /* Every call (teardown): ua_hangup takes one; repeat from the
+             * head until the list is empty. */
+            struct le *le;
+            while ((le = list_head(ua_calls(g.ua))) != NULL)
+                ua_hangup(g.ua, le->data, 0, NULL);
+        }
         break;
     case OP_TRANSP_RESET:
         /* libre keeps SIP TCP/TLS connections cached per destination and
@@ -287,18 +389,21 @@ static int do_op(struct op *op)
         break;
     case OP_UA_FREE:
         if (g.ua) {
+            struct le *le;
             info("cbaresip: ua_free: hanging up and freeing the user agent\n");
-            ua_hangup(g.ua, NULL, 0, NULL);
+            while ((le = list_head(ua_calls(g.ua))) != NULL)
+                ua_hangup(g.ua, le->data, 0, NULL);
             g.ua = mem_deref(g.ua);
             info("cbaresip: ua_free: done\n");
         }
         g.registered = false;
-        g.call = NULL;
         break;
     case OP_STOP:
         atomic_store(&g_stopping, 1);
         if (g.ua) {
-            ua_hangup(g.ua, NULL, 0, NULL);
+            struct le *le;
+            while ((le = list_head(ua_calls(g.ua))) != NULL)
+                ua_hangup(g.ua, le->data, 0, NULL);
             g.ua = mem_deref(g.ua);
         }
         bevent_unregister(event_handler);
@@ -325,7 +430,8 @@ static int do_op(struct op *op)
         test_play = mem_deref(test_play);
         break;
     case OP_MEDIA_STATS: {
-        struct audio *au = g.call ? call_audio(g.call) : NULL;
+        struct call *call = find_call(op->id);
+        struct audio *au = call ? call_audio(call) : NULL;
         struct stream *s = au ? audio_strm(au) : NULL;
         memset(&media_stats, 0, sizeof(media_stats));
         if (s) {
@@ -370,21 +476,21 @@ static bool on_loop_thread(void)
 }
 
 /* Run an op on the loop thread and wait (bounded) for its result. */
-static int run_op_flag(enum op_type type, const char *aor, bool flag)
+static int run_full(struct op *opp)
 {
     if (!g.running || !g.mq)
         return -ENOTCONN;
     if (atomic_load(&g_loop_dead))
         return -ENOTCONN; /* nobody will ever run it; do not wait 10 s */
 
-    struct op op = { .type = type, .aor = aor, .flag = flag };
+    struct op op = *opp;
     if (on_loop_thread())
         return -do_op(&op);
 
     pthread_mutex_init(&op.mu, NULL);
     pthread_cond_init(&op.cv, NULL);
 
-    int err = mqueue_push(g.mq, (int)type, &op);
+    int err = mqueue_push(g.mq, (int)op.type, &op);
     if (err)
         goto out;
 
@@ -408,9 +514,22 @@ out:
     return -err;
 }
 
+static int run_op_flag(enum op_type type, const char *aor, bool flag)
+{
+    struct op op = { .type = type, .aor = aor, .flag = flag };
+    return run_full(&op);
+}
+
 static int run_op(enum op_type type, const char *aor)
 {
     return run_op_flag(type, aor, false);
+}
+
+/* An op about one call. */
+static int run_call_op(enum op_type type, const char *id, const char *aor, bool flag)
+{
+    struct op op = { .type = type, .id = id, .aor = aor, .flag = flag };
+    return run_full(&op);
 }
 
 /* ---- lifecycle ------------------------------------------------------------- */
@@ -687,14 +806,17 @@ int cb_ua_register(void)
     return run_op(OP_UA_REGISTER, NULL);
 }
 
-int cb_answer(void)
+int cb_answer(const char *call_id)
 {
-    return run_op(OP_ANSWER, NULL);
+    return run_call_op(OP_ANSWER, call_id, NULL, false);
 }
 
-int cb_dial(const char *uri)
+int cb_dial(const char *uri, char *call_id_out, size_t call_id_len)
 {
-    return run_op(OP_DIAL, uri);
+    if (call_id_out && call_id_len)
+        call_id_out[0] = 0;
+    struct op op = { .type = OP_DIAL, .aor = uri, .out = call_id_out, .outlen = call_id_len };
+    return run_full(&op);
 }
 
 void cb_mute(bool muted)
@@ -702,19 +824,25 @@ void cb_mute(bool muted)
     run_op_flag(OP_MUTE, NULL, muted);
 }
 
-int cb_hold(bool hold)
+int cb_hold(const char *call_id, bool hold)
 {
-    return run_op_flag(OP_HOLD, NULL, hold);
+    return run_call_op(OP_HOLD, call_id, NULL, hold);
 }
 
-int cb_transfer(const char *uri)
+int cb_transfer(const char *call_id, const char *uri)
 {
-    return run_op(OP_TRANSFER, uri);
+    return run_call_op(OP_TRANSFER, call_id, uri, false);
 }
 
-void cb_hangup(void)
+void cb_hangup(const char *call_id)
 {
-    run_op(OP_HANGUP, NULL);
+    run_call_op(OP_HANGUP, call_id, NULL, false);
+}
+
+int cb_reject(const char *call_id, uint16_t status, const char *reason)
+{
+    struct op op = { .type = OP_REJECT, .id = call_id, .aor = reason, .scode = status };
+    return run_full(&op);
 }
 
 void cb_ua_free(void)
@@ -742,11 +870,11 @@ void cb_audio_stats(uint64_t *play_frames, uint64_t *rec_frames, uint64_t *play_
     audiosess_stats(play_frames, rec_frames, play_energy);
 }
 
-void cb_media_stats(cb_media_stats_t *out)
+void cb_media_stats(const char *call_id, cb_media_stats_t *out)
 {
     if (!out)
         return;
-    if (run_op(OP_MEDIA_STATS, NULL) != 0)
+    if (run_call_op(OP_MEDIA_STATS, call_id, NULL, false) != 0)
         memset(&media_stats, 0, sizeof(media_stats));
     *out = media_stats;
 }

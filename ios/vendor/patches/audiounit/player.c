@@ -255,8 +255,22 @@ int audiounit_player_alloc(struct auplay_st **stp, const struct auplay *ap,
 	}
 	else {
 		ret = player_setup(st);
-		if (ret)
-			goto out;
+		if (ret) {
+			/* The session can be live for one call and in flux at
+			 * the same instant — CallKit ending call A while we
+			 * answer call B ("End & Accept") deactivates and
+			 * reactivates it within ~150 ms, and CoreAudio
+			 * refuses a new unit in that window. Failing here
+			 * left baresip with no audio at all for the answered
+			 * call (2026-09-14: "start_player failed … [19]",
+			 * then UNITS DEAD, rtp tx=0). Defer instead: the
+			 * release path sets the unit up and starts it, which
+			 * it already knows how to do. */
+			warning("audiounit: player setup deferred after a "
+				"failed attempt: %d (%c%c%c%c)\n", ret,
+				ret>>24, ret>>16, ret>>8, ret);
+			ret = 0;
+		}
 	}
 
 	/* Never started here: all units start together, after the whole

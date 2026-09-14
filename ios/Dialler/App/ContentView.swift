@@ -39,10 +39,25 @@ struct InCallView: View {
             } else {
                 Text(call.status).font(.title2).foregroundStyle(.secondary)
             }
+            if let held = model.heldCall {
+                // Call waiting: the other call is on hold. Switching between
+                // the two is the system's job — iOS 26 shows its own Swap
+                // banner over the app while a call is held — so this screen
+                // only names the held party. Ending the held call is swap,
+                // then End, as in the Phone app.
+                Label("\(held.title) on hold", systemImage: "pause.circle")
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            }
             Spacer()
             HStack(spacing: 28) {
                 CallButton(title: call.muted ? "Unmute" : "Mute", system: call.muted ? "mic.slash.fill" : "mic.fill", active: call.muted) { model.toggleMute() }
-                CallButton(title: call.held ? "Resume" : "Hold", system: call.held ? "play.fill" : "pause.fill", active: call.held) { model.toggleHold() }
+                if model.heldCall == nil {
+                    CallButton(title: call.held ? "Resume" : "Hold", system: call.held ? "play.fill" : "pause.fill", active: call.held) { model.toggleHold() }
+                } else if !Self.systemSwapsCalls {
+                    // iOS 17/18 show no swap banner over a foreground app:
+                    // the Hold button becomes Swap, as on the Phone app.
+                    CallButton(title: "Swap", system: "arrow.left.arrow.right", active: false) { model.swapCalls() }
+                }
                 CallButton(title: "Speaker", system: "speaker.wave.2.fill", active: call.speaker) { model.toggleSpeaker() }
                 CallButton(title: "Transfer", system: "arrow.turn.up.right", active: false) { showTransfer = true }
                     .disabled(call.connectedAt == nil)
@@ -67,6 +82,12 @@ struct InCallView: View {
         }
         .padding()
         .interactiveDismissDisabled()
+    }
+
+    /// iOS 26 swaps a held and an active call from its own banner, shown over
+    /// the app whenever one of its calls is held (device, 2026-09-14).
+    static var systemSwapsCalls: Bool {
+        if #available(iOS 26, *) { return true } else { return false }
     }
 
     static func duration(from start: Date, to now: Date) -> String {
@@ -240,6 +261,11 @@ struct SettingsView: View {
                     TextField("Device ID", text: $model.deviceID).textInputAutocapitalization(.never).autocorrectionDisabled()
                     SecureField("Token", text: $model.token)
                     Text("Issue with: POST /v1/admin/devices on the server (see harness/provision.sh).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Calls") {
+                    Toggle("Call waiting", isOn: $model.callWaiting)
+                    Text("On: a second caller rings while you are on a call (Hold & Accept, End & Accept or Decline). Off: a second caller hears busy.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Local Push Connectivity (device only)") {

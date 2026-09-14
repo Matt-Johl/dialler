@@ -148,7 +148,17 @@
       "Bash(grep -n 'PASS\\\\|FAIL\\\\|EXIT\\\\|audio:' __TRACKED_VAR__/trunk-narrow-xfer.log)",
       "Bash(awk '$1>=\"2026-09-13T15:22:10\" && $1<=\"2026-09-13T15:22:27.5\"' 20260913T152237.886Z-app-log-manual.log)",
       "Bash(awk '/^int uag_reset_transp/{p=1} p{print; n++} n>55{exit}' ios/vendor/src/baresip/src/ua.c)",
-      "Bash(grep -n -i 'mediaenc\\\\|srtp\\\\|bridged\\\\|callee answered\\\\|RTP\\\\b.*recv\\\\|no RTP\\\\|codec=\\\\|Set audio\\\\|menc\\\\|ERROR\\\\|WARN' __TRACKED_VAR__/f2-sim.log)"
+      "Bash(grep -n -i 'mediaenc\\\\|srtp\\\\|bridged\\\\|callee answered\\\\|RTP\\\\b.*recv\\\\|no RTP\\\\|codec=\\\\|Set audio\\\\|menc\\\\|ERROR\\\\|WARN' __TRACKED_VAR__/f2-sim.log)",
+      "Bash(python3 -)",
+      "Bash(rm -rf build)",
+      "Bash(./run.sh BAEFC001-EDA5-47C4-9146-AC3BA4F8F1C4 ios265-out-2x1)",
+      "Bash(sed -i '' 's|codesign --force --sign - --entitlements \"$D/ent.plist\" \"$APP\"|codesign --force --sign - \"$APP\"|' run.sh)",
+      "Bash(awk '/^-\\\\[TUCallCenter isHoldAndAnswerAllowed\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter [a-zA-Z]+\\\\]:/&&!/isHoldAndAnswerAllowed\\\\]/{p=0} p')",
+      "Bash(awk '/^___38-\\\\[TUCallCenter isHoldAndAnswerAllowed\\\\]_block_invoke:/{p=1} p&&/^[-_].*:$/&&!/isHoldAndAnswerAllowed\\\\]_block_invoke:/{p=0} p')",
+      "Bash(awk '/^-\\\\[TUCallCenter isEndAndAnswerAllowed\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter [a-zA-Z]+\\\\]:/&&!/isEndAndAnswerAllowed\\\\]/{p=0} p')",
+      "Bash(awk '/^-\\\\[TUCallCenter isHoldAndAnswerAllowed\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter canGroupCall/{p=0} p')",
+      "Bash(awk '{ $1=substr\\($1,length\\($1\\)-5\\); print }')",
+      "Bash(awk '/^-\\\\[TUCallCenter holdAndAnswerIfNeeded:\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter [a-zA-Z:]+\\\\]:/&&!/holdAndAnswerIfNeeded/{p=0} p')"
     ],
     "additionalDirectories": [
       "/private/tmp/claude-501/-Users-matt-Code-Cursor-Dialler/a0dcea92-cec8-4661-83c4-a2deaca5d36a/tasks"

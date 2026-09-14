@@ -139,7 +139,11 @@ if [ -n "${TRANSFER:-}" ]; then SOURCE=""; fi   # silent phone, so any audio pho
 if [ -n "${DECLINE:-}" ]; then SOURCE=""; fi
 # dev-s / 203: the simulator's own enrolment (harness/provision.sh), so a
 # real phone registered as dev-a / 201 to this server never takes its calls.
-xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}" > "$OUT" 2>&1 &
+# CALLWAITING=1: phone-b calls first; once that call is up, phone-a (211)
+# calls too. The simulated phone takes it with Hold & Accept, swaps back,
+# and ends both; asserted in the sim (RTP per active call, two stack ids)
+# and on phone-a's recording (it heard the sim while it was the active call).
+xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}${CALLWAITING:+callwaiting}" > "$OUT" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
 
@@ -172,10 +176,11 @@ if [ -n "${RESTART_SERVER:-}" ]; then
 fi
 
 [ -n "${OUTBOUND:-}" ] || echo "== phone-b (212) dials 203 (the simulator)"
-ctl() {
+ctl_to() { # phone json
   docker run --rm --network "$NET" alpine:3.20 sh -c \
-    "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
+    "p='$2'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 $1 4444 >/dev/null"
 }
+ctl() { ctl_to baresip-b "$1"; }
 n=1
 while :; do
   if [ -n "${OUTBOUND:-}" ]; then
@@ -183,12 +188,29 @@ while :; do
   else
     ctl '{"command":"dial","params":"203@dialler"}'
   fi
+  if [ -n "${CALLWAITING:-}" ]; then
+    # The second caller: phone-a dials once the first call is up.
+    if [ "$SERVER" = native ]; then
+      BARESIP_A_OUTBOUND="$HOST:5061" $C up -d --no-deps --force-recreate baresip-a >/dev/null 2>&1
+    else
+      $C up -d --no-deps baresip-a >/dev/null 2>&1
+    fi
+    i=0
+    until grep -q 'sim: in call' "$OUT"; do
+      i=$((i+1)); [ $i -le 30 ] || { echo "FAIL: the first call never established"; break; }
+      sleep 1
+    done
+    sleep 3 # past the sim's 2 s verdict, so it is ready for the second ring
+    echo "== phone-a (211) dials 203 too (call waiting)"
+    ctl_to baresip-a '{"command":"dial","params":"203@dialler"}'
+  fi
   i=0
   until grep -q "sim: call $n: \|sim: FAIL" "$OUT"; do
     i=$((i+1)); [ $i -le 45 ] || break
     sleep 1
   done
   ctl '{"command":"hangup"}' 2>/dev/null || true
+  [ -n "${CALLWAITING:-}" ] && { ctl_to baresip-a '{"command":"hangup"}' 2>/dev/null || true; }
   [ "$n" -lt "$CALLS" ] || break
   n=$((n+1))
   # Wait for the simulated phone to report the previous call ended.
@@ -214,6 +236,13 @@ if [ -n "${TRANSFER:-}" ]; then
   echo "== transfer: did phone-b hear the echo after being transferred?"
   sleep 3
   python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-212.wav" || { echo "FAIL: phone-b heard nothing after the transfer"; exit 1; }
+fi
+if [ -n "${CALLWAITING:-}" ]; then
+  echo "== call waiting: did phone-a hear the sim while it was the active call?"
+  grep -q 'sim: callwaiting: PASS' "$OUT" || { echo "FAIL: the sim did not pass the call-waiting sequence"; exit 1; }
+  sleep 3
+  python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-211.wav" || { echo "FAIL: phone-a heard nothing"; exit 1; }
+  echo "   PASS: second caller was taken with Hold & Accept and heard the phone"
 fi
 if [ -n "${DECLINE:-}" ]; then
   echo "== decline: what was the caller (phone-b) told?"

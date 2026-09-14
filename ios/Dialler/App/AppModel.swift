@@ -52,10 +52,47 @@ final class AppModel: ObservableObject {
             return held ? "On hold" : "Connected"
         }
     }
-    @Published private(set) var activeCall: ActiveCall?
+    /// Every call the in-call screen shows (answered, or outgoing and
+    /// connecting), oldest first. With call waiting there are up to two:
+    /// one active and one held.
+    @Published private(set) var calls: [ActiveCall] = []
+    /// The call the screen is about: the one not on hold, else (all held)
+    /// the first, so the screen stays up for a single held call.
+    var activeCall: ActiveCall? { calls.first { !$0.held } ?? calls.first }
+    /// The other call, on hold, while two are up — shown as a banner with
+    /// Swap and End.
+    var heldCall: ActiveCall? {
+        guard let active = activeCall else { return nil }
+        return calls.first { $0.id != active.id && $0.held }
+    }
+
+    /// Call waiting (Settings): a second incoming call rings over the
+    /// current one (Hold & Accept / End & Accept / Decline); off, a second
+    /// caller hears busy at once. Persisted; default on.
+    @Published var callWaiting: Bool {
+        didSet {
+            controller.callWaitingEnabled = callWaiting
+            UserDefaults.standard.set(callWaiting, forKey: "callWaiting")
+        }
+    }
+
+    private func upsertCall(_ id: String, outgoing: Bool, connectedAt: Date?) {
+        let title = controller.activeCalls.first { $0.wake.callID == id }.map { self.title(for: $0) } ?? "Call"
+        if let i = calls.firstIndex(where: { $0.id == id }) {
+            calls[i].connectedAt = connectedAt ?? calls[i].connectedAt
+            calls[i].title = title
+        } else {
+            var c = ActiveCall(id: id, title: title, outgoing: outgoing, connectedAt: connectedAt)
+            c.muted = calls.first?.muted ?? false // one microphone
+            c.speaker = calls.first?.speaker ?? false // one route
+            calls.append(c)
+        }
+    }
 
     private let store: AppConfigStore = AppGroupConfigStore(appGroup: DiallerIDs.appGroup)
     private let callKit = CallKitBridge()
+    /// Call-progress tones into the call's audio session (plan Phase J).
+    private lazy var tones = TonePlayer(log: { [weak self] m in Task { @MainActor in self?.append(m) } })
     private let engine: CallEngine
     @Published private(set) var engineState = "no engine"
     private lazy var controller = CallController(ui: callKit, engine: engine, log: { [weak self] m in
@@ -88,6 +125,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var diagnosticsStatus = ""
 
     init() {
+        callWaiting = UserDefaults.standard.object(forKey: "callWaiting") as? Bool ?? true
         Breadcrumb.drop("AppModel: creating the SIP engine")
         #if canImport(DiallerEngine)
         let baresip = BaresipCallEngine(acceptAnyCertificate: true)
@@ -114,11 +152,23 @@ final class AppModel: ObservableObject {
         }
         MXMetricManager.shared.add(diagnostics)
         Task { await sendDiagnostics(reason: "launch") }
+        controller.callWaitingEnabled = callWaiting
+        // A second call rings without a ringtone (iOS suppresses it) and
+        // without a tone of its own; the beep is ours to play, into the ear
+        // of the person already on a call.
+        callKit.onCallWaiting = { [weak self] waiting in
+            Task { @MainActor in
+                guard let self else { return }
+                if waiting { self.tones.start(CallTones.callWaiting) } else { self.tones.stop() }
+            }
+        }
         callKit.onAnswer = { [weak self] id in
             guard let self else { return }
+            // Answering a second call holds the first (the controller tells
+            // the engine; CallKit's Hold & Accept sends the hold action too).
             self.controller.userAnswered(callID: id)
-            let title = self.controller.activeCalls.first { $0.wake.callID == id }.map { self.title(for: $0) } ?? "Call"
-            self.activeCall = ActiveCall(id: id, title: title, outgoing: false, connectedAt: Date())
+            for i in self.calls.indices where self.calls[i].id != id { self.calls[i].held = true }
+            self.upsertCall(id, outgoing: false, connectedAt: Date())
         }
         callKit.onEnd = { [weak self] id in
             guard let self else { return }
@@ -128,22 +178,21 @@ final class AppModel: ObservableObject {
         callKit.onStart = { [weak self] id in
             guard let self else { return }
             self.controller.userStarted(callID: id)
-            let title = self.controller.activeCalls.first { $0.wake.callID == id }.map { self.title(for: $0) } ?? "Call"
-            self.activeCall = ActiveCall(id: id, title: title, outgoing: true, connectedAt: nil)
+            self.upsertCall(id, outgoing: true, connectedAt: nil)
         }
         callKit.onEnded = { [weak self] id in self?.callEnded(id) }
         callKit.onStartFailed = { [weak self] id in
             self?.controller.startFailed(callID: id)
-            if self?.activeCall?.id == id { self?.activeCall = nil }
+            self?.calls.removeAll { $0.id == id }
         }
         callKit.onConnected = { [weak self] id in
-            guard let self, self.activeCall?.id == id else { return }
-            self.activeCall?.connectedAt = Date()
+            guard let self, let i = self.calls.firstIndex(where: { $0.id == id }) else { return }
+            self.calls[i].connectedAt = Date()
         }
         callKit.onMute = { [weak self] id, muted in
             guard let self else { return }
             self.controller.setMuted(muted)
-            if self.activeCall?.id == id { self.activeCall?.muted = muted }
+            for i in self.calls.indices { self.calls[i].muted = muted } // one microphone
         }
         controller.onTransferFailed = { [weak self] reason in Task { @MainActor in self?.append("transfer refused: \(reason)") } }
         // Show the directory's friendly name for a known incoming caller
@@ -155,7 +204,7 @@ final class AppModel: ObservableObject {
         callKit.onHold = { [weak self] id, held in
             guard let self else { return }
             self.controller.setHeld(callID: id, held)
-            if self.activeCall?.id == id { self.activeCall?.held = held }
+            if let i = self.calls.firstIndex(where: { $0.id == id }) { self.calls[i].held = held }
         }
         callKit.onAudioActivated = { [weak self] in self?.engine.audioSessionActivated() }
         callKit.onAudioDeactivated = { [weak self] in self?.engine.audioSessionDeactivated() }
@@ -203,6 +252,15 @@ final class AppModel: ObservableObject {
         callKit.requestEnd(callID: id)
     }
 
+    /// Swap the active and the held call: one CallKit transaction, hold the
+    /// active and resume the held; the hold actions come back through
+    /// `onHold` and the screen follows. On iOS 26 the system's own swap
+    /// banner does this; the in-call screen offers it only on older iOS.
+    func swapCalls() {
+        guard let active = activeCall, let held = heldCall else { return }
+        callKit.requestSwap(active: active.id, held: held.id)
+    }
+
     func toggleMute() {
         guard let call = activeCall else { return }
         callKit.requestMute(callID: call.id, muted: !call.muted)
@@ -221,11 +279,11 @@ final class AppModel: ObservableObject {
     }
 
     func toggleSpeaker() {
-        guard var call = activeCall else { return }
-        call.speaker.toggle()
+        guard let call = activeCall else { return }
+        let speaker = !call.speaker
         do {
-            try AVAudioSession.sharedInstance().overrideOutputAudioPort(call.speaker ? .speaker : .none)
-            activeCall = call
+            try AVAudioSession.sharedInstance().overrideOutputAudioPort(speaker ? .speaker : .none)
+            for i in calls.indices { calls[i].speaker = speaker } // one route
         } catch {
             append("speaker toggle failed: \(error.localizedDescription)")
         }
@@ -235,7 +293,7 @@ final class AppModel: ObservableObject {
     /// hangup, failure) — the bridge reports it through the controller's
     /// `end`, which calls this.
     func callEnded(_ id: String) {
-        if activeCall?.id == id { activeCall = nil }
+        calls.removeAll { $0.id == id }
         // The last call is over and we are not on screen: back to the
         // background rule (no session; the extension covers wakes).
         if controller.activeCalls.isEmpty, UIApplication.shared.applicationState != .active {
@@ -400,7 +458,8 @@ final class AppModel: ObservableObject {
         // Every PushKit delivery must be met with a CallKit report, even when
         // the app's own socket already rang this call (iOS 13+ contract).
         let name = nameIndex.name(forURI: wake.from.uri) ?? (wake.from.displayName?.isEmpty == false ? wake.from.displayName! : CallController.numberPart(of: wake.from.uri))
-        switch controller.handle(wake: wake) {
+        let outcome = controller.handle(wake: wake)
+        switch outcome {
         case .rang:
             holdSessionWhileCallTracked()
         case .duplicate(let id):
@@ -414,8 +473,11 @@ final class AppModel: ObservableObject {
                 append("wake \(wake.callID): CallKit lost call \(id); reporting it again")
                 callKit.reportIncoming(callID: id, displayName: name, handle: wake.from.uri) { _ in }
             }
-        case .expired:
-            append("expired wake via extension; reporting and ending \(wake.callID) to satisfy PushKit")
+        case .expired, .refused:
+            // PushKit's contract: every push is met with a report. A wake
+            // that is past its expiry, or refused (call waiting off, or two
+            // calls already), is reported and ended at once.
+            append("\(wake.callID): wake via extension \(outcome == .expired ? "expired" : "refused"); reporting and ending it to satisfy PushKit")
             callKit.reportIncoming(callID: wake.callID, displayName: name, handle: wake.from.uri) { [weak self] err in
                 if err == nil { self?.callKit.end(callID: wake.callID, reason: .unanswered) }
             }
@@ -533,23 +595,24 @@ final class AppModel: ObservableObject {
 /// Fallback engine with no SIP stack; only logs. Kept for the simulator when
 /// the baresip XCFrameworks have not been built.
 final class LoggingCallEngine: CallEngine {
-    var onIncomingCall: ((String, String?) -> Void)?
-    var onCallEnded: ((String) -> Void)?
-    var onOutgoingRinging: (() -> Void)?
-    var onCallEstablished: (() -> Void)?
-    var onTransferFailed: ((String) -> Void)?
+    var onIncomingCall: ((String, String, String?, String?) -> Void)?
+    var onCallEnded: ((String, String) -> Void)?
+    var onOutgoingRinging: ((String) -> Void)?
+    var onCallEstablished: ((String) -> Void)?
+    var onTransferFailed: ((String, String) -> Void)?
     var log: (String) -> Void = { _ in }
     func register(user: String, sip: SIPTarget) {
         log("engine: would REGISTER \(user) to \(sip.host):\(sip.port)/\(sip.transport)")
     }
-    func prepareForIncomingCall(callID: String, user: String, sip: SIPTarget) {
-        log("engine: would answer call \(callID) as \(user) via \(sip.host):\(sip.port)/\(sip.transport)")
+    func answer(engineCallID: String) {
+        log("engine: would answer \(engineCallID)")
     }
-    func dial(callID: String, to target: String) {
+    func dial(callID: String, to target: String) -> String? {
         log("engine: would dial \(target) for \(callID)")
+        return "log-\(callID)"
     }
-    func hangup(callID: String) {
-        log("engine: hangup \(callID)")
+    func hangup(engineCallID: String) {
+        log("engine: hangup \(engineCallID)")
     }
 }
 

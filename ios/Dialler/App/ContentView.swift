@@ -13,9 +13,15 @@ struct ContentView: View {
         }
         // Ringing is CallKit's UI alone (banner, lock screen, Recents). While
         // a call is ACTIVE and the app is in front, iOS shows only the green
-        // status indicator, so the in-call controls are ours.
-        .fullScreenCover(item: Binding(get: { model.activeCall }, set: { _ in })) { call in
-            InCallView(call: call)
+        // status indicator, so the in-call controls are ours. The cover
+        // stands for "in a call", not for one particular call: keyed on the
+        // active call's identity it was dismissed and presented again every
+        // time the active call changed (accepting a second call, a swap, the
+        // resume after a hang-up) — the keypad flashed through and iOS's own
+        // banner blinked with each pass (device, 2026-09-14). The screen
+        // inside follows `activeCall` and re-renders in place.
+        .fullScreenCover(isPresented: Binding(get: { !model.calls.isEmpty }, set: { _ in })) {
+            InCallView()
         }
     }
 }
@@ -24,11 +30,17 @@ struct ContentView: View {
 
 struct InCallView: View {
     @EnvironmentObject private var model: AppModel
-    let call: AppModel.ActiveCall
     @State private var transferTo = ""
     @State private var showTransfer = false
 
     var body: some View {
+        // `activeCall` is nil only while the cover animates away after the
+        // last call ended; the screen keeps its frame and shows nothing.
+        if let call = model.activeCall { content(for: call) }
+    }
+
+    @ViewBuilder
+    private func content(for call: AppModel.ActiveCall) -> some View {
         VStack(spacing: 32) {
             Spacer()
             Text(call.title).font(.largeTitle.weight(.semibold)).multilineTextAlignment(.center)

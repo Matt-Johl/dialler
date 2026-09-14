@@ -59,8 +59,8 @@ final class AppModel: ObservableObject {
     /// The call the screen is about: the one not on hold, else (all held)
     /// the first, so the screen stays up for a single held call.
     var activeCall: ActiveCall? { calls.first { !$0.held } ?? calls.first }
-    /// The other call, on hold, while two are up — shown as a banner with
-    /// Swap and End.
+    /// The other call, on hold, while two are up — named under the active
+    /// party on the in-call screen (switching is the system's control).
     var heldCall: ActiveCall? {
         guard let active = activeCall else { return nil }
         return calls.first { $0.id != active.id && $0.held }

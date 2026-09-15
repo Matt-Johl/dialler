@@ -222,7 +222,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.appBecameActive() }
         }
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.session?.setActive(false) }
+            Task { @MainActor in self?.appEnteredBackground() }
         }
         #if canImport(DiallerEngine)
         baresip.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
@@ -405,6 +405,26 @@ final class AppModel: ObservableObject {
         session?.setActive(true)
     }
 
+    /// Backgrounded: normally stop retrying the gateway (the extension
+    /// covers wakes while iOS suspends us). NOT while a call is tracked.
+    /// iOS backgrounds this app every time it puts its own call screen in
+    /// front — which it does for every second incoming call — and
+    /// `setActive(false)` cancels the reconnect `holdSessionWhileCallTracked`
+    /// had just asked for, so the session that carries `wake_cancel` stayed
+    /// down for the life of the call. On 2026-09-14 (10:43 and 10:52) the
+    /// server marked the device offline mid-call within a fraction of a
+    /// second of the app resigning active, and the caller's hangup had to go
+    /// the long way round. CallKit keeps the process alive while a call is
+    /// tracked, so retrying costs nothing there.
+    private func appEnteredBackground() {
+        let tracked = controller.activeCalls.count
+        guard tracked == 0 else {
+            append("gateway: staying connected in the background (\(tracked) call(s) tracked)")
+            return
+        }
+        session?.setActive(false)
+    }
+
     private func handle(_ ev: SignalEvent) async {
         switch ev {
         case .waiting(let reason):
@@ -441,6 +461,11 @@ final class AppModel: ObservableObject {
             append("gateway error \(e.code.rawValue): \(e.message ?? "")")
             if e.fatal { status = "rejected: \(e.code.rawValue)" }
         case .disconnected(let reason):
+            // Logged, not just shown: a session that goes down mid-call left
+            // no trace in the diagnostics at all, so an incident could only
+            // be read from the server's side (2026-09-14). The call count
+            // says whether the drop happened while calls were up.
+            append("gateway: session down (\(reason)); \(controller.activeCalls.count) call(s) tracked, app \(UIApplication.shared.applicationState == .active ? "active" : "background")")
             status = "disconnected (\(reason))"
             sessionID = ""
             sessionDropped = true

@@ -192,6 +192,30 @@ public final class BaresipCallEngine: CallEngine {
         log("engine: hung up every call")
     }
 
+    /// baresip's close reason, in words a reader will not misdiagnose.
+    ///
+    /// libre answers a received BYE with 200 OK and then terminates the
+    /// session with `ECONNRESET` (`sipsess/listen.c` `bye_handler`,
+    /// `accept.c` for a CANCEL), which baresip renders through `strerror`
+    /// as "Connection reset by peer". It reads like a dropped TCP
+    /// connection and is nothing of the kind: it is the ordinary far-end
+    /// hangup. Two days were spent chasing it as a network fault
+    /// (2026-09-14/15) before the libre source settled it, so the log now
+    /// says which it is. The local user's hangup arrives as "Connection
+    /// reset by user" (`call_hangup`), equally misleading, so it is named
+    /// too. Anything else is passed through untouched.
+    /// The errno suffix baresip sometimes appends ("… [54]") is kept, so a
+    /// reader can still see the raw text this was translated from.
+    static func closeReason(_ text: String) -> String {
+        if text.hasPrefix("Connection reset by peer") {
+            return "far end hung up (BYE) [libre: \(text)]"
+        }
+        if text.hasPrefix("Connection reset by user") {
+            return "hung up here [libre: \(text)]"
+        }
+        return text
+    }
+
     /// "202" → "sip:202@dialler"; "202@dialler" → "sip:202@dialler";
     /// "sip:…" unchanged. Digits typed on a keypad take the same route.
     static func dialURI(_ target: String, domain: String) -> String {
@@ -587,7 +611,7 @@ public final class BaresipCallEngine: CallEngine {
             if active { verifyAudioFlow() }
             if wasOutgoing { onCallEstablished?(callID) }
         case CB_EVENT_CALL_CLOSED:
-            log("engine: call \(callID) closed (\(text))")
+            log("engine: call \(callID) closed (\(Self.closeReason(text)))")
             let last: Bool = lock.withLock {
                 calls[callID] = nil
                 if calls.isEmpty { flowCheckScheduled = false }

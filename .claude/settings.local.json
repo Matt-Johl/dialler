@@ -158,7 +158,9 @@
       "Bash(awk '/^-\\\\[TUCallCenter isEndAndAnswerAllowed\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter [a-zA-Z]+\\\\]:/&&!/isEndAndAnswerAllowed\\\\]/{p=0} p')",
       "Bash(awk '/^-\\\\[TUCallCenter isHoldAndAnswerAllowed\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter canGroupCall/{p=0} p')",
       "Bash(awk '{ $1=substr\\($1,length\\($1\\)-5\\); print }')",
-      "Bash(awk '/^-\\\\[TUCallCenter holdAndAnswerIfNeeded:\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter [a-zA-Z:]+\\\\]:/&&!/holdAndAnswerIfNeeded/{p=0} p')"
+      "Bash(awk '/^-\\\\[TUCallCenter holdAndAnswerIfNeeded:\\\\]:/{p=1} p&&/^-\\\\[TUCallCenter [a-zA-Z:]+\\\\]:/&&!/holdAndAnswerIfNeeded/{p=0} p')",
+      "Bash(grep -o \"hold=1 grp=0 ungrp=0 DTMF=0.\\\\{0,220\\\\}\")",
+      "Bash(awk '/^## Phase J/,/^## Follow-ups/' /Users/matt/.claude/plans/is-it-wise-to-lucky-meerkat.md)"
     ],
     "additionalDirectories": [
       "/private/tmp/claude-501/-Users-matt-Code-Cursor-Dialler/a0dcea92-cec8-4661-83c4-a2deaca5d36a/tasks"

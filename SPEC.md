@@ -280,12 +280,20 @@ are already implemented — do not remove them because remote reach is deferred.
    is no "Hold & Accept" label any more — and Accept runs
    `holdAndAnswerIfNeeded`: a hold for the current call and the answer
    for the new one, delivered to the app as `CXSetHeldCallAction` +
-   `CXAnswerCallAction` (the same pair `make sim-call-cw` drives); "End &
-   Accept" appears only when holding is not allowed. The app was
-   reporting everything correctly on the second and third runs; the
-   missing label was iOS 26's design, not a missing capability, and the
+   `CXAnswerCallAction` (the same pair `make sim-call-cw` drives).
+   **Confirmed on the device, 2026-09-15**, by a `callservicesd` console
+   capture during a second incoming call: the system logged
+   `isHoldAndAnswerAllowed: callsSupportHoldAndAnswer: YES` with every
+   disqualifier (CDMA mix, hosted mix, RTT/TTY, a call still dialling,
+   screening, SharePlay) `NO`, and on Accept it logged `Performing hold
+   active calls and answer ringing call`. So the app satisfies every
+   condition iOS checks and iOS performs hold-and-accept; only the button
+   label differs, and that choice is made inside Apple's in-call UI app
+   (`com.apple.InCallService`, launched for the call in the same log),
+   which ships on devices only and logs nothing about its buttons. The
    two "advertise as holdable" work-arounds tried on the way were
-   reverted. *A held call owns no audio units.* Hold stays `sendonly` on
+   reverted; nothing further is configurable from the app, and the only
+   remaining route to the labelled buttons is a Feedback report to Apple. *A held call owns no audio units.* Hold stays `sendonly` on
    the wire, but the shim stops the held call's audio at once and sets
    baresip's audio-hold flag so the hold re-INVITE's answer does not
    re-create its source: iOS refuses a second VoiceProcessingIO input
@@ -961,6 +969,38 @@ it is neither linked nor redistributed.
    nesessionmanager "failed to report incoming call to CallKit … Code=4099
    com.apple.callkit.networkextension.messagecontrollerhost was
    invalidated" — callservicesd still launches the app; treated as noise.
+
+10. **CLOSED — "a ringing call dies after a few seconds with `Connection
+    reset by peer [54]`" (2026-09-14, 10:43 and 10:52) was NOT a fault.**
+    libre answers a received BYE with 200 OK and then terminates the
+    session with `ECONNRESET` (`re/src/sipsess/listen.c` `bye_handler`;
+    `accept.c` does the same for a CANCEL), which baresip renders through
+    `strerror` as "Connection reset by peer". It is the ordinary far-end
+    hangup wearing the name of a network failure, and the evidence was in
+    the same logs all along: the extension recorded `wake cancelled …
+    caller_hangup` in the same tenth of a second, and on 2026-09-15 the
+    server logged `call ended` for both calls with no error at all while
+    the app's SIP connection stayed up for another ten seconds. Two days
+    were spent chasing it. `BaresipCallEngine.closeReason` now translates
+    both misleading strings ("far end hung up (BYE)", "hung up here") and
+    keeps the raw text in brackets; `StackConfigTests` pins it. **The
+    investigation did turn up one real defect,** fixed 2026-09-15 and
+    worth keeping on its own merits: the app is
+    backgrounded whenever iOS puts its own call screen in front, which it
+    does for every second incoming call, and the background handler set
+    the gateway session inactive unconditionally — cancelling the
+    reconnect `holdSessionWhileCallTracked` had just requested. The server
+    marked the device offline within a fraction of a second of the app
+    resigning active, and the wake and the caller's hangup both had to go
+    through the push extension. It is the same class as the ring-after-
+    hangup bug the hold was added to prevent, so the session is now held
+    while any call is tracked. A gateway drop also logged nothing at all,
+    leaving such an incident legible only from the server's side; it now
+    logs the reason, the tracked call count and the app state.
+    **Lesson for the next incident:** align the app log against
+    `data/logs/dev-server.log` by *events*, never by timestamps — the
+    phone's clock ran 37 s ahead of the Mac's on 2026-09-15, enough to
+    invert the apparent order of cause and effect.
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

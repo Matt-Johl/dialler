@@ -79,4 +79,18 @@ final class StackConfigTests: XCTestCase {
         let modules = c.split(separator: "\n").filter { $0.hasPrefix("module ") }.count
         XCTAssertEqual(modules, 9, "audiounit, aufile, opus, g722, g711, ice, srtp, auconv, auresamp")
     }
+
+    /// libre terminates a session with ECONNRESET when the far end sends a
+    /// BYE, so baresip's close text reads like a network failure. The log
+    /// must not invite that misreading again (2026-09-15).
+    func testCloseReasonsAreNamedNotLeftAsErrno() {
+        XCTAssertTrue(BaresipCallEngine.closeReason("Connection reset by peer [54]").hasPrefix("far end hung up (BYE)"))
+        XCTAssertTrue(BaresipCallEngine.closeReason("Connection reset by peer").hasPrefix("far end hung up (BYE)"))
+        XCTAssertTrue(BaresipCallEngine.closeReason("Connection reset by user").hasPrefix("hung up here"))
+        // The raw text stays visible for anyone reading an old log beside a new one.
+        XCTAssertTrue(BaresipCallEngine.closeReason("Connection reset by peer [54]").contains("Connection reset by peer [54]"))
+        // A real failure is passed through untouched.
+        XCTAssertEqual(BaresipCallEngine.closeReason("486 Busy Here"), "486 Busy Here")
+        XCTAssertEqual(BaresipCallEngine.closeReason("Connection timed out [60]"), "Connection timed out [60]")
+    }
 }

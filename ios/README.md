@@ -264,6 +264,25 @@ files, and the device console for the same minute
   Console signatures: `CSDVoIPProcessAssertion` granted, then the kill
   ~7 s later with no `handleExtensionWake` in between. Fixed 2026-09-11
   (`LocalPushDelegate`); SPEC §9 item 7.
+- **`closed (Connection reset by peer)` is NOT a network failure.** libre
+  answers a received BYE with 200 OK and then terminates the session with
+  `ECONNRESET`, which baresip prints through `strerror`; "Connection reset
+  by user" is the local hangup. Both are ordinary. Logs written from
+  2026-09-15 say `far end hung up (BYE)` / `hung up here` and keep the raw
+  text in brackets, but older logs, and baresip's own lines, still carry
+  the bare errno. Two days went into chasing it (SPEC §9 item 10); check
+  the extension log for `wake cancelled … caller_hangup` at the same
+  moment before suspecting anything else.
+- **`gateway: session down (<reason>); N call(s) tracked, app <state>`** —
+  new on 2026-09-15, and before that a gateway drop left no trace at all.
+  With `N` greater than zero the session that carries `wake_cancel` is
+  gone while calls are up, which is how a phone ends up ringing after the
+  caller has given up. Its counterpart, `gateway: staying connected in the
+  background (N call(s) tracked)`, says the app correctly refused to let go.
+- **Cross-log timing.** Align the app log against
+  `data/logs/dev-server.log` by *events* (a call id appears in both), never
+  by timestamps: on 2026-09-15 the phone's clock ran 37 s ahead of the
+  Mac's, enough to make an effect look like a cause.
 - **`Dialler.cpu_resource_fatal-…ips`** ("cpu usage", 99 % over ~48 s,
   process killed, heaviest stack the loop thread inside `re_main`) — the
   SIP engine's poll loop spinning on `EBADF`, i.e. its kqueue descriptor

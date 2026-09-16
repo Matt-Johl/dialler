@@ -46,6 +46,12 @@ upstream release named in `modules.txt`; re-apply when bumping.
   loss and reordering reach the far end's jitter buffer and concealment
   (plan Phase D; before, a lost packet became a silent hole in a
   seamlessly numbered stream that no decoder could conceal).
+- `media/media_session.go` (`NegotiatedMode`) — exposes the direction a
+  session settled on (`s.mode`, which the reader and writer already gate on
+  but nothing could read). Hold has no signal of its own: the app offers
+  `sendonly`, we answer `recvonly`, and that negotiated direction is how the
+  B2BUA knows to start hold music toward the other leg (plan Phase K,
+  SPEC §4.4 rule 8b).
 - `media/media_session.go` (`media.ListenConfig`) — QoS: RTP/RTCP sockets
   are opened through a package-level `net.ListenConfig` so the B2BUA can
   mark them DSCP EF from its Control hook (plan Phase E; std lib only).

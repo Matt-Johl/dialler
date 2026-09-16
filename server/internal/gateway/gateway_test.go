@@ -118,6 +118,34 @@ func (c *client) expectClosed() {
 	}
 }
 
+// expectErrorAfterPings reads past the server's heartbeats to the error.
+func (c *client) expectErrorAfterPings(code wire.ErrorCode) {
+	c.t.Helper()
+	for {
+		e, err := c.recv()
+		if err != nil {
+			c.t.Fatalf("expected error %s, got %v", code, err)
+		}
+		if e.Type == wire.TypePing {
+			continue // ours, and this client is deliberately not answering
+		}
+		if e.Type != wire.TypeError {
+			c.t.Fatalf("expected %s, got %s body=%s", wire.TypeError, e.Type, e.Body)
+		}
+		var body wire.Error
+		if err := e.DecodeBody(&body); err != nil {
+			c.t.Fatal(err)
+		}
+		if body.Code != code {
+			c.t.Fatalf("expected error %s, got %s", code, body.Code)
+		}
+		if body.Fatal {
+			c.expectClosed()
+		}
+		return
+	}
+}
+
 func (c *client) expectError(code wire.ErrorCode) {
 	c.t.Helper()
 	e := c.expect(wire.TypeError)
@@ -162,7 +190,7 @@ func TestHandshakeAndPing(t *testing.T) {
 	})
 	c := h.dial(t)
 	w := c.hello(wire.ClientApp)
-	if w.HeartbeatSeconds != 25 || w.DirectoryVersion != 7 || w.SessionID == "" {
+	if w.HeartbeatSeconds != 10 || w.DirectoryVersion != 7 || w.SessionID == "" {
 		t.Fatalf("unexpected welcome %+v", w)
 	}
 	if w.SIP == nil || w.SIP.User != "201" || w.SIP.Port != 5061 {
@@ -203,11 +231,42 @@ func TestHandshakeTimeout(t *testing.T) {
 	c.expectClosed() // silent close, no error frame
 }
 
+// A client that never answers is still closed: the deadline now measures
+// "does the far end answer when spoken to", so pings go out first and the
+// error follows once three of them have gone unanswered.
 func TestIdleTimeout(t *testing.T) {
 	h := start(t, Config{Heartbeat: 40 * time.Millisecond})
 	c := h.dial(t)
 	c.hello(wire.ClientApp)
-	c.expectError(wire.CodeIdleTimeout)
+	c.expectErrorAfterPings(wire.CodeIdleTimeout)
+}
+
+// The heartbeat is the server's to send (2026-09-16). A client that only
+// ever ANSWERS — never starting a frame of its own — must stay connected
+// indefinitely: that is the Local Push extension, which iOS may not
+// schedule to run a timer but does wake when data arrives.
+func TestAnsweringClientIsNeverTimedOut(t *testing.T) {
+	hb := 40 * time.Millisecond
+	h := start(t, Config{Heartbeat: hb})
+	c := h.dial(t)
+	c.hello(wire.ClientApp)
+	// Well past the 3×heartbeat deadline, answering nothing but pings.
+	deadline := time.Now().Add(10 * hb)
+	pings := 0
+	for time.Now().Before(deadline) {
+		e, err := c.recv()
+		if err != nil {
+			t.Fatalf("closed after %d pings, with %v", pings, err)
+		}
+		if e.Type != wire.TypePing {
+			t.Fatalf("expected ping, got %s body=%s", e.Type, e.Body)
+		}
+		pings++
+		c.send(wire.TypePong, nil)
+	}
+	if pings < 3 {
+		t.Fatalf("only %d pings in 10 heartbeats; the server is not driving them", pings)
+	}
 }
 
 func wakeAt(exp time.Time) wire.Wake {

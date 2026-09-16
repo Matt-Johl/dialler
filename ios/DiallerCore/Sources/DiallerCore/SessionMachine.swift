@@ -15,7 +15,8 @@ public struct SessionMachine: Equatable {
     public enum Action: Equatable {
         case emit(SignalEvent)
         case send(Message)
-        case scheduleHeartbeat(seconds: Int)
+        /// Re-run `evaluateLiveness()` in this many seconds.
+        case scheduleLivenessCheck(seconds: Int)
         case close
     }
 
@@ -60,19 +61,28 @@ public struct SessionMachine: Equatable {
         return [.emit(.disconnected(reason: reason))]
     }
 
-    /// Heartbeat timer fired: ping, unless the server has been silent for
-    /// `idleMultiple` intervals, in which case the connection is declared
-    /// dead so the keeper reconnects. Without this a connection the network
-    /// silently lost lived until TCP gave up, many minutes on a sleeping
-    /// phone (the extension's 2026-09-13 stalls).
-    public mutating func heartbeatDue() -> [Action] {
+    /// Is the link still alive? Silence for `idleMultiple` heartbeat
+    /// intervals means it is dead even if TCP has not noticed — the phone's
+    /// Wi-Fi dropped, or the server closed while we were asleep — so the
+    /// keeper is told to reconnect. Without this a lost connection lived
+    /// until TCP gave up, many minutes on a sleeping phone (the extension's
+    /// 2026-09-13 stalls).
+    ///
+    /// It never sends anything. The heartbeat is the server's to originate
+    /// (PROTOCOL.md §5, SPEC §4.7): a timer of ours may simply not fire in
+    /// the Local Push extension, which is what made us look dead while we
+    /// were fine. This only ever *reads the clock*, so it is correct however
+    /// irregularly it is called — which is what lets the extension drive it
+    /// from `handleTimerEvent()`, the system's own callback, exactly as
+    /// Apple's sample does (`example/`, SimplePushKit `HeartbeatMonitor`).
+    public mutating func evaluateLiveness() -> [Action] {
         guard case .live(_, let hb) = state else { return [] }
         let limit = TimeInterval(Self.idleMultiple * hb)
         if now().timeIntervalSince(lastReceived) > limit {
             state = .closed
             return [.emit(.disconnected(reason: "no frame from the server within \(Int(limit))s")), .close]
         }
-        return [.send(.ping), .scheduleHeartbeat(seconds: hb)]
+        return [.scheduleLivenessCheck(seconds: hb)]
     }
 
     /// A frame arrived.
@@ -82,7 +92,7 @@ public struct SessionMachine: Equatable {
         switch (state, envelope.message) {
         case (.awaitingWelcome, .welcome(let w)):
             state = .live(sessionID: w.sessionID, heartbeatSeconds: w.heartbeatSeconds)
-            return [.emit(.connected(w)), .scheduleHeartbeat(seconds: w.heartbeatSeconds)]
+            return [.emit(.connected(w)), .scheduleLivenessCheck(seconds: w.heartbeatSeconds)]
 
         case (.awaitingWelcome, .error(let e)):
             state = .closed

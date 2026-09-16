@@ -51,10 +51,19 @@ NET=dialler-harness_default
 export DIALLER_PUBLIC_HOST="$HOST"
 
 echo "== build sim-call for the simulator"
+# SwiftPM writes module caches under ~/Library by default, which the build
+# sandbox refuses — including for the manifest compile, so the package
+# cannot even be read without these (2026-09-16).
+export SWIFTPM_MODULECACHE_OVERRIDE="${TMPDIR:-/tmp}/spm-modcache"
+export CLANG_MODULE_CACHE_PATH="${TMPDIR:-/tmp}/clang-modcache"
 ( cd ios/DiallerEngine && swift build --disable-sandbox --scratch-path "$SCRATCH" \
     --triple arm64-apple-ios17.0-simulator --sdk "$IOS_SDK" --product sim-call 2>&1 \
   | grep -E 'error|Build of' || true )
-BIN="$SCRATCH/arm64-apple-ios-simulator/debug/sim-call"
+# SwiftPM's scratch layout moved with the Xcode that ships Swift 6.4 (flat
+# `debug/`); older toolchains used `<triple>/debug/`. Take whichever exists
+# so this keeps working across an update (2026-09-16).
+BIN="$SCRATCH/debug/sim-call"
+[ -x "$BIN" ] || BIN="$SCRATCH/arm64-apple-ios-simulator/debug/sim-call"
 [ -x "$BIN" ] || { echo "FAIL: $BIN not built"; exit 1; }
 
 # SERVER=native: the server runs on this Mac (`make dev-server`); only the
@@ -81,6 +90,14 @@ else
   sleep 2
   sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 fi
+
+# REFUSED needs a PBX behind the trunk: the point is a real refusal from the
+# far end, and with no Asterisk the INVITE only runs into Timer B — the
+# "refusal" is then a 32 s timeout wearing the same clothes (which is
+# silently what it was until 2026-09-15). Outside the branches above: in
+# `sim-call-all` the server is already up from the previous run, so the
+# branch that starts it never runs.
+[ -z "${REFUSED:-}" ] || [ "$SERVER" = native ] || $C up -d --no-deps asterisk >/dev/null 2>&1
 sleep 2
 
 if [ -n "${OUTBOUND:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; then
@@ -137,13 +154,19 @@ if [ -n "${TRANSFER:-}" ]; then SOURCE=""; fi   # silent phone, so any audio pho
 # is told 486 Busy Here — not 480, which PBXs and phones show as "no
 # response" — and that our side never established the call.
 if [ -n "${DECLINE:-}" ]; then SOURCE=""; fi
+# REFUSED=1 (with OUTBOUND=<target the server will refuse>): the far end
+# refuses our outgoing call, and the caller must hear busy or congestion
+# BEFORE the call disappears — the end report is held back for the length
+# of the tone, because CallKit takes the audio session away with the call
+# (plan Phase J). Asserted in the sim, which times the two.
+if [ -n "${REFUSED:-}" ]; then SOURCE=""; fi
 # dev-s / 203: the simulator's own enrolment (harness/provision.sh), so a
 # real phone registered as dev-a / 201 to this server never takes its calls.
 # CALLWAITING=1: phone-b calls first; once that call is up, phone-a (211)
 # calls too. The simulated phone takes it with Hold & Accept, swaps back,
 # and ends both; asserted in the sim (RTP per active call, two stack ids)
 # and on phone-a's recording (it heard the sim while it was the active call).
-xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}${CALLWAITING:+callwaiting}" > "$OUT" 2>&1 &
+xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}${CALLWAITING:+callwaiting}${REFUSED:+refused}" > "$OUT" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true' EXIT
 
@@ -243,6 +266,48 @@ if [ -n "${CALLWAITING:-}" ]; then
   sleep 3
   python3 harness/spike/assert_audio.py "$(pwd)/harness/baresip/media/out-211.wav" || { echo "FAIL: phone-a heard nothing"; exit 1; }
   echo "   PASS: second caller was taken with Hold & Accept and heard the phone"
+fi
+if [ -n "${OUTBOUND:-}" ] && [ -z "${REFUSED:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; then
+  echo "== ring-back (plan Phase J): did the caller hear one while the far end rang?"
+  grep -q 'callkit: tone ringback' "$OUT" || { echo "FAIL: the controller never asked for ring-back on the 180"; exit 1; }
+  grep -q 'callkit: tone stop' "$OUT" || { echo "FAIL: the ring-back was never stopped"; exit 1; }
+  # The invariant that matters, and the one whose absence cost the app its
+  # audio on every call (2026-09-15): the 180 beats CallKit's didActivate,
+  # and a tone must never be what activates the session. So ring-back asked
+  # for before didActivate must be HELD, never played. (Whether it is then
+  # played or dropped depends on the call: this harness callee answers ~50ms
+  # after the 180, so the held tone is usually dropped, which is correct.)
+  act="$(grep -n 'callkit: didActivate' "$OUT" | head -1 | cut -d: -f1)"
+  played="$(grep -n 'callkit: tone ringback$' "$OUT" | head -1 | cut -d: -f1)"
+  if [ -n "$played" ] && [ -n "$act" ] && [ "$played" -lt "$act" ]; then
+    echo "FAIL: ring-back PLAYED before CallKit activated the session — AVAudioPlayer would activate it behind CallKit's back"
+    exit 1
+  fi
+  if grep -q 'tone ringback HELD' "$OUT"; then
+    echo "   PASS: ring-back asked for on the 180 and held until CallKit's session, never played into a session of its own"
+  else
+    echo "   PASS: ring-back played on a session CallKit had already activated, and stopped on the answer"
+  fi
+fi
+if [ -n "${REFUSED:-}" ]; then
+  echo "== refused call (plan Phase J): tone first, then the call disappears"
+  # And it must be a refusal, not a wait: with the PBX there, an extension
+  # it does not have is 404 in milliseconds. A slow one means the INVITE
+  # went nowhere and timed out — a different bug wearing the same clothes.
+  dialled="$(grep -n 'sim: dialling' "$OUT" | head -1 | cut -d: -f1)"
+  toned="$(grep -n 'callkit: tone \(busy\|congestion\)' "$OUT" | head -1 | cut -d: -f1)"
+  at() { sed -n "${1}p" "$OUT" | awk '{print $1}'; }
+  gap="$(awk -v a="$(at "$dialled")" -v b="$(at "$toned")" 'BEGIN{printf "%.0f", b-a}')"
+  [ "$gap" -le 10 ] || { echo "FAIL: the tone took ${gap}s — the call timed out rather than being refused"; exit 1; }
+  echo "   refused and tone started ${gap}s after dialling"
+  # And the screen must say why, not "Calling…" (2026-09-15).
+  grep -q 'screen says "Calling…"' "$OUT" && ! grep -qE 'screen says "(Busy|Declined|Unavailable|Unknown number|No answer|Call failed)"' "$OUT" && {
+    echo "FAIL: the call was refused but the screen still read Calling…"; exit 1; }
+  grep -qE 'screen says "(Busy|Declined|Unavailable|Unknown number|No answer|Call failed)"' "$OUT" || {
+    echo "FAIL: the refused call was never explained on screen"; exit 1; }
+  grep -E 'screen says' "$OUT" | sed 's/^/   /'
+  grep -q 'PASS: refused' "$OUT" || { echo "FAIL: the refused call did not play its tone before being reported ended"; exit 1; }
+  grep -E 'sim: (callkit: tone|call [0-9]+: PASS: refused)' "$OUT" | sed 's/^/   /'
 fi
 if [ -n "${DECLINE:-}" ]; then
   echo "== decline: what was the caller (phone-b) told?"

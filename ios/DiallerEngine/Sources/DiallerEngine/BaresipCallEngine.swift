@@ -27,8 +27,8 @@ public final class BaresipCallEngine: CallEngine {
     }
 
     public var onIncomingCall: ((String, String, String?, String?) -> Void)?
-    public var onCallEnded: ((String, String) -> Void)?
-    public var onOutgoingRinging: ((String) -> Void)?
+    public var onCallEnded: ((String, String, Int) -> Void)?
+    public var onOutgoingRinging: ((String, Bool) -> Void)?
     public var onCallEstablished: ((String) -> Void)?
     public var onTransferFailed: ((String, String) -> Void)?
     /// Observed by the app for status display.
@@ -550,7 +550,8 @@ public final class BaresipCallEngine: CallEngine {
             let engine = Unmanaged<BaresipCallEngine>.fromOpaque(ctx).takeUnretainedValue()
             let s = { (p: UnsafePointer<CChar>?) in p.map { String(cString: $0) } ?? "" }
             engine.handle(event: event, callID: s(info.pointee.call_id), peer: s(info.pointee.peer),
-                          text: s(info.pointee.text), diallerCallID: s(info.pointee.dialler_call_id))
+                          text: s(info.pointee.text), diallerCallID: s(info.pointee.dialler_call_id),
+                          status: Int(info.pointee.scode))
         }, ctx)
         if rc != 0 {
             state = .failed("start \(rc)")
@@ -564,7 +565,7 @@ public final class BaresipCallEngine: CallEngine {
     }
 
     /// Runs on the libre loop thread.
-    private func handle(event: cb_event_t, callID: String, peer: String, text: String, diallerCallID: String) {
+    private func handle(event: cb_event_t, callID: String, peer: String, text: String, diallerCallID: String, status: Int = 0) {
         switch event {
         case CB_EVENT_REGISTER_OK:
             lock.withLock {
@@ -598,8 +599,12 @@ public final class BaresipCallEngine: CallEngine {
             log("engine: transfer of \(callID) failed: \(text)")
             onTransferFailed?(callID, text)
         case CB_EVENT_CALL_RINGING, CB_EVENT_CALL_PROGRESS:
-            log("engine: far end \(event == CB_EVENT_CALL_RINGING ? "ringing" : "progress") \(peer)")
-            onOutgoingRinging?(callID)
+            // 180 with no SDP (RINGING) versus 183 with early media
+            // (PROGRESS): the app lays its own ring-back over the first and
+            // never over the second, which already carries audio.
+            let earlyMedia = event == CB_EVENT_CALL_PROGRESS
+            log("engine: far end \(earlyMedia ? "in progress (early media)" : "ringing") \(peer)")
+            onOutgoingRinging?(callID, earlyMedia)
         case CB_EVENT_CALL_ESTABLISHED:
             let (active, wasOutgoing): (Bool, Bool) = lock.withLock {
                 let out = calls[callID]?.phase == .outgoing
@@ -611,7 +616,7 @@ public final class BaresipCallEngine: CallEngine {
             if active { verifyAudioFlow() }
             if wasOutgoing { onCallEstablished?(callID) }
         case CB_EVENT_CALL_CLOSED:
-            log("engine: call \(callID) closed (\(Self.closeReason(text)))")
+            log("engine: call \(callID) closed (\(Self.closeReason(text)))\(status == 0 ? "" : " [\(status)]")")
             let last: Bool = lock.withLock {
                 calls[callID] = nil
                 if calls.isEmpty { flowCheckScheduled = false }
@@ -620,7 +625,7 @@ public final class BaresipCallEngine: CallEngine {
             // sessionActive is cleared by didDeactivate, which CallKit sends
             // after the last call is reported ended.
             if last { state = cb_registered() ? .registered : .idle } else { refreshState() }
-            onCallEnded?(callID, text)
+            onCallEnded?(callID, text, status)
         case CB_EVENT_LOG:
             logger.info("baresip: \(text, privacy: .public)")
             if text.contains("cbaresip") || text.contains("register") || text.contains("tls") || text.contains("dns") || text.contains("fail") || text.contains("error") || text.contains("audiounit") || text.contains("rtp") || text.contains("stream:") || text.contains("rtcp") {

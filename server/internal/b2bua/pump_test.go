@@ -264,3 +264,74 @@ func TestRelayReportsArrivalSkew(t *testing.T) {
 		t.Fatalf("burst spread over %v on the way out", spread)
 	}
 }
+
+// drive relays exactly n packets from the source, the way run() does.
+func drive(t *testing.T, p *pump, n int) {
+	t.Helper()
+	buf := make([]byte, media.RTPBufSize)
+	for i := 0; i < n; i++ {
+		read, err := p.r.Read(buf)
+		if err != nil || read == 0 {
+			t.Fatalf("source packet %d: read %d, err %v", i, read, err)
+		}
+		if err := p.forward(buf[:read]); err != nil {
+			t.Fatalf("source packet %d: forward: %v", i, err)
+		}
+	}
+}
+
+// Hold music goes out on the same stream as the relayed audio, so it moves
+// our sequence numbers and timestamps on — and the party that is holding
+// knows nothing about that. When it resumes, its packets carry on from
+// where THEY left off, same SSRC and same numbering, and the relay has to
+// rebase them onto what the music left behind.
+//
+// Without that the outbound stream jumps BACKWARDS by the length of the
+// music and the far end drops every packet as stale. On a device that was
+// the caller's microphone gone for good after a resume, while the relay
+// counters kept rising and nothing logged an error (2026-09-15).
+func TestResumeAfterHoldMusicNeverGoesBackwards(t *testing.T) {
+	const ssrc = 0xabc
+	const held = 50 // frames of hold music: one second
+	src := &fakeSource{}
+	for i := 0; i < 20; i++ {
+		src.pkts = append(src.pkts, packet(uint16(i), 1000+uint32(i)*ulawFrame, ssrc, i == 0))
+	}
+	sink := &fakeSink{}
+	rr := media.NewRTPPacketReader(src, media.CodecAudioUlaw)
+	rw := media.NewRTPPacketWriter(sink, media.CodecAudioUlaw)
+	p := &pump{r: rr, w: rw}
+	p.setPacketPath(rr, rw, media.CodecAudioUlaw)
+
+	drive(t, p, 10) // talking
+	for i := 0; i < held; i++ {
+		if err := p.writeLocal(make([]byte, ulawFrame), i == 0); err != nil {
+			t.Fatalf("hold music frame %d: %v", i, err)
+		}
+	}
+	drive(t, p, 10) // resumed: the phone picks up its own numbering again
+
+	out := sink.all()
+	if len(out) != 20+held {
+		t.Fatalf("sink has %d packets, want %d", len(out), 20+held)
+	}
+	for i := 1; i < len(out); i++ {
+		if d := int16(out[i].hdr.SequenceNumber - out[i-1].hdr.SequenceNumber); d <= 0 {
+			t.Fatalf("packet %d: sequence went %d (from %d to %d) — the far end drops this as stale",
+				i, d, out[i-1].hdr.SequenceNumber, out[i].hdr.SequenceNumber)
+		}
+		if d := int32(out[i].hdr.Timestamp - out[i-1].hdr.Timestamp); d <= 0 {
+			t.Fatalf("packet %d: timestamp went backwards by %d", i, -d)
+		}
+	}
+	// The resumed audio must also follow the music immediately, not leave a
+	// gap the far end conceals: one frame on from the last music frame.
+	first := out[20+held-10]
+	prev := out[20+held-11]
+	if d := first.hdr.SequenceNumber - prev.hdr.SequenceNumber; d != 1 {
+		t.Errorf("resume left a sequence gap of %d", d)
+	}
+	if d := first.hdr.Timestamp - prev.hdr.Timestamp; d != ulawFrame {
+		t.Errorf("resume left a timestamp gap of %d, want %d", d, ulawFrame)
+	}
+}

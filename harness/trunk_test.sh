@@ -32,7 +32,13 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-COMPOSE="docker compose -f harness/docker-compose.yml --profile test"
+# HARNESS_NOPORTS=1 publishes nothing on the host, so this can run beside a
+# native `make dev-server` without fighting it for 7443 / 5061. Safe for any
+# test that lives entirely inside the compose network; NOT for ones a
+# simulator or a real phone has to reach (sim_call.sh, ring_*.sh, probe_*).
+NOPORTS=""
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
 PBX_CODEC=G722
 if [ "${NARROWBAND:-0}" = 1 ]; then
   export ASTERISK_CODECS=ulaw,alaw

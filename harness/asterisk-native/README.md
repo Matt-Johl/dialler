@@ -57,3 +57,24 @@ trunk profile to get the offload.
 Ubuntu box: 5060/udp (SIP), 10000–10200/udp (RTP, `rtp.conf`).
 Mac: 5061/tcp+tls and 7443/tls (light server, app side), 5062/udp (the
 server's trunk listener), 20000–20100/udp (server media relay).
+
+## Refusing extensions that are not there
+
+`extensions.conf` has a `dial-status` context that every dialling context
+includes. It turns `Dial()`'s outcome into a SIP status — CHANUNAVAIL →
+`Hangup(20)` → **480 Temporarily Unavailable**, BUSY → 17 → 486, CONGESTION
+→ 34 → 503. Without it a failed `Dial` falls through to a bare `Hangup()`,
+the PBX sends nothing that says why, and the caller is left on ring-back.
+
+`pjsip.conf` pairs that with `qualify_frequency` + `remove_unavailable=yes`
+on the phone AORs. A phone that is switched off never unregisters, so its
+contact stays on file and `Dial()` rings it for the full 30 s; qualify is
+what notices and removes it, and only then does `Dial` fail fast. Detection
+costs up to `qualify_frequency + qualify_timeout` (30 s + 3 s here), so a
+call placed in that window still rings — that is inherent, not a bug.
+
+Both are exercised by `make harness-pbx-unavailable` against the docker
+PBX, which carries the same config. Re-deploy after changing either:
+
+    scp -r harness/asterisk-native ubuntu-box:~/
+    ssh ubuntu-box 'cd asterisk-native && sudo DIALLER_HOST=<mac-ip> sh install-ubuntu.sh'

@@ -28,6 +28,7 @@ import (
 
 	"github.com/emiago/diago"
 	"github.com/emiago/diago/media"
+	"github.com/emiago/diago/media/sdp"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
@@ -519,8 +520,16 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 		return
 	}
 
+	// 100 Trying only. 180 Ringing waits until something is actually
+	// alerting — the callee's own 18x, or the wake reaching a device, which
+	// is what makes the phone ring on the wake path. Sending it here, before
+	// the INVITE has gone anywhere, told every caller "ringing" even when
+	// the destination was unreachable: a call to a PBX extension that was
+	// switched off rang for the full ring timeout and the caller never heard
+	// why (2026-09-15). Now an unreachable destination goes 100 → 480, and
+	// the app plays congestion at once (SPEC §4.4 rule 8a).
 	_ = in.Trying()
-	_ = in.Ringing()
+	legs.ring = ringer(in)
 
 	ctx, cancel := context.WithTimeout(in.Context(), s.cfg.RingTimeout)
 	defer cancel()
@@ -556,7 +565,7 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 	}
 	wakeable := ep.DeviceID != "" && s.waker != nil
 	if !d.Registered {
-		woken, err := s.wakeAndWait(ctx, log, in, callID, ep)
+		woken, err := s.wakeAndWait(ctx, log, in, callID, ep, legs.ring)
 		if err != nil {
 			return
 		}
@@ -624,14 +633,16 @@ func (s *Server) wakeForFrom(callID string, from *sip.FromHeader, ep registry.En
 // wakeAndWait sends a wake for the callee's device and blocks until it
 // registers, the caller gives up, or the ring timeout passes. On failure it
 // has already answered the caller and cancelled the wake.
-func (s *Server) wakeAndWait(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, callID string, ep registry.Endpoint) (registry.Endpoint, error) {
-	return s.wakeAndWaitFrom(ctx, log, in, callID, in.InviteRequest.From(), ep)
+func (s *Server) wakeAndWait(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, callID string, ep registry.Endpoint, ring func()) (registry.Endpoint, error) {
+	return s.wakeAndWaitFrom(ctx, log, in, callID, in.InviteRequest.From(), ep, ring)
 }
 
 // wakeAndWaitFrom is wakeAndWait with the caller identity given explicitly
 // (a transfer wakes the target on behalf of the remaining party). With a
 // nil `in` no SIP response is sent; the caller reports the failure.
-func (s *Server) wakeAndWaitFrom(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, callID string, from *sip.FromHeader, ep registry.Endpoint) (registry.Endpoint, error) {
+// `ring` tells the caller the device is being alerted; nil when there is no
+// caller leg to tell (a transfer).
+func (s *Server) wakeAndWaitFrom(ctx context.Context, log *slog.Logger, in *diago.DialogServerSession, callID string, from *sip.FromHeader, ep registry.Endpoint, ring func()) (registry.Endpoint, error) {
 	respond := func(code int, reason string) {
 		if in != nil {
 			_ = in.Respond(code, reason, nil)
@@ -653,6 +664,12 @@ func (s *Server) wakeAndWaitFrom(ctx context.Context, log *slog.Logger, in *diag
 		return ep, errors.New("wake undeliverable")
 	}
 	log.Info("invite: woke callee device", "device", ep.DeviceID, "connections", delivered)
+	// The wake is what makes the phone ring (CallKit rings from it, before
+	// the INVITE arrives), so the caller is told "ringing" now — this is the
+	// one place on the wake path where it becomes true.
+	if ring != nil {
+		ring()
+	}
 
 	// The wait can be cut short by the device's own answer to the wake: a
 	// decline or busy wake_ack (HandleWakeAck) cancels it with that cause.
@@ -724,6 +741,19 @@ type legs struct {
 	// or echo callee.
 	calleeUser  string
 	calleeRoute string
+	// Sends 180 Ringing to the caller, once, when the callee is genuinely
+	// being alerted. Never nil for a bridged call.
+	ring func()
+}
+
+// ringer returns a function that sends 180 Ringing to the caller the first
+// time it is called and does nothing after. Several things can be the first
+// sign that the callee is alerting — a 180 or 183 from its route, a wake
+// delivered to a device, a retargeted second INVITE — and the caller must
+// see exactly one 180 across all of them.
+func ringer(in *diago.DialogServerSession) func() {
+	var once sync.Once
+	return func() { once.Do(func() { _ = in.Ringing() }) }
 }
 
 // retargetError ends a callee INVITE that was overtaken by a fresh
@@ -925,6 +955,17 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	legA := &callLeg{name: "caller", trunk: l.callerTrunk, sess: in, party: wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()}}
 	legB := &callLeg{name: "callee", trunk: l.calleeTrunk, sess: out, party: wire.Party{URI: dst.String()}}
 	call := newBridgedCall(s, log, callID, legA, legB)
+	// Hold has no message of its own: a party holds by re-INVITEing its own
+	// leg to sendonly, and all we ever see is the direction we settled on.
+	// Watch both legs for it, so hold music follows whichever party pressed
+	// hold (SPEC §4.4 rule 8b).
+	onMedia := func(leg *callLeg) func(*diago.DialogMedia) {
+		return func(m *diago.DialogMedia) {
+			if ms := m.MediaSession(); ms != nil {
+				call.setHeld(leg, heldMode(ms.NegotiatedMode()))
+			}
+		}
+	}
 
 	// Abandoning a registered callee's INVITE early. Three things end it
 	// before the callee answers: the caller hangs up (ctx), the callee moves
@@ -945,12 +986,23 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		answered  atomic.Bool // any response from the callee's route
 		abandonMu sync.Mutex
 		abandoned error // why we gave up, if we did
-		onResp    func(*sip.Response) error
 	)
+	// Installed for every callee, trunk included: an 18x from the callee is
+	// what makes the caller's 180 true, and a call that fails before one
+	// must reach the caller as a failure and nothing else, so the app plays
+	// congestion instead of ring-back (SPEC §4.4 rule 8a). 183 is forwarded
+	// as 180: we cannot pass early media through without answering the
+	// caller, so the caller generates its own ring-back either way.
+	onResp := func(res *sip.Response) error {
+		answered.Store(true)
+		if res != nil && res.StatusCode >= 180 && res.StatusCode < 200 && l.ring != nil {
+			l.ring()
+		}
+		return nil
+	}
 	if l.calleeUser != "" {
 		ictx, cancelInvite := context.WithCancelCause(context.Background())
 		inviteCtx = ictx
-		onResp = func(*sip.Response) error { answered.Store(true); return nil }
 		abandon := func(reason error) {
 			abandonMu.Lock()
 			if abandoned == nil {
@@ -983,11 +1035,14 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		}()
 	}
 	err = out.Invite(inviteCtx, diago.InviteClientOptions{
-		Originator:    in,
-		Headers:       []sip.Header{sip.NewHeader(CallIDHeader, callID)},
-		OnResponse:    onResp,
-		OnMediaUpdate: func(m *diago.DialogMedia) { m.MediaSession().RTPNAT = calleeNAT },
-		OnRefer:       call.onRefer(legB),
+		Originator: in,
+		Headers:    []sip.Header{sip.NewHeader(CallIDHeader, callID)},
+		OnResponse: onResp,
+		OnMediaUpdate: func(m *diago.DialogMedia) {
+			m.MediaSession().RTPNAT = calleeNAT
+			onMedia(legB)(m)
+		},
+		OnRefer: call.onRefer(legB),
 	})
 	if err != nil {
 		abandonMu.Lock()
@@ -1029,7 +1084,8 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	log.Info("callee answered", "codec", negotiated.Name, "callee_trunk", l.calleeTrunk, "caller_trunk", l.callerTrunk,
 		"callee_srtp", srtpState(out.Media().MediaSession()))
 	legA.codec, legB.codec = negotiated, negotiated
-	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: s.legNAT(l.callerTrunk), Codecs: []media.Codec{negotiated}, OnRefer: call.onRefer(legA)}); err != nil {
+	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: s.legNAT(l.callerTrunk), Codecs: []media.Codec{negotiated},
+		OnRefer: call.onRefer(legA), OnMediaUpdate: onMedia(legA)}); err != nil {
 		log.Error("answer caller", "err", err)
 		_ = out.Hangup(out.Context())
 		out.Close()
@@ -1071,7 +1127,13 @@ type pump struct {
 	rr    *media.RTPPacketReader
 	rw    *media.RTPPacketWriter
 	codec media.Codec // destination: payload type and RTP clock
-	// Source timeline → ours (only touched by the relay goroutine).
+	// Guards the outbound timeline below. The relay goroutine had it to
+	// itself until hold music arrived (rule 8b): that plays from a ticker
+	// on another goroutine and must continue the same sequence numbers and
+	// timestamps, so the two share a lock. Uncontended in practice — a leg
+	// that is holding sends nothing to relay.
+	mu sync.Mutex
+	// Source timeline → ours.
 	haveSrc  bool
 	srcSSRC  uint32
 	tsOffset uint32
@@ -1085,6 +1147,16 @@ type pump struct {
 	// instead of a seamless stream with a hole in the timeline.
 	seqOffset uint16
 	lastSeq   uint16
+	// Audio of our own went out on this stream (hold music), so the
+	// relayed source's offsets no longer describe where we are: the next
+	// relayed packet has to be rebased onto the numbering the music left
+	// behind. See forward.
+	localWrote bool
+	// Set while our own audio owns this stream (hold music). Relayed
+	// packets are dropped rather than forwarded for as long as it is: two
+	// sources interleaved on one stream is noise, and during a transfer the
+	// party being replaced is still sending.
+	localOnly atomic.Bool
 	// Arrival skew of the source against its own timeline, for the log.
 	skewMs     atomic.Int64
 	earlyMaxMs atomic.Int64
@@ -1161,9 +1233,19 @@ func (p *pump) forward(payload []byte) error {
 		_, err := p.w.Write(payload)
 		return err
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	hdr := p.rr.PacketHeader
 	now := time.Now()
-	newStream := !p.haveSrc || hdr.SSRC != p.srcSSRC
+	// A source we have already seen still needs rebasing if hold music has
+	// been on this stream since: `writeLocal` moved our sequence numbers
+	// and timestamps forward and the source knows nothing about it, so
+	// continuing on its old offsets sends the far end BACKWARDS by the
+	// length of the music — every packet then arrives stale and its jitter
+	// buffer drops the lot. On a device that was the caller's microphone
+	// vanishing after resume, with the relay counters still rising
+	// (2026-09-15).
+	newStream := !p.haveSrc || hdr.SSRC != p.srcSSRC || p.localWrote
 	if newStream {
 		// Rebase this source's timeline onto ours, continuing right after
 		// what we last sent so the far end sees one monotonic stream.
@@ -1173,7 +1255,7 @@ func (p *pump) forward(payload []byte) error {
 		}
 		p.tsOffset = start - hdr.Timestamp
 		p.rebaseSeq(hdr.SequenceNumber)
-		p.srcSSRC, p.haveSrc = hdr.SSRC, true
+		p.srcSSRC, p.haveSrc, p.localWrote = hdr.SSRC, true, false
 		p.t0, p.ts0 = now, hdr.Timestamp
 		p.expectSeq = hdr.SequenceNumber + 1
 		p.lastArrival, p.lastTs = now, hdr.Timestamp
@@ -1243,6 +1325,70 @@ func (p *pump) forward(payload []byte) error {
 	return err
 }
 
+// writeLocal puts one frame of our own audio on this pump's stream, in
+// place of a relayed packet (hold music, rule 8b). Everything the far end
+// uses to recognise the stream is unchanged — SSRC, payload type and the
+// leg's SRTP context all belong to the writer — and the sequence number and
+// timestamp continue from the last packet we sent, so its jitter buffer
+// sees the audio simply carry on rather than a new stream starting.
+func (p *pump) writeLocal(payload []byte, marker bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	want, cur, seq := p.rw.InitTimestamp(), p.rw.InitTimestamp(), uint16(rand.Uint32())
+	if p.wroteAny {
+		want = p.lastOut + p.codec.SampleTimestamp()
+		cur = p.lastOut
+		seq = p.lastSeq + 1
+	}
+	p.rw.DelayTimestamp(want - cur)
+	if _, err := p.rw.WriteSamplesSeq(payload, 0, marker, p.codec.PayloadType, seq); err != nil {
+		return err
+	}
+	p.lastSeq, p.lastOut, p.wroteAny, p.localWrote = seq, want, true, true
+	return nil
+}
+
+// playHold loops frames onto this pump's destination leg until ctx ends.
+//
+// The cadence is ours now: with the other party holding, nothing arrives to
+// pace us, so frames go out on a ticker against a monotonic deadline rather
+// than "20 ms after the last one" — the latter drifts, and a drifting
+// sender is what a jitter buffer reports as jitter.
+func (p *pump) playHold(ctx context.Context, frames [][]byte, log *slog.Logger) {
+	const frameDur = 20 * time.Millisecond
+	p.localOnly.Store(true)
+	defer p.localOnly.Store(false)
+	t := time.NewTicker(frameDur)
+	defer t.Stop()
+	start, sent, errs := time.Now(), 0, 0
+	// Marker on the first frame: it tells the far end this is a new talk
+	// spurt after a gap, which is exactly what it is.
+	marker := true
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("stopped playing", "frames", sent, "seconds", time.Since(start).Seconds())
+			return
+		case <-t.C:
+			if err := p.writeLocal(frames[sent%len(frames)], marker); err != nil {
+				if errs++; errs <= 3 {
+					log.Warn("hold music write failed", "err", err)
+				}
+			}
+			marker = false
+			sent++
+		}
+	}
+}
+
+// heldMode reports whether a leg's negotiated direction means the party on
+// it has put the call on hold. They offer sendonly (or inactive) and we
+// settle on its mirror, so what we see is that we may no longer send to
+// them — and the party on the other leg is now hearing nothing.
+func heldMode(mode string) bool {
+	return mode == sdp.ModeRecvonly || mode == sdp.ModeInactive
+}
+
 // rebaseSeq maps a source stream starting at srcSeq onto our numbering:
 // right after the last number we sent, or anywhere for the first packet.
 func (p *pump) rebaseSeq(srcSeq uint16) {
@@ -1274,6 +1420,12 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 			if n > 0 {
 				p.read.Add(1)
 				p.lastReadAt.Store(time.Now().UnixMilli())
+				if p.localOnly.Load() {
+					// Hold music has this stream; what arrives is not
+					// forwarded. Counted as read, not written — which is
+					// what the 2 s line calls "we stopped forwarding".
+					continue
+				}
 				if werr := p.forward(buf[:n]); werr != nil {
 					if p.writeErrs.Add(1) <= 3 {
 						log.Warn("relay write failed", "err", werr, "after", p.String())

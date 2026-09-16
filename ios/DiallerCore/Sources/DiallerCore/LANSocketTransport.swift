@@ -3,7 +3,7 @@ import Foundation
 import Network
 
 /// The production signal transport: one TLS connection to the gateway over
-/// Network.framework, length-prefixed frames, hello/welcome, heartbeats.
+/// Network.framework, length-prefixed frames, hello/welcome, liveness.
 /// Used unchanged by the foreground app and by the NEAppPushProvider
 /// extension (SPEC §2). Wire semantics live in `SessionMachine`; this class
 /// only moves bytes and timers.
@@ -16,7 +16,11 @@ public final class LANSocketTransport: SignalTransport {
     private var connection: NWConnection?
     private var machine = SessionMachine()
     private var decoder = FrameDecoder()
-    private var heartbeat: DispatchSourceTimer?
+    /// Drives `evaluateLiveness()`. It sends nothing — the server
+    /// originates the heartbeat (SPEC §4.7) — and in the Local Push
+    /// extension it may not fire at all, which is why the provider also
+    /// drives the check from `handleTimerEvent()`.
+    private var livenessTimer: DispatchSourceTimer?
     private var pendingHello: Hello?
 
     public init(endpoint: GatewayEndpoint) {
@@ -171,24 +175,28 @@ public final class LANSocketTransport: SignalTransport {
                 continuation.yield(e)
             case .send(let m):
                 write(m)
-            case .scheduleHeartbeat(let s):
-                scheduleHeartbeat(seconds: s)
+            case .scheduleLivenessCheck(let s):
+                scheduleLivenessCheck(seconds: s)
             case .close:
                 teardown()
             }
         }
     }
 
-    private func scheduleHeartbeat(seconds: Int) {
-        heartbeat?.cancel()
+    public func checkLiveness() {
+        queue.async { self.apply(self.machine.evaluateLiveness()) }
+    }
+
+    private func scheduleLivenessCheck(seconds: Int) {
+        livenessTimer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + .seconds(max(1, seconds)))
         t.setEventHandler { [weak self] in
             guard let self else { return }
-            self.apply(self.machine.heartbeatDue())
+            self.apply(self.machine.evaluateLiveness())
         }
         t.resume()
-        heartbeat = t
+        livenessTimer = t
     }
 
     private func close(reason: String) {
@@ -197,8 +205,8 @@ public final class LANSocketTransport: SignalTransport {
     }
 
     private func teardown() {
-        heartbeat?.cancel()
-        heartbeat = nil
+        livenessTimer?.cancel()
+        livenessTimer = nil
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil

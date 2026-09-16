@@ -46,6 +46,11 @@ typedef struct {
     /// X-Dialler-Call-ID header ("" if absent) — the id the same call's
     /// wake carries, so the app can match the two without guessing.
     const char *dialler_call_id;
+    /// CB_EVENT_CALL_CLOSED: the SIP status that closed the call (486, 480,
+    /// 603 …), or 0 when no response carried one — a BYE, a local error, or
+    /// our own hangup. The app picks the busy / congestion tone from it
+    /// rather than parsing baresip's reason text.
+    uint16_t scode;
 } cb_event_info;
 
 typedef void (*cb_event_cb)(void *ctx, cb_event_t event, const cb_event_info *info);

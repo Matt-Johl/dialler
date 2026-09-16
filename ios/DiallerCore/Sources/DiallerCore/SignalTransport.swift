@@ -26,7 +26,14 @@ public protocol SignalTransport: AnyObject {
     /// Sends one message on the live connection. Silently dropped if not live.
     func send(_ message: Message)
     func disconnect()
+    /// Re-check that the link is alive, driven from outside the transport's
+    /// own timer (SPEC §4.7). Optional; the default does nothing.
+    func checkLiveness()
     var events: AsyncStream<SignalEvent> { get }
+}
+
+public extension SignalTransport {
+    func checkLiveness() {}
 }
 
 /// Where to reach the gateway and how to trust it.

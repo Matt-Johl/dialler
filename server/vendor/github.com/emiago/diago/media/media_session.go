@@ -1410,6 +1410,16 @@ func sdpIP(ip net.IP) string {
 
 // negotiateMediaDirection computes our local direction based on the remote SDP offer/answer
 // and our current preference. Defaults to sendrecv when nothing explicit is provided.
+// NegotiatedMode (Dialler patch) is the media direction this session
+// settled on with the far end — the value the reader and writer already
+// gate on, but unexported. The B2BUA needs it to notice a leg going on
+// hold: the app offers sendonly, we answer recvonly, and that is the only
+// signal there is that the other party should now hear hold music
+// (SPEC §4.4 rule 8b).
+func (s *MediaSession) NegotiatedMode() string {
+	return s.mode
+}
+
 func negotiateMediaDirection(remoteMode, localPref string) string {
 	if localPref == "" {
 		localPref = sdp.ModeSendrecv

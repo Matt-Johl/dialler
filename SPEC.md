@@ -243,6 +243,151 @@ are already implemented — do not remove them because remote reach is deferred.
    itself. The app's leg is unaffected either way.
 7. The `PBXAdapter` speaks **trunk SIP and nothing else**. AMI/ESL remain
    dev-only.
+6a. **A blind transfer hands over the moment the target rings**
+   (2026-09-15). The referrer is released on the target's first 18x — not
+   on its answer — so pressing Transfer frees them immediately instead of
+   tying them to a phone ringing somewhere else; until then they cannot
+   even dial (`CallController.startCall` refuses a second call). The
+   waiting party hears music while the target is resolved and woken, then
+   **ring-back** from the instant it alerts, then the bridge. The rule is
+   `handsOver`: 18x only. **100 Trying is not alerting** — releasing on it
+   would free the referrer a moment before a 404 and leave the waiting
+   party with nobody, having told the referrer it worked.
+   The split that follows is the point: a refusal **before** it rings
+   (486/480/404) never happened as a hand-off, so the referrer keeps the
+   call and is told why. A failure **after** it rings has no one to go back
+   to, so the waiting party gets busy tone for `busyBeforeHangup` and the
+   call ends — the ordinary end of a blind transfer nobody answered. That
+   is the trade: once released, the referrer cannot be put back, which is
+   what attended transfer (§6 near-term item 2) is for.
+   This also removes an inconsistency rather than adding a mode: a transfer
+   offloaded to the PBX already released the referrer at once, so the same
+   button behaved differently depending on where the target happened to
+   live. `wait()` needs `awaitHandover` for it — the referrer's BYE now
+   arrives while the call is very much alive. Asserted by
+   `make harness-hold-music`: harness extension 700 alerts then fails
+   (ring-back → release → busy → end, with the referrer's own call proven
+   terminated) and 701 rejects at once (no release, call stays, referrer
+   told `486`).
+7a. **The PBX refuses its own extensions** (2026-09-15). Whether a PBX
+   extension is registered is the PBX's knowledge, and this server keeps
+   none of it — that is rule 7. So an extension that is off or unregistered
+   must come back as a SIP status *from the PBX* (480 Temporarily
+   Unavailable), which the server relays like any other response. Two
+   things are needed on the PBX for that, and neither is a default:
+   a `dial-status` context every dialling context includes, mapping
+   `Dial()`'s DIALSTATUS to a hangup cause (CHANUNAVAIL → 20 → 480, BUSY →
+   17 → 486, CONGESTION → 34 → 503) instead of falling through to a bare
+   `Hangup()`; and `qualify_frequency` + `remove_unavailable=yes` on every
+   AOR, so a phone switched off without unregistering has its stale contact
+   dropped rather than rung for the full 30 s. Without the second, calling a
+   phone that had lost power rang until the caller gave up — with no final
+   response at all, which the server logs as `context canceled`. Asserted by
+   `make harness-pbx-unavailable` (never registered; registered and
+   answering; switched off with its contact still on file). Detection still
+   costs up to `qualify_frequency + qualify_timeout` after the phone goes:
+   a call in that window rings, and nothing on our side can shorten it.
+7b. **180 Ringing means something is alerting** (2026-09-15). The server
+   used to send it the moment an INVITE arrived, before dialling anything,
+   so every call rang instantly whatever the destination — harmless while
+   nothing made a sound, and wrong the day the app began playing ring-back
+   from it (rule 8a): a call to a phone that was switched off rang for the
+   full ring timeout. `serveDialog` now sends 100 Trying and arms a
+   one-shot `ringer`; 180 follows from whichever comes first — an 18x from
+   the callee's route (forwarded for every callee, trunk included, with 183
+   relayed as 180, since early media cannot cross a leg we have not
+   answered), or the wake reaching a device, which is what makes the phone
+   ring on the wake path. An unreachable destination therefore goes
+   100 → 480 with no 180 at all and the caller plays congestion at once.
+   Asserted by `make harness-pbx-unavailable` (the caller must see 100 then
+   480, never a 180); that a real ringing callee still produces one is
+   `OUTBOUND=212 make sim-call`.
+8b. **Hold music comes from this server** (plan Phase K, 2026-09-15). Hold
+   means the holder has stopped sending — that is what `a=sendonly` says —
+   so without us the other party hears nothing and assumes the call
+   dropped. The treatment therefore comes from the call server on the side
+   of whoever pressed hold, which is the rule every PBX follows and the
+   reason Asterisk ships `moh_passthrough=no`: the remote party may be
+   another PBX, a carrier or the PSTN, and none of them will play music on
+   your behalf. (It is why the app already hears music when **101** holds —
+   that is Asterisk doing exactly this, from its side.)
+   Two consequences make it robust. **Nothing is signalled**: the held
+   party's call carries on untouched, so this works whatever is at the far
+   end and however it is configured — no re-INVITE, no glare, no 491, no
+   dependency on somebody else's `musiconhold.conf`. And **nothing is
+   encoded**: this server is a copy relay with no codecs and is not getting
+   any (`CGO_ENABLED=0`, std lib only), so the music is pre-encoded once
+   per codec a leg can be held on — PCMU, PCMA, G.722, Opus — by
+   `tools/gen_moh.py`, and `server/internal/moh` embeds the frames. The
+   relay puts them on the held party's own stream: same SSRC, same sequence
+   space, same SRTP context, same payload type, timestamps continuing from
+   the last relayed packet, paced by our own 20 ms ticker against a
+   monotonic deadline (nothing arrives to pace us any more). So no
+   renegotiation, and the far end's jitter buffer sees the audio carry on
+   rather than a new stream start. The signal that a leg went on hold is
+   the direction it settled on (`MediaSession.NegotiatedMode`, a vendored
+   accessor): the app offers sendonly, we answer recvonly, and that is the
+   only notice there ever is. One known artifact: G.722 is ADPCM and its
+   decoder is stateful, so the splice costs a few tens of milliseconds
+   while the far end's predictor reconverges; Opus packets are
+   self-contained and G.711 is stateless. **Resume has to rebase the
+   relayed stream.** The music moved our sequence numbers and timestamps
+   on; the party that was holding knows nothing about that and carries on
+   from its own, so the next relayed packet is treated as a new source and
+   rebased onto what the music left behind. Without it the outbound stream
+   jumps *backwards* by the length of the hold and the far end drops every
+   packet as stale — on a device, the caller's microphone simply gone after
+   resume, with the relay counters still rising and no error logged
+   (2026-09-15). `TestResumeAfterHoldMusicNeverGoesBackwards` pins it; the
+   end-to-end check has to compare the far end's level before the hold with
+   after the resume, because a PBX in the middle re-originates RTP and
+   turns a silent failure into a merely degraded one. The music is generated, not
+   sampled, so `server/internal/moh` carries no licence or attribution
+   (§8); swapping in a real track is `gen_moh.py --wav`, and its licence
+   would have to be recorded there. The same music covers the other
+   silence of its kind: a party waiting through a **transfer** while the
+   target is resolved, woken and rung (§6 near-term item 2). One mechanism,
+   differing only in why — and a transfer is routinely preceded by a hold,
+   so starting music always stops whatever was playing first. While it
+   plays, relayed packets from the other side are dropped rather than mixed
+   into the same stream: during a transfer the party being replaced is
+   still sending. Asserted by `make harness-hold-music` on four paths — a
+   trunk call on G.722 with Asterisk in the middle, an app-to-app call on
+   Opus with no PBX anywhere, a resume, and a refused transfer — with the
+   caller silent wherever the music itself is being measured, so anything
+   the other phone records can only be ours.
+8c. **The in-call screen says what the call is doing** (2026-09-15).
+   CallKit's own UI reads "calling" until a call ends, whatever happened,
+   so the app's screen said "Calling…" while the earpiece was already
+   playing congestion at the user. `CallProgress` (DiallerCore) is the
+   vocabulary — Calling… / Ringing… / Busy / Declined / No answer /
+   Unavailable / Unknown number / Call failed — mapped from the same SIP
+   status the tone is (`CallProgress.forFailure`, beside
+   `CallTones.failure`, with a test that the two never disagree: anything
+   that plays a tone has words). The controller reports it through
+   `CallUI.callProgress`, and a refusal is reported *before* the end, so
+   the reason is on screen for as long as its tone lasts. "Ringing…" is
+   only truthful because of rule 7b — before that, 180 arrived before the
+   INVITE went anywhere. The words live in DiallerCore, not the view,
+   because the app target has no tests (the `TonePolicy` lesson).
+   A **refused transfer** uses the same words, on a transient line on the
+   in-call screen ("Transfer failed — Busy"): the call simply carries on,
+   so nothing else there would ever say it failed, and it had been going to
+   the debug log alone. Only a transfer refused *before* the target rang
+   reaches the app at all — after that the call has been handed over and is
+   no longer ours to report on (rule 6a). Transfers are also the one place
+   the status is not a number: baresip passes the far end's NOTIFY sipfrag
+   through verbatim (`"486 Busy Here"`) and leaves `call_scode` alone,
+   because that belongs to the referring call, so
+   `CallProgress.forTransferFailure` parses it — and returns nil for a
+   local failure, which carries an errno and no status, rather than
+   inventing a reason.
+   *What is reachable today:* `callerStatus` relays 486/600/603 as-is and
+   collapses everything else to 480, so a phone shows Busy, Declined,
+   Unavailable — never Unknown number or No answer, even when the PBX said
+   404 or 408. Widening that is a trunk-visible change (a PBX's
+   forward-on-unavailable rules key off it), so it is a deliberate decision,
+   not a side effect.
 8. **Call waiting** (plan Phase I, 2026-09-14): an app holds up to two
    calls, one active and one on hold — the handset norm and what CallKit's
    own UI models (two call groups of one call, `supportsHolding` on every
@@ -308,6 +453,50 @@ are already implemented — do not remove them because remote reach is deferred.
    (`CallTones`, `TonePlayer`; two 100 ms bursts at 425 Hz every 5 s,
    quiet because the phone is at someone's ear). That is the first piece
    of the tone plan (Phase J).
+8a. **Call-progress tones are the app's** (plan Phase J, 2026-09-15). iOS
+   plays none of them for a VoIP app, and this server answers an outgoing
+   call with a bare 180, so without the app there is silence from the
+   moment the user dials until the far end answers — and silence again
+   when the call is refused. `CallTones` (DiallerCore) is the plan: 425 Hz
+   ETSI cadences as data, rendered to PCM by pure, unit-tested code, so a
+   country plan is a different table and not different code. `TonePlayer`
+   (the app) plays one on the session CallKit has already activated for
+   the call, mixing with baresip's audio unit — a second player inside
+   baresip would fight it for the one VoiceProcessingIO instance. **Which
+   tone and when is the controller's**, because it is a SIP question, and
+   reaches the app through `CallUI.playTone`: ring-back (1 s / 4 s) while
+   our outgoing call is alerted by a 180, **never on a 183** — early media
+   is the far end's own ring-back and a tone over it is the classic double
+   ring-back; busy (0.5 / 0.5) on 486, 600 and 603; congestion (0.25 /
+   0.25) on any other refusal, which includes the 480 this server returns
+   when nothing can be woken. Nothing is played for a call that merely
+   ended or for the 487 answering the user's own cancel. Two consequences
+   worth keeping: a failure tone **holds back the end report** for its own
+   length (busy 4 s, congestion 3 s) because CallKit takes the audio
+   session away with the call, so a tone started after the end is cut off
+   — hanging up on it, or a new call arriving, ends the call at once; and
+   a tone goes into the same ear as any conversation, so answering another
+   call stops whatever was playing. The SIP status that chooses the tone
+   comes up from the shim (`cb_event_info.scode`, baresip's
+   `call_scode()`), never from parsing reason text.
+   **A tone is never what activates the audio session.** Ring-back is
+   asked for when the 180 arrives, and that beats CallKit's `didActivate`
+   (measured 154 ms, `make sim-call`); `AVAudioPlayer.play()` activates the
+   shared session itself when it is not already active, which takes the
+   session out of CallKit's hands — the same fault as the audio driver
+   building its CoreAudio units ahead of activation in Phase 1, and it cost
+   the app its audio on every call the day Phase J landed (2026-09-15). The
+   rule is `TonePolicy` in DiallerCore, a pure value the app's `TonePlayer`
+   obeys: a tone asked for before activation is *held*, released by
+   `didActivate` and dropped by `didDeactivate`. It lives there, not in the
+   player, because the app target has no tests and a rule kept there is a
+   rule nobody checks — which is exactly how it shipped broken. Headless on the real
+   engine: `OUTBOUND=212 make sim-call` asserts the ring-back starts on the
+   180 and stops on the answer, and `make sim-call-refused` asserts a
+   refused call plays its tone and is reported ended only after it (both in
+   `sim-call-all`). That second test is why the tone's timer runs on a
+   queue of its own: on the main queue the held-back end never fired at all
+   where nothing services a main run loop.
 
 ### 4.5 Why SIP on the app leg
 SIP is kept on the app leg because baresip supplies SDP negotiation, codecs,
@@ -481,8 +670,14 @@ on by config — see §7.4.
      the trunk took (G.722) by re-INVITE (`renegotiateCodec` in
      `internal/b2bua/transfer.go`; the vendored diago `ReInvite` now applies
      the answer's SDP), 488 only if the remaining party refuses; proven by
-     `DIRECTION=xfer-app make harness-trunk`. Still open: attended transfer;
-     ring-back or hold music for the party waiting during a transfer.
+     `DIRECTION=xfer-app make harness-trunk`. *Hold music for the party
+     waiting through a transfer done 2026-09-15* (rule 8b): the same
+     pre-encoded music a hold plays, on the leg that is waiting, for as
+     long as the target is being resolved, woken and rung. A refused
+     transfer falls back to ordinary hold music rather than silence,
+     because whoever asked for it is usually still holding — most phones,
+     baresip included, hold before they REFER. Still open: attended
+     transfer.
   3. Real PBX interop beyond Asterisk (CUCM third-party SIP device
      provisioning, §9 risk 4). *Check on the live CUCM:* inbound calls
      to the app negotiate G.722 (on the Grandstream + Asterisk bench,
@@ -503,6 +698,24 @@ on by config — see §7.4.
      `on` for the trunk leg in `make harness-trunk`.
   4. Before release: third-party acknowledgements screen and the App Store
      export-compliance declaration (see `ios/README.md`).
+  4a. **Volume and tone balancing.** Every level in the app was chosen by
+     arithmetic, not by ear: the tone amplitude in `CallTones.wav` (0.2),
+     the hold music's normalisation in `tools/gen_moh.py` (0.7 peak), and
+     how all of them sit against speech on a live call. They need judging
+     on a device, because nothing headless can: the call-waiting beep into
+     the ear of someone mid-conversation, ring-back and congestion before
+     the audio session settles, and hold music at the far end, each on the
+     earpiece, on speaker and over Bluetooth, where the routes have very
+     different gain. Expect the tone table and the music's level to change;
+     both are data (a constant and a generator flag), so this is tuning,
+     not rework.
+  4b. **UI beautification.** The in-call screen, keypad, directory and
+     settings are laid out for function and have never had a design pass.
+     Known rough edges: the in-call screen's status line and the held-call
+     label sit awkwardly at small widths, the keypad is plain, and the
+     settings screen is a debug surface with the diagnostics controls in
+     it. None of it is call-path work, so it can land whenever — but it
+     wants doing before anyone outside the team sees the app.
   5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
      tuning (parked 2026-09-07). *2026-09-10:* the "received audio 0–2 s
      late, varying per call" symptom was the media relay, not the app: the
@@ -618,6 +831,37 @@ old phase labels still resolve. None of this is on the roadmap.
 - **IM (was Phase 6).** SIP MESSAGE/SIMPLE or XMPP, riding the wire-protocol
   channel like presence does.
 
+### 4.7 Liveness is the server's job, not the device's
+
+The wire protocol's heartbeat runs **server → device** (PROTOCOL.md §5).
+That is not a detail: a Local Push provider exists to sit idle until data
+arrives, and iOS is under no obligation to schedule it in between — so a
+heartbeat the *device* must send can silently stop, and a server that reads
+that silence as death will close a perfectly good connection. It did: 246
+reconnects in one night (2026-09-15/16) on an extension that was awake and
+answering wakes in 1.3 s throughout, with gaps of 76 s, 170 s and 9 minutes
+that no timer-based theory explained.
+
+Apple's own sample (`example/`, SimplePushKit) is built the other way from
+where we started: `HeartbeatCoordinator` (sending) runs on the **server**,
+`HeartbeatMonitor` (listening) on the **device**, and the provider evaluates
+staleness from `handleTimerEvent()` — the system's own callback — rather
+than a timer of its own. It sets no TCP keepalive either; with the server
+driving, none is needed.
+
+The fix was almost entirely server-side because the client already answered
+a ping with a pong, and that pong resets the server's read deadline. So the
+deadline now measures *"does the far end answer when spoken to"* — which is
+the question worth asking — instead of *"has the far end had CPU lately"*,
+which we cannot expect it to satisfy. `TestAnsweringClientIsNeverTimedOut`
+pins it: a client that only ever answers must never be closed.
+
+Still to do from that comparison: retire the client's own send-timer (it is
+now redundant), and give the extension's `handleTimerEvent()` a staleness
+check like the sample's `evaluate()`, so a stale-but-nominally-connected
+session is rebuilt — today it only rebuilds when it knows it is
+disconnected.
+
 ## 7. Validation strategy: maximise automation, bound the human touch
 
 Principle: **every Apple-hardware dependency is hidden behind a seam that has a
@@ -685,6 +929,20 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    Done so far (2026-09-14): the tone, and both orders of arrival ring
    the second call; Accept itself not yet pressed on a device. Headless
    twin: `make sim-call-cw`.
+
+6. Call-progress tones (rule 8a; plan Phase J, 2026-09-15). *Which* tone
+   and *when* is headless — unit tests for the decision, `OUTBOUND=212
+   make sim-call` and `make sim-call-refused` for it on the real engine.
+   What no harness can judge is the one thing that matters: whether the
+   tone is **audible in the earpiece, mixed under baresip's audio unit**,
+   at a level that is neither lost nor painful against a call. So: call
+   101 and hear ring-back until it answers; call 101 while it is on
+   another call and hear busy, then the call disappear by itself; call an
+   extension the PBX does not know and hear congestion; hang up on a busy
+   tone and confirm the call goes at once. Then the one case the harness
+   cannot stage, because our server never sends it: a PBX destination
+   answering with 183 and its own ring-back (Asterisk `Progress()`) must
+   give **one** ring-back, not two.
 
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".

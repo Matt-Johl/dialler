@@ -68,6 +68,11 @@ let declineMode = args.count > 13 && args[13] == "decline"
 /// back to call 1, then ends both. Asserted on RTP reaching whichever call
 /// is active and on the two calls carrying distinct stack ids.
 let callWaitingMode = args.count > 13 && args[13] == "callwaiting"
+/// Refusal test (plan Phase J): the outbound target refuses the call, and
+/// the caller must hear busy or congestion *before* the call disappears —
+/// CallKit takes the audio session away with the call, so the end report is
+/// held back for the length of the tone.
+let refusedMode = args.count > 13 && args[13] == "refused"
 
 /// RTP received on the current call so far (cumulative).
 func rtpReceived() -> UInt32 {
@@ -154,6 +159,7 @@ final class ScriptedCallKit: CallUI {
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(activateDelayMs)) {
                 out("callkit: didActivate (+\(activateDelayMs)ms)")
                 engine.audioSessionActivated()
+                callKit.toneSession(active: true)
             }
         }
     }
@@ -164,9 +170,9 @@ final class ScriptedCallKit: CallUI {
     }
     func end(callID: String, reason: CallEndReason) {
         out("callkit: ended \(callID) (\(reason))")
-        lock.lock(); if current == callID { ended = true }; lock.unlock()
+        lock.lock(); if current == callID { ended = true }; if endedAt == nil { endedAt = Date() }; lock.unlock()
         // CallKit deactivates the session only after the last call ends.
-        if noCallsLeft() { engine.audioSessionDeactivated() }
+        if noCallsLeft() { engine.audioSessionDeactivated(); callKit.toneSession(active: false) }
     }
     /// Outgoing: CallKit approves the start action at once, then activates
     /// the session shortly after (as on the device).
@@ -178,9 +184,58 @@ final class ScriptedCallKit: CallUI {
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(activateDelayMs)) {
             out("callkit: didActivate (+\(activateDelayMs)ms)")
             engine.audioSessionActivated()
+            callKit.toneSession(active: true)
         }
     }
     func outgoingConnecting(callID: String) { out("callkit: \(callID) connecting (far end ringing)") }
+    /// Call-progress tones (plan Phase J). The simulator has no earpiece to
+    /// judge, but which tone the controller asks for, when it stops, and —
+    /// the part that broke the app on 2026-09-15 — whether it waits for
+    /// CallKit's didActivate rather than activating the session itself, all
+    /// are. The app's `TonePlayer` runs the same `TonePolicy`.
+    var tonePolicy = TonePolicy()
+    func playTone(_ tone: CallTones.Tone?) {
+        apply(tonePolicy.want(tone), asked: tone)
+    }
+    /// CallKit handed the session over (or took it back).
+    func toneSession(active: Bool) {
+        apply(tonePolicy.session(active: active), asked: nil)
+    }
+    private func apply(_ action: TonePolicy.Action, asked: CallTones.Tone?) {
+        switch action {
+        case .stop: out("callkit: tone stop")
+        case .nothing: break
+        case .hold(let t): out("callkit: tone \(name(t)) HELD (no audio session yet)")
+        case .play(let t):
+            out("callkit: tone \(name(t))")
+            if name(t) == "busy" || name(t) == "congestion" { noteFailureTone(name(t)) }
+        }
+        _ = asked
+    }
+    private func name(_ tone: CallTones.Tone) -> String {
+        switch tone {
+        case CallTones.ringback: return "ringback"
+        case CallTones.busy: return "busy"
+        case CallTones.congestion: return "congestion"
+        case CallTones.callWaiting: return "callwaiting"
+        default: return "\(Int(tone.hz))Hz"
+        }
+    }
+    /// What the in-call screen would say under the name. The simulator has
+    /// no screen, but the words are the app's answer to "what happened",
+    /// and a refused call that says "Calling…" is the bug this guards.
+    func callProgress(callID: String, _ progress: CallProgress) {
+        out("callkit: \(callID) screen says \"\(progress.label)\"")
+    }
+
+    /// Refusal test: which failure tone started, and when — judged against
+    /// when the call was reported ended.
+    var failureTone: (name: String, at: Date)?
+    var endedAt: Date?
+    private func noteFailureTone(_ name: String) {
+        lock.lock(); defer { lock.unlock() }
+        if failureTone == nil { failureTone = (name, Date()) }
+    }
     func outgoingConnected(callID: String) {
         out("callkit: \(callID) connected")
         lock.lock(); inCall = true; lock.unlock()
@@ -198,6 +253,19 @@ struct CallResult {
 }
 
 func judge(_ r: CallResult) -> (String, Bool) {
+    if refusedMode {
+        if r.established { return ("FAIL: the call was answered, not refused", false) }
+        lock.lock(); let tone = callKit.failureTone; let endedAt = callKit.endedAt; lock.unlock()
+        guard let tone else { return ("FAIL: the call was refused but no failure tone was played", false) }
+        guard let endedAt else { return ("FAIL: the failed call was never reported ended", false) }
+        // Busy runs 4 s and congestion 3 s; anything under two means the
+        // end was reported over the top of the tone.
+        let held = endedAt.timeIntervalSince(tone.at)
+        if held < 2 {
+            return (String(format: "FAIL: the %@ tone was cut off — the end was reported %.1fs after it started", tone.name, held), false)
+        }
+        return (String(format: "PASS: refused; %@ tone played and the call disappeared %.1fs later", tone.name, held), true)
+    }
     if declineMode {
         if r.established { return ("FAIL: call was answered, not declined", false) }
         if !r.declined { return ("FAIL: decline never took effect (still ringing at the deadline)", false) }
@@ -310,8 +378,9 @@ for index in 1...callsWanted {
     var transferResult: String?
     while Date() < deadline {
         Thread.sleep(forTimeInterval: 0.25)
-        if declineMode {
-            // Nothing to measure: the call is over once the decline fires.
+        if declineMode || refusedMode {
+            // Nothing to measure: the call is over once the decline fires,
+            // or (refused) once the tone has run and the end is reported.
             lock.lock(); let done = ended; let failed = engineFailed; lock.unlock()
             if failed != nil { fatal = failed; break }
             if done { sawVerdict = true; break }
@@ -443,6 +512,7 @@ func result() -> (String, Int32) {
     for r in results where !judge(r).1 { allOK = false }
     if !allOK { return ("FAIL: see per-call lines above", 1) }
     if declineMode { return ("PASS: \(callsWanted) call(s) declined from the banner", 0) }
+    if refusedMode { return ("PASS: \(callsWanted) refused call(s) heard their tone before disappearing", 0) }
     if callWaitingMode { return ("PASS: call waiting — second call taken with Hold & Accept and swapped back", 0) }
     return ("PASS: \(callsWanted) call(s) received and rendered", 0)
 }

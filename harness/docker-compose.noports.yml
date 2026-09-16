@@ -1,0 +1,20 @@
+# Overlay for running the harness beside a native `make dev-server`.
+#
+# The containers keep their compose-network addresses and publish NOTHING on
+# the host, so nothing can collide with a native server's 7443 / 5061 (or an
+# Asterisk's 5060), and a phone on the LAN cannot reach this harness by
+# accident and register to the wrong server. Anything on the host that must
+# talk to a container goes through harness/innet.sh.
+#
+# This exists because the opposite happened: a harness left running held
+# 7443, the native dev-server could not bind, the user's phone silently
+# registered to the harness instead, and every call died in a harness with no
+# PBX behind it (2026-09-15).
+#
+#   docker compose -f harness/docker-compose.yml -f harness/docker-compose.noports.yml \
+#     up -d --build dialler asterisk
+services:
+  dialler:
+    ports: !reset []
+  asterisk:
+    ports: !reset []

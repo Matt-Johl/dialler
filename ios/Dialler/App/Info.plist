@@ -22,20 +22,20 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Dialler connects to your organisation's on-premises call server.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Dialler needs the microphone for phone calls.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>voip</string>
+		<string>audio</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>voip</string>
-		<string>audio</string>
-	</array>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Dialler needs the microphone for phone calls.</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Dialler connects to your organisation&apos;s on-premises call server.</string>
 </dict>
 </plist>

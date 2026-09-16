@@ -32,6 +32,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var contacts: [DirectoryContact] = []
     @Published private(set) var log: [String] = []
     @Published private(set) var localPushStatus = "not configured"
+    /// Whether iOS is actually running the provider extension right now.
+    /// This is the one that decides whether a call can reach the phone
+    /// while the app is not open: with it false the server's wake has
+    /// nowhere to land and the caller gets "callee offline, wake
+    /// undeliverable". It had been visible only as a log line, which cost
+    /// a morning's debugging to work out (2026-09-16).
+    @Published private(set) var backgroundCalls = "unknown"
     /// The SSIDs of the saved Local Push configuration, as loaded from
     /// the framework's preferences (the source of truth; the app persists
     /// nothing of its own). Settings prefills its field from this.
@@ -47,8 +54,13 @@ final class AppModel: ObservableObject {
         var muted = false
         var speaker = false
         var held = false
+        /// Outgoing only: what the call is doing, from the SIP the
+        /// controller sees. Stays on screen through the failure tone.
+        var progress: CallProgress = .calling
         var status: String {
-            if connectedAt == nil { return outgoing ? "Calling…" : "Connecting…" }
+            if connectedAt == nil {
+                return outgoing ? progress.label : "Connecting…"
+            }
             return held ? "On hold" : "Connected"
         }
     }
@@ -87,6 +99,28 @@ final class AppModel: ObservableObject {
             c.speaker = calls.first?.speaker ?? false // one route
             calls.append(c)
         }
+    }
+
+    /// A short-lived line on the in-call screen for something that happened
+    /// to the call without changing its state — a refused transfer, where
+    /// the call simply continues and nothing else would say so.
+    @Published private(set) var notice: String?
+    private var noticeTask: Task<Void, Never>?
+
+    private func show(notice text: String) {
+        notice = text
+        noticeTask?.cancel()
+        noticeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.notice = nil
+        }
+    }
+
+    private func clearNotice() {
+        noticeTask?.cancel()
+        noticeTask = nil
+        notice = nil
     }
 
     private let store: AppConfigStore = AppGroupConfigStore(appGroup: DiallerIDs.appGroup)
@@ -159,7 +193,25 @@ final class AppModel: ObservableObject {
         callKit.onCallWaiting = { [weak self] waiting in
             Task { @MainActor in
                 guard let self else { return }
-                if waiting { self.tones.start(CallTones.callWaiting) } else { self.tones.stop() }
+                self.tones.want(waiting ? CallTones.callWaiting : nil)
+            }
+        }
+        // Every other call-progress tone (ring-back, busy, congestion) is
+        // chosen by the controller, which knows the SIP, and played here,
+        // which owns the audio session's player.
+        // What the screen says under the name: "Ringing…" once the far end
+        // is genuinely alerting, and why a call failed for as long as its
+        // tone plays — it used to read "Calling…" through both.
+        callKit.onProgress = { [weak self] id, progress in
+            Task { @MainActor in
+                guard let self, let i = self.calls.firstIndex(where: { $0.id == id }) else { return }
+                self.calls[i].progress = progress
+            }
+        }
+        callKit.onTone = { [weak self] tone in
+            Task { @MainActor in
+                guard let self else { return }
+                self.tones.want(tone)
             }
         }
         callKit.onAnswer = { [weak self] id in
@@ -177,6 +229,7 @@ final class AppModel: ObservableObject {
         }
         callKit.onStart = { [weak self] id in
             guard let self else { return }
+            self.clearNotice()
             self.controller.userStarted(callID: id)
             self.upsertCall(id, outgoing: true, connectedAt: nil)
         }
@@ -194,7 +247,16 @@ final class AppModel: ObservableObject {
             self.controller.setMuted(muted)
             for i in self.calls.indices { self.calls[i].muted = muted } // one microphone
         }
-        controller.onTransferFailed = { [weak self] reason in Task { @MainActor in self?.append("transfer refused: \(reason)") } }
+        controller.onTransferFailed = { [weak self] reason, progress in
+            Task { @MainActor in
+                guard let self else { return }
+                self.append("transfer refused: \(reason)")
+                // On screen, not only in the log: the call carries on, so
+                // without this the user taps Transfer and nothing visible
+                // happens at all.
+                self.show(notice: progress.map { "Transfer failed — \($0.label)" } ?? "Transfer failed")
+            }
+        }
         // Show the directory's friendly name for a known incoming caller
         // (e.g. "SIP phone (101)" instead of sip:101@…). The controller runs
         // this off the main actor, so read a snapshot of the contacts.
@@ -206,8 +268,17 @@ final class AppModel: ObservableObject {
             self.controller.setHeld(callID: id, held)
             if let i = self.calls.firstIndex(where: { $0.id == id }) { self.calls[i].held = held }
         }
-        callKit.onAudioActivated = { [weak self] in self?.engine.audioSessionActivated() }
-        callKit.onAudioDeactivated = { [weak self] in self?.engine.audioSessionDeactivated() }
+        callKit.onAudioActivated = { [weak self] in
+            self?.engine.audioSessionActivated()
+            // After the engine, never before: a tone must not be what
+            // activates the session, and must not race the call's own
+            // audio units into it (see `TonePlayer`).
+            Task { @MainActor in self?.tones.session(active: true) }
+        }
+        callKit.onAudioDeactivated = { [weak self] in
+            self?.engine.audioSessionDeactivated()
+            Task { @MainActor in self?.tones.session(active: false) }
+        }
         callKit.onLog = { [weak self] m in Task { @MainActor in self?.append(m) } }
         // iOS suspends the app (and kills its sockets) in the background;
         // reconnect the moment we are back, and do not retry while away.
@@ -294,6 +365,7 @@ final class AppModel: ObservableObject {
     /// `end`, which calls this.
     func callEnded(_ id: String) {
         calls.removeAll { $0.id == id }
+        if calls.isEmpty { clearNotice() } // it belonged to a call that is gone
         // The last call is over and we are not on screen: back to the
         // background rule (no session; the extension covers wakes).
         if controller.activeCalls.isEmpty, UIApplication.shared.applicationState != .active {
@@ -357,6 +429,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// What the Local Push section says about whether calls can arrive
+    /// while the app is closed. `isActive` is only true when iOS is running
+    /// the extension, which it does on a matching SSID — so "waiting for a
+    /// listed Wi-Fi network" is the ordinary off-site answer, not a fault.
+    static func backgroundCallState(enabled: Bool, active: Bool) -> String {
+        switch (enabled, active) {
+        case (false, _): return "off — calls arrive only while the app is open"
+        case (true, true): return "yes — the provider is running"
+        case (true, false): return "NO — waiting for a listed Wi-Fi network, or the provider needs re-enabling below"
+        }
+    }
+
     private func adopt(pushManager manager: NEAppPushManager) {
         manager.delegate = localPushDelegate
         pushManager = manager
@@ -365,6 +449,7 @@ final class AppModel: ObservableObject {
         // (on a matching SSID). false here explains "callee offline, wake
         // undeliverable" on the server: nothing holds the wake connection.
         append("Local Push: delegate attached (enabled=\(manager.isEnabled), active=\(manager.isActive), ssids=\(manager.matchSSIDs))")
+        backgroundCalls = Self.backgroundCallState(enabled: manager.isEnabled, active: manager.isActive)
     }
 
     func connect() {
@@ -621,8 +706,8 @@ final class AppModel: ObservableObject {
 /// the baresip XCFrameworks have not been built.
 final class LoggingCallEngine: CallEngine {
     var onIncomingCall: ((String, String, String?, String?) -> Void)?
-    var onCallEnded: ((String, String) -> Void)?
-    var onOutgoingRinging: ((String) -> Void)?
+    var onCallEnded: ((String, String, Int) -> Void)?
+    var onOutgoingRinging: ((String, Bool) -> Void)?
     var onCallEstablished: ((String) -> Void)?
     var onTransferFailed: ((String, String) -> Void)?
     var log: (String) -> Void = { _ in }

@@ -58,6 +58,42 @@ final class CallTonesTests: XCTestCase {
         XCTAssertEqual(t.segments.filter(\.on).count, 2, "two bursts")
     }
 
+    /// The ETSI cadences the rest of the plan is built on: every tone is
+    /// 425 Hz, and each is told from the others by its rhythm alone —
+    /// ring-back 1 s on / 4 s off, busy 0.5/0.5, congestion 0.25/0.25.
+    func testProgressToneCadences() {
+        for t in [CallTones.ringback, CallTones.busy, CallTones.congestion] {
+            XCTAssertEqual(t.hz, 425)
+            XCTAssertEqual(t.hz2, 0, "single tone")
+            XCTAssertEqual(t.segments.count, 1, "one burst; the gap is the repeat interval")
+        }
+        XCTAssertEqual(CallTones.ringback.duration, 1, accuracy: 0.001)
+        XCTAssertEqual(CallTones.ringback.everySeconds, 5)
+        XCTAssertEqual(CallTones.busy.duration, 0.5, accuracy: 0.001)
+        XCTAssertEqual(CallTones.busy.everySeconds, 1)
+        XCTAssertEqual(CallTones.congestion.duration, 0.25, accuracy: 0.001)
+        XCTAssertEqual(CallTones.congestion.everySeconds, 0.5)
+    }
+
+    /// Ring-back runs until the call is answered or given up on; a failure
+    /// tone stops by itself, so the phone does not beep on and on.
+    func testOnlyFailureTonesAreBounded() {
+        XCTAssertNil(CallTones.ringback.maxSeconds)
+        XCTAssertNil(CallTones.callWaiting.maxSeconds)
+        XCTAssertEqual(CallTones.busy.maxSeconds, 4)
+        XCTAssertEqual(CallTones.congestion.maxSeconds, 3)
+    }
+
+    /// Busy for the busy family, congestion for every other refusal, and
+    /// silence for an ending that is nobody's fault or is our own doing.
+    func testFailureToneForStatus() {
+        for s in [486, 600, 603] { XCTAssertEqual(CallTones.failure(status: s), CallTones.busy, "\(s)") }
+        for s in [404, 408, 480, 503, 606] { XCTAssertEqual(CallTones.failure(status: s), CallTones.congestion, "\(s)") }
+        XCTAssertNil(CallTones.failure(status: 0), "a BYE or a local error")
+        XCTAssertNil(CallTones.failure(status: 487), "our own CANCEL")
+        XCTAssertNil(CallTones.failure(status: 200), "not a failure at all")
+    }
+
     func le32(_ d: Data, _ at: Int) -> UInt32 { d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: at, as: UInt32.self) }.littleEndian }
     func le16(_ d: Data, _ at: Int) -> UInt16 { d.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: at, as: UInt16.self) }.littleEndian }
 }

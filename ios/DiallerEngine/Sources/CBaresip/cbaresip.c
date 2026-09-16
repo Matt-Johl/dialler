@@ -134,7 +134,7 @@ static void emit_info(cb_event_t ev, const cb_event_info *info)
 
 static void emit(cb_event_t ev, const char *peer, const char *text)
 {
-    cb_event_info info = { .call_id = "", .peer = peer ? peer : "", .text = text ? text : "", .dialler_call_id = "" };
+    cb_event_info info = { .call_id = "", .peer = peer ? peer : "", .text = text ? text : "", .dialler_call_id = "", .scode = 0 };
     emit_info(ev, &info);
 }
 
@@ -159,6 +159,7 @@ static void emit_call(cb_event_t ev, struct call *call, const char *text)
         .peer = call ? call_peeruri(call) : "",
         .text = text ? text : "",
         .dialler_call_id = dialler_id,
+        .scode = call ? call_scode(call) : 0,
     };
     emit_info(ev, &info);
 }

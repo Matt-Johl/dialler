@@ -20,6 +20,16 @@ public protocol CallUI: AnyObject {
     /// The far end is being alerted / has answered our outgoing call.
     func outgoingConnecting(callID: String)
     func outgoingConnected(callID: String)
+    /// Play a call-progress tone into the call's audio session, or stop the
+    /// one playing when `tone` is nil (plan Phase J). On iOS it is an
+    /// `AVAudioPlayer` on the session CallKit already activated for the
+    /// call; the controller decides *which* tone and *when*, because that
+    /// is SIP, not audio. Optional: the default plays nothing.
+    func playTone(_ tone: CallTones.Tone?)
+    /// How an outgoing call is progressing, for the app's own in-call
+    /// screen — CallKit's UI says "calling" until the call ends, whatever
+    /// happened. Optional; the default shows nothing.
+    func callProgress(callID: String, _ progress: CallProgress)
     /// Take a held call off hold on the controller's initiative (the call
     /// in progress ended and this is the only one left). On iOS it maps to
     /// a `CXSetHeldCallAction`, so the system performs the resume and calls
@@ -45,10 +55,15 @@ public protocol CallEngine: AnyObject {
     /// controller decides whether it belongs to a call already ringing
     /// (from a wake) or must ring the system UI itself.
     var onIncomingCall: ((_ engineCallID: String, _ peer: String, _ displayName: String?, _ diallerCallID: String?) -> Void)? { get set }
-    /// The SIP call ended (remote hangup, failure); `reason` is free text.
-    var onCallEnded: ((_ engineCallID: String, _ reason: String) -> Void)? { get set }
-    /// Our outgoing call: the far end is ringing (180/183) / has answered.
-    var onOutgoingRinging: ((_ engineCallID: String) -> Void)? { get set }
+    /// The SIP call ended (remote hangup, failure); `reason` is free text
+    /// and `status` the SIP status that closed it — 0 for a BYE, a local
+    /// error, or anything else that carried no response. The controller
+    /// picks the failure tone from it (`CallTones.failure(status:)`).
+    var onCallEnded: ((_ engineCallID: String, _ reason: String, _ status: Int) -> Void)? { get set }
+    /// Our outgoing call is being alerted. `earlyMedia` distinguishes a 183
+    /// with SDP — the far end is already sending audio, so the app must not
+    /// lay its own ring-back over it — from a plain 180, which carries none.
+    var onOutgoingRinging: ((_ engineCallID: String, _ earlyMedia: Bool) -> Void)? { get set }
     var onCallEstablished: ((_ engineCallID: String) -> Void)? { get set }
     /// A transfer we asked for was refused; `reason` is the SIP status. The
     /// call continues.
@@ -104,6 +119,8 @@ public extension CallEngine {
 
 public extension CallUI {
     func updateIncoming(callID _: String, displayName _: String) {}
+    func playTone(_: CallTones.Tone?) {}
+    func callProgress(callID _: String, _: CallProgress) {}
 }
 
 /// One ringing or active call as the controller tracks it.
@@ -159,18 +176,48 @@ public final class CallController {
     public var callWaitingEnabled = true
     public static let maxCalls = 2
 
+    /// Plan Phase J. A failed outgoing call whose tone is still playing: the
+    /// call is out of the table already and only its end report is held
+    /// back, so the caller hears busy or congestion before the system UI
+    /// takes the call (and its audio session) away. `toneEndSeq` makes the
+    /// scheduled report a no-op once anything else has ended the call.
+    private var toneEnd: (callID: String, reason: CallEndReason)?
+    private var toneEndSeq = 0
+
+    /// The call whose progress tone is playing, if any. Tones are stopped
+    /// *by owner*, never blanket: the app has one player and the
+    /// call-waiting beep — which belongs to CallKit's view of the calls,
+    /// not to this controller — shares it, so a call that never had a tone
+    /// must not be able to silence another call's.
+    private var toneCall: String?
+
+    /// Runs `work` after `seconds`. A seam, not a setting: tests replace it
+    /// so a four-second busy tone does not cost four seconds.
+    ///
+    /// Its own queue, deliberately. The main queue looked like the obvious
+    /// home — the app's CallKit work ends up there anyway — but this
+    /// controller also runs where nothing services a main run loop (the
+    /// headless `sim-call` tool, where the main thread sits in a wait
+    /// loop), and there the held-back end of a failed call never fired at
+    /// all: the call stayed on screen until the deadline
+    /// (`make sim-call-refused`, which is why that test exists).
+    private static let timerQueue = DispatchQueue(label: "dialler.calltone")
+    var schedule: (_ seconds: Double, _ work: @escaping () -> Void) -> Void = { seconds, work in
+        CallController.timerQueue.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
     public init(ui: CallUI, engine: CallEngine? = nil, now: @escaping () -> Date = Date.init, log: @escaping (String) -> Void = { _ in }) {
         self.ui = ui
         self.engine = engine
         self.now = now
         self.log = log
         engine?.onIncomingCall = { [weak self] id, peer, name, dialler in self?.handle(sipIncoming: peer, displayName: name, engineCallID: id, diallerCallID: dialler) }
-        engine?.onCallEnded = { [weak self] id, reason in self?.handle(sipEnded: reason, engineCallID: id) }
-        engine?.onOutgoingRinging = { [weak self] id in self?.handle(outgoingRinging: id) }
+        engine?.onCallEnded = { [weak self] id, reason, status in self?.handle(sipEnded: reason, engineCallID: id, status: status) }
+        engine?.onOutgoingRinging = { [weak self] id, early in self?.handle(outgoingRinging: id, earlyMedia: early) }
         engine?.onCallEstablished = { [weak self] id in self?.handle(established: id) }
         engine?.onTransferFailed = { [weak self] _, reason in
             self?.log("transfer refused: \(reason); the call continues")
-            self?.onTransferFailed?(reason)
+            self?.onTransferFailed?(reason, CallProgress.forTransferFailure(reason: reason))
         }
     }
 
@@ -179,8 +226,13 @@ public final class CallController {
         lock.withLock { calls.first { $0.value.engineCallID == engineCallID }?.key }
     }
 
-    /// The app is told when a transfer it asked for was refused.
-    public var onTransferFailed: ((String) -> Void)?
+    /// The app is told when a transfer it asked for was refused: the far
+    /// end's reason verbatim, and the same words the in-call screen uses
+    /// for a refused call (nil when the failure carried no SIP status).
+    /// Only a transfer refused *before* the target rang gets here — once it
+    /// rings the call has been handed over and is no longer ours to report
+    /// on (SPEC §4.4 rule 6a).
+    public var onTransferFailed: ((_ reason: String, _ progress: CallProgress?) -> Void)?
 
     /// Resolves the friendly name to show for an incoming caller. The app
     /// layer sets this to look the caller up in the directory (which it owns);
@@ -276,17 +328,51 @@ public final class CallController {
         engine?.setHeld(engineCallID: engineID, held)
     }
 
-    private func handle(outgoingRinging engineCallID: String) {
+    private func handle(outgoingRinging engineCallID: String, earlyMedia: Bool) {
         guard let id = trackedID(forEngineCallID: engineCallID) else { return }
-        log("\(id): far end ringing")
+        log("\(id): far end \(earlyMedia ? "sending early media" : "ringing")")
         ui.outgoingConnecting(callID: id)
+        // Ring-back (plan Phase J). Early media replaces it — and a 183 that
+        // follows a 180 stops the tone already playing, which is the usual
+        // order when the call reaches a PBX that plays its own. Never over
+        // another call: the tone goes into the same ear as the conversation.
+        ui.callProgress(callID: id, .ringing)
+        if earlyMedia || otherCallInProgress(than: id) {
+            stopTone(for: id)
+        } else {
+            playTone(CallTones.ringback, for: id)
+        }
     }
 
     private func handle(established engineCallID: String) {
         guard let id = trackedID(forEngineCallID: engineCallID) else { return }
         lock.withLock { calls[id]?.phase = .answered }
         log("\(id): connected")
+        stopTone(for: id) // answered: ring-back stops
         ui.outgoingConnected(callID: id)
+    }
+
+    /// Another call is up (answered, held or not). Progress tones for a
+    /// second call must not be laid over it.
+    private func otherCallInProgress(than id: String) -> Bool {
+        lock.withLock { calls.contains { $0.key != id && $0.value.phase == .answered } }
+    }
+
+    /// Start `tone` on behalf of `id`, which then owns the player.
+    private func playTone(_ tone: CallTones.Tone, for id: String) {
+        lock.withLock { toneCall = id }
+        ui.playTone(tone)
+    }
+
+    /// Stop the tone if `id` owns it — or whoever does, for `nil`, when
+    /// something has taken over the ear (an answer, a new call ringing).
+    private func stopTone(for id: String?) {
+        let owned: Bool = lock.withLock {
+            guard let owner = toneCall, id == nil || owner == id else { return false }
+            toneCall = nil
+            return true
+        }
+        if owned { ui.playTone(nil) }
     }
 
     public var activeCalls: [TrackedCall] { lock.withLock { Array(calls.values) } }
@@ -379,6 +465,10 @@ public final class CallController {
             id = newID
         }
         log("incoming SIP call \(id) from \(name) (no wake)")
+        // A tone still sounding from the last call is not allowed to play
+        // over this one (plan Phase J).
+        stopFailureTone(forCallID: nil)
+        stopTone(for: nil)
         ui.reportIncoming(callID: id, displayName: name, handle: peer) { [weak self] err in
             guard let self, let err else { return }
             self.log("CallKit refused SIP call \(id): \(err)")
@@ -388,16 +478,74 @@ public final class CallController {
     }
 
     /// A SIP call ended on the far side (or failed).
-    public func handle(sipEnded reason: String, engineCallID: String) {
-        let (ended, wasAnswered): (String?, Bool) = lock.withLock {
-            guard let (id, c) = calls.first(where: { $0.value.engineCallID == engineCallID }) else { return (nil, false) }
+    public func handle(sipEnded reason: String, engineCallID: String, status: Int = 0) {
+        let (ended, wasAnswered, wasOutgoing): (String?, Bool, Bool) = lock.withLock {
+            guard let (id, c) = calls.first(where: { $0.value.engineCallID == engineCallID }) else { return (nil, false, false) }
             calls[id] = nil
-            return (id, c.phase == .answered)
+            return (id, c.phase == .answered, c.direction == .outgoing)
         }
         guard let ended else { return } // a call we never tracked (e.g. one we refused)
         log("call \(ended) ended by SIP: \(reason)")
+        stopTone(for: ended) // this call's own ring-back, if it had one
+        // Plan Phase J: an outgoing call the far end refused. The caller
+        // hears busy or congestion first, as on a desk phone — which means
+        // the end cannot be reported yet, because CallKit takes the audio
+        // session away with the call and the tone would be cut off. Only
+        // for a call of our own that never connected, and only when it is
+        // the only one: a tone goes into the same ear as any conversation.
+        if !wasAnswered, wasOutgoing, !otherCallInProgress(than: ended), let tone = CallTones.failure(status: status) {
+            // The screen keeps saying "Calling…" otherwise, while the
+            // earpiece is already playing busy at the user (2026-09-15).
+            if let progress = CallProgress.forFailure(status: status) {
+                ui.callProgress(callID: ended, progress)
+            }
+            endAfterTone(ended, tone: tone, status: status)
+            return
+        }
         ui.end(callID: ended, reason: .remoteEnded)
         if wasAnswered { resumeLoneHeldCall() }
+    }
+
+    /// Play `tone` and report the end when it has run its course. The user
+    /// hanging up on it ends the call at once (`userEnded`) — nothing else
+    /// can, the call is already out of the table.
+    private func endAfterTone(_ id: String, tone: CallTones.Tone, status: Int) {
+        let seconds = tone.maxSeconds ?? tone.duration
+        let seq: Int = lock.withLock {
+            toneEndSeq += 1
+            toneEnd = (id, .failed)
+            return toneEndSeq
+        }
+        log("\(id): refused with \(status); \(seconds)s of tone before the call disappears")
+        playTone(tone, for: id)
+        schedule(seconds) { [weak self] in self?.finishToneEnd(seq) }
+    }
+
+    /// Report the held-back end of a failed call, once. A stale `seq` means
+    /// something got there first.
+    private func finishToneEnd(_ seq: Int) {
+        let pending: (callID: String, reason: CallEndReason)? = lock.withLock {
+            guard toneEndSeq == seq, let p = toneEnd else { return nil }
+            toneEnd = nil
+            return p
+        }
+        guard let pending else { return }
+        stopTone(for: pending.callID)
+        ui.end(callID: pending.callID, reason: pending.reason)
+    }
+
+    /// Cut a failure tone short. Returns true when `id` was the call it
+    /// belonged to (nil = any call, for a tone that must stop because
+    /// something else now owns the ear).
+    @discardableResult
+    private func stopFailureTone(forCallID id: String?) -> Bool {
+        let seq: Int? = lock.withLock {
+            guard let p = toneEnd, id == nil || p.callID == id else { return nil }
+            return toneEndSeq
+        }
+        guard let seq else { return false }
+        finishToneEnd(seq)
+        return true
     }
 
     /// The conversation just ended and the only call left is on hold: take
@@ -509,6 +657,8 @@ public final class CallController {
             return .expired
         }
         log("incoming call \(w.callID) from \(name)")
+        stopFailureTone(forCallID: nil)
+        stopTone(for: nil)
         ui.reportIncoming(callID: w.callID, displayName: name, handle: w.from.uri) { [weak self] err in
             guard let self else { return }
             if let err {
@@ -546,6 +696,11 @@ public final class CallController {
             return (c, held)
         }
         guard let call else { return }
+        // The ear now belongs to a conversation: any progress tone stops
+        // (plan Phase J). An outgoing call of our own can still be ringing
+        // behind this one — call waiting admits the second call, and its
+        // ring-back would otherwise play on over the answer.
+        stopTone(for: nil)
         for e in others {
             log("\(callID): holding the other call first")
             engine?.setHeld(engineCallID: e, true)
@@ -562,6 +717,14 @@ public final class CallController {
 
     /// User declined or hung up in the system UI.
     public func userEnded(callID: String) {
+        // Hanging up on a busy or congestion tone (plan Phase J): the call
+        // is already out of the table and only its end report is waiting on
+        // the tone. Make it now — the user is done listening.
+        if stopFailureTone(forCallID: callID) {
+            log("ended \(callID) by user, on its failure tone")
+            return
+        }
+        stopTone(for: callID) // cancelling an outgoing call stops its ring-back
         // Declining a ringing incoming call: tell the server through the
         // wake channel too (it may be holding the caller for our
         // registration), using the wake's own id. A call that rang from the

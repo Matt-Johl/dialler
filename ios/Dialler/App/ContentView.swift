@@ -51,6 +51,12 @@ struct InCallView: View {
             } else {
                 Text(call.status).font(.title2).foregroundStyle(.secondary)
             }
+            if let notice = model.notice {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .transition(.opacity)
+            }
             if let held = model.heldCall {
                 // Call waiting: the other call is on hold. Switching between
                 // the two is the system's job — iOS 26 shows its own Swap
@@ -289,6 +295,9 @@ struct SettingsView: View {
                         .disabled(SSIDList.parse(ssids).isEmpty)
                     Button("Remove saved configuration", role: .destructive) { model.removeLocalPush() }
                     LabeledContent("State", value: model.localPushStatus)
+                    LabeledContent("Background calls", value: model.backgroundCalls)
+                    Text("\"Background calls\" is whether iOS is running the provider right now. While it says no, a call to this phone cannot arrive unless the app is open — the server has nowhere to send the wake.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 .onAppear { if ssids.isEmpty { ssids = SSIDList.format(model.localPushSSIDs) } }
                 .onChange(of: model.localPushSSIDs) { _, saved in

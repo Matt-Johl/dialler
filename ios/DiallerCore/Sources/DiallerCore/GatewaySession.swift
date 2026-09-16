@@ -148,6 +148,15 @@ public final class GatewaySession: SignalTransport, @unchecked Sendable {
 
     public func send(_ message: Message) { inner.send(message) }
 
+    /// Re-check that the link is alive, from outside the transport's own
+    /// timer. The Local Push extension calls this from
+    /// `handleTimerEvent()` — the system's callback — because iOS need not
+    /// schedule the extension often enough for a timer of ours to be
+    /// trusted (SPEC §4.7, and Apple's sample does the same).
+    public func checkLiveness() {
+        inner.checkLiveness()
+    }
+
     public func disconnect() {
         lock.withLock {
             wanted = false

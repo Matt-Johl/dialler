@@ -22,9 +22,15 @@ final class SessionMachineTests: XCTestCase {
         // Nothing but welcome/error is honoured before welcome.
         XCTAssertEqual(m.received(env(.wake(wake("c1")))), [])
 
-        XCTAssertEqual(m.received(env(.welcome(welcome))), [.emit(.connected(welcome)), .scheduleHeartbeat(seconds: 25)])
+        XCTAssertEqual(m.received(env(.welcome(welcome))), [.emit(.connected(welcome)), .scheduleLivenessCheck(seconds: 25)])
         XCTAssertEqual(m.state, .live(sessionID: "s1", heartbeatSeconds: 25))
-        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)])
+        XCTAssertEqual(m.evaluateLiveness(), [.scheduleLivenessCheck(seconds: 25)], "checks the clock; never sends")
+
+        // The heartbeat belongs to the server (SPEC §4.7): we answer its
+        // ping and originate nothing. A client that pings on a timer of its
+        // own is one iOS can stop scheduling, which is what made a healthy
+        // extension look dead 246 times in a night.
+        XCTAssertEqual(m.received(env(.ping)), [.send(.pong)], "answer, do not originate")
         XCTAssertEqual(m.received(env(.pong)), [])
         XCTAssertEqual(m.received(env(.ping)), [.send(.pong)])
     }
@@ -63,18 +69,18 @@ final class SessionMachineTests: XCTestCase {
         _ = m.received(env(.welcome(welcome)))
 
         now = t0.addingTimeInterval(25)
-        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)])
+        XCTAssertEqual(m.evaluateLiveness(), [.scheduleLivenessCheck(seconds: 25)], "checks the clock; never sends")
         XCTAssertEqual(m.received(Envelope(id: "p", ts: now, message: .pong)), [], "a pong resets the idle clock")
 
         now = t0.addingTimeInterval(50)
-        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)])
+        XCTAssertEqual(m.evaluateLiveness(), [.scheduleLivenessCheck(seconds: 25)], "checks the clock; never sends")
         now = t0.addingTimeInterval(75)
-        XCTAssertEqual(m.heartbeatDue(), [.send(.ping), .scheduleHeartbeat(seconds: 25)], "50 s of silence is within the limit")
+        XCTAssertEqual(m.evaluateLiveness(), [.scheduleLivenessCheck(seconds: 25)], "50 s of silence is within the limit")
         now = t0.addingTimeInterval(101)
-        XCTAssertEqual(m.heartbeatDue(),
+        XCTAssertEqual(m.evaluateLiveness(),
                        [.emit(.disconnected(reason: "no frame from the server within 75s")), .close])
         XCTAssertEqual(m.state, .closed)
-        XCTAssertEqual(m.heartbeatDue(), [], "closed: the timer does nothing more")
+        XCTAssertEqual(m.evaluateLiveness(), [], "closed: the check does nothing more")
     }
 
     func testWakeDedupAndExpiry() {

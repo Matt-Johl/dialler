@@ -89,7 +89,18 @@ client                                   server
 
 - Server advertises `heartbeat_seconds` in `welcome` (default 25, chosen to sit
   under typical NAT UDP/TCP idle timeouts and iOS extension budgets).
-- Client sends `ping` at that interval. Server replies `pong`.
+- **The server sends `ping` at that interval; the client replies `pong`.**
+  Either direction is valid on the wire and a receiver ignores what it does
+  not expect (§2), but the server is the one that must drive it. The Local
+  Push extension cannot be relied on to start a frame: iOS need not schedule
+  it, so a timer of its own may simply not fire — while incoming data always
+  wakes it, which is the whole premise of the provider. Liveness the server
+  starts therefore always gets an answer; liveness the device must start
+  depends on the device being alive in a sense we cannot check. Apple's own
+  sample is built this way round (`example/`, SimplePushKit:
+  `HeartbeatCoordinator` runs on the server, `HeartbeatMonitor` on the
+  device). Before 2026-09-16 this was the other way round and cost 246
+  reconnects a night on an extension that was awake throughout.
 - Server closes a connection with no frame received for `3 × heartbeat_seconds`.
   Clients apply the same rule to the server (no frame within 3 intervals →
   reconnect); a healthy link carries at least one frame per interval.

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/emiago/diago"
@@ -14,6 +15,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
+	"dialler/server/internal/moh"
 	"dialler/server/internal/routing"
 	"dialler/server/internal/wire"
 )
@@ -52,6 +54,14 @@ type bridgedCall struct {
 	// wakes are forgotten when the call ends (the invite path does the same
 	// for the callee it woke).
 	woken []string
+	// Hold (SPEC §4.4 rule 8b): the leg whose party pressed hold, and the
+	// stop for the music playing to the other one. Nil when nobody holds.
+	heldBy   *callLeg
+	holdStop context.CancelFunc
+	// Non-nil while this server is completing a transfer, closed when it is
+	// decided. The referrer is released as soon as the target rings, so its
+	// BYE must not be read as the end of the call (rule 6a).
+	handing chan struct{}
 }
 
 func newBridgedCall(s *Server, log *slog.Logger, callID string, a, b *callLeg) *bridgedCall {
@@ -69,6 +79,9 @@ func (c *bridgedCall) startLocked() error {
 	if c.cancel != nil {
 		c.cancel()
 	}
+	// The pumps are about to be replaced (a transfer): the music was
+	// playing on one of the old ones.
+	c.stopHoldLocked()
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.pumps = nil
@@ -96,6 +109,75 @@ func (c *bridgedCall) startLocked() error {
 	return nil
 }
 
+// setHeld starts or stops hold music after `by` re-INVITEd its leg into or
+// out of hold (SPEC §4.4 rule 8b).
+//
+// The music plays to the OTHER leg — the party who did not press hold and
+// would otherwise hear nothing at all, because hold means the holder has
+// stopped sending. Nothing is signalled to them: their call carries on
+// exactly as it was, which is why this works whatever is at the far end and
+// however it is configured.
+func (c *bridgedCall) setHeld(by *callLeg, held bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !held {
+		if c.heldBy == by {
+			c.log.Info("hold released", "held_by", by.name)
+			c.stopHoldLocked()
+		}
+		return
+	}
+	if c.heldBy == by {
+		return // a re-INVITE that changed something else; already holding
+	}
+	if c.playLocked(by, "music", "hold") {
+		c.heldBy = by
+	}
+}
+
+// playMusicLocked starts hold music to the party OPPOSITE `from`, on the
+// pump that feeds them. Two things need it and they are the same thing from
+// the far end's point of view — someone pressed hold, or someone transferred
+// the call and the target is being dialled — so they share the mechanism
+// and differ only in `why`, which is for the log.
+//
+// Returns false when there is nothing to play to. Caller holds c.mu.
+func (c *bridgedCall) playLocked(from *callLeg, clip, why string) bool {
+	// Never two players on one stream. A transfer is routinely preceded by
+	// a hold — baresip holds before it REFERs, and a phone may too — so
+	// this is the normal path, not an edge case.
+	c.stopHoldLocked()
+	other, feed := c.b, 0
+	if from == c.b {
+		other, feed = c.a, 1
+	}
+	if other == nil || feed >= len(c.pumps) {
+		return false // echo, or the pumps are between restarts
+	}
+	frames := moh.Clip(clip, other.codec.Name)
+	if frames == nil {
+		// Nothing pre-encoded for what this leg negotiated: the waiting
+		// party gets the silence it would have had anyway, but say so — it
+		// means a codec reached production that gen_moh.py does not cover.
+		c.log.Warn("nothing to play for the codec", "clip", clip, "why", why, "playing_to", other.name, "codec", other.codec.Name)
+		return false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.holdStop = cancel
+	c.log.Info("playing to the waiting party", "clip", clip, "why", why, "playing_to", other.name, "codec", other.codec.Name, "loop_s", frames.Seconds())
+	go c.pumps[feed].playHold(ctx, frames, c.log.With("dir", from.name+"→"+other.name))
+	return true
+}
+
+// Caller holds c.mu.
+func (c *bridgedCall) stopHoldLocked() {
+	if c.holdStop != nil {
+		c.holdStop()
+		c.holdStop = nil
+	}
+	c.heldBy = nil
+}
+
 // wait blocks until either leg ends, hangs up the other, and stops the
 // pumps. A transfer swaps a leg underneath it.
 func (c *bridgedCall) wait() {
@@ -120,6 +202,13 @@ func (c *bridgedCall) wait() {
 		// referrer first) rather than racing it with a plain BYE.
 		if c.awaitOffload() {
 			break
+		}
+		// A transfer we are completing releases the referrer the moment the
+		// target rings (SPEC §4.4 rule 6a), so its BYE arrives while the
+		// call is very much alive. Wait for the transfer to be decided and
+		// then look again at whatever legs are left.
+		if c.awaitHandover() {
+			continue
 		}
 		if aEnded {
 			if b != nil {
@@ -195,6 +284,43 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 		}
 	}
 
+	// The remaining party is about to wait while the target is resolved,
+	// woken and rung — seconds, and up to the ring timeout if a wake is
+	// involved. They were left in silence until now (SPEC §6 near-term item
+	// 2); give them the same music a hold does, from the same place.
+	// The waiting party hears music while the target is resolved and woken,
+	// then ring-back the moment it actually alerts — and that alert is also
+	// when the referrer is let go (rule 6a).
+	c.mu.Lock()
+	c.playLocked(from, "music", "transfer")
+	c.handing = make(chan struct{})
+	handing := c.handing
+	origA, origB := c.a, c.b
+	c.mu.Unlock()
+	var released atomic.Bool
+	handed := false
+	defer func() {
+		close(handing) // wait() may look at the legs again
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if handed || c.a != origA || c.b != origB {
+			return // the transfer happened; these legs are gone
+		}
+		c.stopHoldLocked()
+		if released.Load() {
+			return // nobody to go back to; the failure path dealt with it
+		}
+		// Refused before it ever rang, so the referrer was never released
+		// and the original call stands. They are usually still HOLDING —
+		// most phones, baresip included, hold before they REFER — so the
+		// transfer's music gives way to an ordinary hold rather than to
+		// the silence this rule exists to remove.
+		ms := from.sess.Media().MediaSession()
+		if ms != nil && heldMode(ms.NegotiatedMode()) && c.playLocked(from, "music", "hold") {
+			c.heldBy = from
+		}
+	}()
+
 	var newLeg *callLeg
 	switch d.Target {
 	case routing.Unknown:
@@ -229,11 +355,52 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 			Headers:       []sip.Header{sip.NewHeader(CallIDHeader, c.callID)},
 			OnMediaUpdate: func(m *diago.DialogMedia) { m.MediaSession().RTPNAT = nat },
 			OnRefer:       c.onRefer(leg),
+			// The target alerting is the hand-off: the number exists and
+			// is free, so the waiting party moves from music to ring-back
+			// and the referrer is let go (rule 6a). Before this point a
+			// refusal still belongs to the referrer, who keeps the call.
+			OnResponse: func(res *sip.Response) error {
+				if res == nil || !handsOver(int(res.StatusCode)) {
+					return nil
+				}
+				if !released.CompareAndSwap(false, true) {
+					return nil
+				}
+				c.mu.Lock()
+				c.playLocked(from, "ringback", "transfer: target ringing")
+				c.mu.Unlock()
+				log.Info("transfer: target is ringing; releasing the referrer", "status", res.StatusCode)
+				// Not inline: releaseReferrer waits out a BYE grace, and
+				// this runs on the response path of a live transaction.
+				go c.releaseReferrer(context.Background(), log, from)
+				return nil
+			},
 		})
 		if err != nil {
-			log.Info("transfer: target did not answer", "err", err)
 			_ = out.Hangup(out.Context())
 			out.Close()
+			if !released.Load() {
+				log.Info("transfer: refused before it rang; the call stays where it is", "err", err)
+				return err
+			}
+			// It rang, so the referrer has gone and there is nobody to put
+			// the waiting party back with. Busy tone, then let them go —
+			// the ordinary end of a blind transfer nobody answered.
+			log.Info("transfer: failed after ringing; the referrer is already released", "err", err)
+			c.mu.Lock()
+			c.playLocked(from, "busy", "transfer: failed after release")
+			c.mu.Unlock()
+			select {
+			case <-time.After(busyBeforeHangup):
+			case <-other.sess.Context().Done():
+			}
+			c.mu.Lock()
+			c.stopHoldLocked()
+			c.mu.Unlock()
+			if other.sess.Context().Err() == nil {
+				_ = other.sess.Hangup(context.Background())
+			}
+			handed = true
 			return err
 		}
 		if err := out.Ack(ctx); err != nil {
@@ -277,9 +444,29 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 	}
 	log.Info("transfer: bridged", "remaining", other.name, "to", target)
 
-	c.releaseReferrer(ctx, log, from)
+	handed = true
+	if !released.Load() {
+		// Answered without ever alerting (an auto-answering phone, the PBX
+		// echo): the referrer is still waiting to be told.
+		c.releaseReferrer(ctx, log, from)
+	}
 	return nil
 }
+
+// handsOver reports whether a response from a transfer target means the
+// hand-off has happened and the referrer can be let go (rule 6a).
+//
+// Only 18x. **100 Trying is not alerting** — it says the INVITE arrived,
+// nothing more, and releasing on it would let the referrer go a moment
+// before a 404 came back, leaving the waiting party with nobody and the
+// referrer told it worked. A final response is not alerting either: it is
+// the outcome, and until something rings the call still belongs to the
+// referrer.
+func handsOver(status int) bool { return status >= 180 && status < 200 }
+
+// How long the party left behind by a failed transfer hears busy before the
+// call is ended. Long enough to be recognised, short enough not to nag.
+const busyBeforeHangup = 4 * time.Second
 
 // How long the referrer gets to hang up on its own after the final NOTIFY.
 const referrerByeGrace = 1500 * time.Millisecond
@@ -323,7 +510,7 @@ func (s *Server) transferDestination(ctx context.Context, log *slog.Logger, c *b
 		from := sip.FromHeader{Address: sip.Uri{}}
 		_ = sip.ParseUri(other.party.URI, &from.Address)
 		from.DisplayName = other.party.DisplayName
-		woken, err := s.wakeAndWaitFrom(ctx, log, nil, callID, &from, ep)
+		woken, err := s.wakeAndWaitFrom(ctx, log, nil, callID, &from, ep, nil)
 		if err != nil {
 			return dst, false, err
 		}
@@ -504,6 +691,23 @@ func (c *bridgedCall) endOffload(succeeded bool) {
 	if ch != nil {
 		close(ch)
 	}
+}
+
+// awaitHandover is wait()'s side of a server-completed transfer: while one
+// is in flight, block until it is decided rather than tearing the call down
+// under it. Returns true when wait() should look at the legs afresh.
+func (c *bridgedCall) awaitHandover() bool {
+	c.mu.Lock()
+	ch := c.handing
+	c.mu.Unlock()
+	if ch == nil {
+		return false
+	}
+	<-ch
+	c.mu.Lock()
+	c.handing = nil
+	c.mu.Unlock()
+	return true
 }
 
 // awaitOffload is wait()'s side: if a PBX-side transfer is in progress,

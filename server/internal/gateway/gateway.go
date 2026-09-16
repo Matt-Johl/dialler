@@ -27,7 +27,7 @@ type Authenticator interface {
 
 // Config tunes a Gateway. Zero values pick the PROTOCOL.md defaults.
 type Config struct {
-	Heartbeat        time.Duration    // advertised in Welcome; default 25s
+	Heartbeat        time.Duration    // advertised in Welcome; default 10s
 	HandshakeTimeout time.Duration    // time allowed for the Hello frame; default 5s
 	WriteTimeout     time.Duration    // per-frame write deadline; default 5s
 	Now              func() time.Time // clock; default time.Now
@@ -40,7 +40,7 @@ type Config struct {
 
 func (c Config) withDefaults() Config {
 	if c.Heartbeat <= 0 {
-		c.Heartbeat = 25 * time.Second
+		c.Heartbeat = 10 * time.Second
 	}
 	if c.HandshakeTimeout <= 0 {
 		c.HandshakeTimeout = 5 * time.Second
@@ -470,6 +470,26 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 	log.Info("session up")
 	defer log.Info("session down")
 
+	// Heartbeats are OURS to send, not the client's to prove (2026-09-16).
+	//
+	// The client used to ping on a timer of its own and we closed the
+	// session when none arrived. That cannot work for the Local Push
+	// extension: iOS need not schedule it, so its timer may not fire, and
+	// we were killing a perfectly good connection — 246 reconnects in a
+	// night, with the extension awake and answering wakes in 1.3 s
+	// throughout. Apple's own sample (example/, SimplePushKit) has the
+	// SERVER send heartbeats and the device merely listen, for exactly this
+	// reason: incoming data is what wakes a push provider, so liveness
+	// traffic the server starts always gets through, while liveness traffic
+	// the device must start depends on it being scheduled.
+	//
+	// The client already answers a ping with a pong (SessionMachine), and
+	// that pong resets the read deadline below — so the deadline now
+	// measures "the far end answers when spoken to", which is the question
+	// we actually care about, rather than "the far end got CPU recently".
+	stopPings := g.heartbeat(s, log)
+	defer stopPings()
+
 	idle := 3 * g.cfg.Heartbeat
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(idle))
@@ -501,6 +521,29 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 			// Unknown or unexpected-direction types are ignored (PROTOCOL.md §2).
 		}
 	}
+}
+
+// heartbeat pings the client every Heartbeat until the returned function is
+// called. A write failure is left to the read loop to notice: it is already
+// the one place a session ends.
+func (g *Gateway) heartbeat(s *session, log *slog.Logger) func() {
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(g.cfg.Heartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				if err := s.send(wire.TypePing, nil); err != nil {
+					log.Debug("heartbeat send failed", "err", err)
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 func isTimeout(err error) bool {

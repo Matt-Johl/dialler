@@ -29,12 +29,18 @@ public enum CallTones {
         /// How often the period is repeated, for tones that recur on a long
         /// interval (call waiting). Nil = play the period once.
         public var everySeconds: Double?
+        /// How long the repeat goes on before the tone stops by itself. Nil
+        /// = until the player is stopped. A failure tone is bounded (nobody
+        /// wants a phone that beeps until it is picked up); ring-back is
+        /// not — it ends when the call is answered, cancelled or times out.
+        public var maxSeconds: Double?
 
-        public init(hz: Double, hz2: Double = 0, segments: [Segment], everySeconds: Double? = nil) {
+        public init(hz: Double, hz2: Double = 0, segments: [Segment], everySeconds: Double? = nil, maxSeconds: Double? = nil) {
             self.hz = hz
             self.hz2 = hz2
             self.segments = segments
             self.everySeconds = everySeconds
+            self.maxSeconds = maxSeconds
         }
 
         public var duration: Double { segments.reduce(0) { $0 + $1.seconds } }
@@ -45,6 +51,46 @@ public enum CallTones {
     /// injects and what the caller never hears. Deliberately short and
     /// quiet: the phone is against someone's ear.
     public static let callWaiting = Tone(hz: 425, segments: [.on(0.1), .off(0.1), .on(0.1)], everySeconds: 5)
+
+    /// Ring-back: what the caller hears while the far end is being alerted.
+    /// Nothing else produces it on this path — iOS plays no tone for a VoIP
+    /// app's outgoing call, and a 180 carries no media, so without this the
+    /// caller hears silence from the moment they dial until the answer.
+    /// ETSI cadence: 1 s on, 4 s off.
+    ///
+    /// Not played when the far end sends early media instead (183 with SDP,
+    /// which is how a PBX delivers its own ring-back or an announcement):
+    /// that audio is already in the caller's ear and a second tone over it
+    /// is the classic double ring-back.
+    public static let ringback = Tone(hz: 425, segments: [.on(1)], everySeconds: 5)
+
+    /// Busy: the callee is on the phone and took neither call. ETSI cadence,
+    /// 0.5 s on / 0.5 s off, for four seconds — long enough to be recognised
+    /// as busy rather than a glitch, short enough not to nag.
+    public static let busy = Tone(hz: 425, segments: [.on(0.5)], everySeconds: 1, maxSeconds: 4)
+
+    /// Congestion / number unobtainable: the call failed for any other
+    /// reason — nobody of that name, nothing to wake, the PBX refused it.
+    /// ETSI cadence, 0.25 s on / 0.25 s off; faster than busy, which is how
+    /// the two are told apart by ear.
+    public static let congestion = Tone(hz: 425, segments: [.on(0.25)], everySeconds: 0.5, maxSeconds: 3)
+
+    /// The tone for an outgoing call that ended with SIP status `status`,
+    /// or nil when the ending deserves none.
+    ///
+    /// Nothing is played for a call that simply ended: status 0 is a BYE or
+    /// a local error (baresip reports those with text alone), and 487 is the
+    /// answer to our own CANCEL — the user hung up, and a tone in reply to
+    /// their own thumb is noise. Everything from 400 up is a refusal the
+    /// caller should hear.
+    public static func failure(status: Int) -> Tone? {
+        switch status {
+        case 486, 600, 603: return busy // Busy Here / Busy Everywhere / Decline
+        case 487: return nil            // Request Terminated: our own CANCEL
+        case 400...: return congestion
+        default: return nil
+        }
+    }
 
     /// A 16-bit mono WAV of one cadence period, ready for AVAudioPlayer.
     /// Each burst is faded in and out over `fade` seconds so it does not

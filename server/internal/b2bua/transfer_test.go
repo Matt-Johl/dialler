@@ -62,3 +62,21 @@ func TestReferErrorsCarryStatus(t *testing.T) {
 		t.Error("status text")
 	}
 }
+
+// When a transfer target's response releases the referrer (rule 6a): the
+// moment it rings, and not before. The boundary matters — 100 Trying only
+// says the INVITE arrived, so releasing on it would free the referrer just
+// before a 404, leaving the waiting party with nobody to be handed to and
+// the referrer told the transfer worked.
+func TestHandsOverOnlyWhenTheTargetIsActuallyAlerting(t *testing.T) {
+	for _, status := range []int{180, 181, 182, 183, 199} {
+		if !handsOver(status) {
+			t.Errorf("%d: alerting, so the referrer should be released", status)
+		}
+	}
+	for _, status := range []int{100, 200, 202, 404, 480, 486, 487, 500, 603} {
+		if handsOver(status) {
+			t.Errorf("%d: not alerting; the call still belongs to the referrer", status)
+		}
+	}
+}

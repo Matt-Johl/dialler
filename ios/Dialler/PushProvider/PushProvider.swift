@@ -54,16 +54,28 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
         }
     }
 
-    /// Called periodically by the system. A backstop only: the keeper
-    /// reconnects on its own; this catches a provider that never had a
-    /// complete config, a session refused as unenrolled, or anything the
-    /// keeper has somehow given up on.
+    /// Called periodically by the system — and this, not a timer of ours, is
+    /// what liveness hangs on here (SPEC §4.7).
+    ///
+    /// iOS need not schedule this extension, so a `DispatchSource` timer of
+    /// ours may not fire; the system's own callback always does. Apple's
+    /// sample checks connection health from exactly this callback
+    /// (`example/`, SimplePushProvider → `checkConnectionHealth`), and
+    /// `evaluateLiveness()` only reads the clock, so it is correct however
+    /// irregularly it is called.
     override func handleTimerEvent() {
         queue.async {
             if self.session == nil || self.refused {
                 self.note("timer: (re)connecting")
                 self.connect()
-            } else if !self.connected {
+            } else if self.connected {
+                // Connected as far as we know — but a session can be stale
+                // while looking fine (2026-09-13: disconnected 02:00→05:52
+                // while iOS reported the provider active). Ask, rather than
+                // assume; a dead one reports `.disconnected` and the keeper
+                // takes it from there.
+                self.session?.checkLiveness()
+            } else {
                 // Not merely a nudge: rebuild the session from scratch. On
                 // 2026-09-13 the extension stayed disconnected from 02:00 to
                 // 05:52 while iOS reported it active — whatever wedged the

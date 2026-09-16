@@ -4,6 +4,7 @@
 /data/
 server/*.test
 server/coverage.out
+example/
 
 # swift
 .build/

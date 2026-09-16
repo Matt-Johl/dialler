@@ -45,6 +45,47 @@ caller, or any second caller while Settings › Call waiting is off, gets
 486 and hears busy. `make sim-call-cw` is the headless twin of the device
 checklist (SPEC §7.3 item 5).
 
+**Hold music** is not the app's (plan Phase K). When the app holds a call
+the server plays music to the other party — the app cannot, because a held
+call owns no audio units and the one VoiceProcessingIO belongs to the
+active call (SPEC §4.4 rules 8 and 8b). The app signals hold and nothing
+else; what the held party hears is `server/internal/moh`.
+
+**Call-progress tones** (plan Phase J). iOS plays none of them for a VoIP
+app, and neither does a B2BUA that answers with a bare 180, so the app
+makes its own: `CallTones` (DiallerCore) renders 425 Hz ETSI cadences to
+PCM and `TonePlayer` (the app) plays them with an `AVAudioPlayer` on the
+session CallKit has already activated for the call, mixing with baresip's
+audio unit. Which tone and when is the *controller's* decision, because it
+is a SIP question — it reaches the app through `CallUI.playTone`:
+
+| Tone | When |
+|---|---|
+| ring-back, 1 s / 4 s | our outgoing call is alerted by a 180. Not on a 183: early media is the far end's own ring-back and ours would double it. Stops on answer, on the end, and if another call is answered first. |
+| busy, 0.5 s / 0.5 s | the call was refused 486 / 600 / 603. |
+| congestion, 0.25 s / 0.25 s | any other refusal — 480 is what our own server returns when nothing can be woken. |
+| call waiting, two 100 ms bursts every 5 s | a second call rings behind one in progress. Decided in `CallKitBridge`, not the controller: it is CallKit's view of the calls that makes a call "waiting". |
+
+**A tone never activates the session.** It belongs to CallKit, which hands
+it over at `didActivate` — but ring-back is asked for on the 180, which
+arrives first, and `AVAudioPlayer.play()` would activate the session itself.
+`TonePolicy` (DiallerCore) holds such a tone until activation and drops it
+at deactivation; `TonePlayer` only does what it says. The rule sits in
+DiallerCore because the app target has no tests, and it shipped broken once
+(2026-09-15) while it lived in the player.
+
+`OUTBOUND=212 make sim-call` and `make sim-call-refused` are the headless
+twins (both in `sim-call-all`); what a device is still needed for is in
+SPEC §7.3 item 6.
+
+A failure tone delays the *report* of the end by its own length (4 s busy,
+3 s congestion), because CallKit takes the audio session away with the
+call and a tone started after the end report is cut off. Hanging up on it,
+or a new call arriving, ends the call there and then. Nothing is played
+for a call that merely ended (a BYE, status 0) or for the 487 answering
+the user's own cancel. The SIP status comes up from the shim
+(`cb_event_info.scode`, `call_scode()`), not from parsing reason text.
+
 - **Foreground (registered):** the gateway's `welcome` names the device's
   SIP account, so the app registers its user agent as soon as it connects
   and stays registered while it runs. An incoming call then arrives as a SIP
@@ -216,7 +257,15 @@ the provider runs on any of them) configures
 ## Building from a restricted sandbox
 
 `swift test` in these packages needs `--disable-sandbox` and redirected module
-caches (see `make swift-test-sandboxed`). `xcodebuild` additionally needs the
+caches — `make` now sets `SWIFTPM_MODULECACHE_OVERRIDE` and
+`CLANG_MODULE_CACHE_PATH` itself, because without them even a package
+*manifest* will not compile. Since the Xcode that ships Swift 6.4,
+`make ios-typecheck` also cannot expand SwiftUI macros in the sandbox: the
+`swift-plugin-server` returns a malformed response, so any view using
+`@State` reports that and a cascade of "cannot find '$binding'". Non-view
+sources still typecheck, and the real gate is `make ios-build`
+(`xcodebuild`); an Xcode update also changes SwiftPM's scratch layout, which
+is why the module search paths in the Makefile list several. `xcodebuild` additionally needs the
 `CLANG_MODULE_CACHE_PATH` / `SWIFTPM_MODULECACHE_OVERRIDE` environment and a
 `-derivedDataPath` under `~/Library/Developer`.
 

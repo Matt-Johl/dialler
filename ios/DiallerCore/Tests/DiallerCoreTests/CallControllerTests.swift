@@ -10,6 +10,10 @@ final class FakeCallUI: CallUI {
     var started: [(String, String, String)] = []
     var connecting: [String] = []
     var connected: [String] = []
+    /// Every `playTone` in order; nil is a stop.
+    var tones: [CallTones.Tone?] = []
+    /// Every progress report in order, as (call, progress).
+    var progress: [(String, CallProgress)] = []
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
         reported.append((callID, displayName))
         completion(refuse)
@@ -19,6 +23,8 @@ final class FakeCallUI: CallUI {
     func startOutgoing(callID: String, handle: String, displayName: String) { started.append((callID, handle, displayName)) }
     func outgoingConnecting(callID: String) { connecting.append(callID) }
     func outgoingConnected(callID: String) { connected.append(callID) }
+    func playTone(_ tone: CallTones.Tone?) { tones.append(tone) }
+    func callProgress(callID: String, _ p: CallProgress) { progress.append((callID, p)) }
     var resumed: [String] = []
     func resume(callID: String) { resumed.append(callID) }
 }
@@ -27,8 +33,8 @@ final class FakeCallUI: CallUI {
 /// ids. `dial` hands back "e-<callID>" so tests can name the outgoing call.
 final class FakeEngine: CallEngine {
     var onIncomingCall: ((String, String, String?, String?) -> Void)?
-    var onCallEnded: ((String, String) -> Void)?
-    var onOutgoingRinging: ((String) -> Void)?
+    var onCallEnded: ((String, String, Int) -> Void)?
+    var onOutgoingRinging: ((String, Bool) -> Void)?
     var onCallEstablished: ((String) -> Void)?
     var onTransferFailed: ((String, String) -> Void)?
     var transferred: [(String, String)] = []
@@ -72,6 +78,23 @@ final class TransferTests: XCTestCase {
         XCTAssertEqual(engine.transferred.count, 1, "empty target ignored")
     }
 
+    /// A refused transfer has to reach the app in words it can show: the
+    /// call carries on, so nothing else on screen would ever say it failed.
+    func testRefusedTransferCarriesTheReasonAndTheWordsForIt() {
+        let ui = FakeCallUI(), engine = FakeEngine()
+        let c = CallController(ui: ui, engine: engine)
+        var got: [(String, CallProgress?)] = []
+        c.onTransferFailed = { reason, progress in got.append((reason, progress)) }
+        engine.onTransferFailed?("e1", "486 Busy Here")
+        guard let refused = got.first else { return XCTFail("nothing reported") }
+        XCTAssertEqual(refused.0, "486 Busy Here", "the far end's own words, for the log")
+        XCTAssertEqual(refused.1, .busy, "and words for the screen")
+
+        engine.onTransferFailed?("e1", "Connection timed out")
+        guard got.count == 2, let local = got.last else { return XCTFail("second failure not reported") }
+        XCTAssertNil(local.1, "a local failure has no status, so nothing is invented")
+    }
+
     func testRefusedTransferIsReportedAndCallContinues() {
         let ui = FakeCallUI(), engine = FakeEngine()
         let c = CallController(ui: ui, engine: engine)
@@ -79,13 +102,13 @@ final class TransferTests: XCTestCase {
         c.handle(sipIncoming: "sip:202@dialler", engineCallID: "e1")
         c.userAnswered(callID: "sip-1")
         var reported: [String] = []
-        c.onTransferFailed = { reported.append($0) }
+        c.onTransferFailed = { reason, _ in reported.append(reason) }
         c.transfer(callID: "sip-1", to: "999")
         engine.onTransferFailed?("e1", "404 Not Found")
         XCTAssertEqual(reported, ["404 Not Found"])
         XCTAssertEqual(c.activeCalls.count, 1, "the call is still up after a refused transfer")
         // Success: the far end (server) ends our call once the target answered.
-        engine.onCallEnded?("e1", "Call transfered")
+        engine.onCallEnded?("e1", "Call transfered", 0)
         XCTAssertTrue(c.activeCalls.isEmpty)
         XCTAssertEqual(ui.ended.map { $0.0 }, ["sip-1"])
     }
@@ -150,14 +173,14 @@ final class OutboundCallTests: XCTestCase {
         XCTAssertEqual(engine.dialled.map { $0.1 }, ["202"])
         XCTAssertEqual(c.activeCalls.first?.engineCallID, "e-out-1", "the stack's id is kept for the call")
 
-        engine.onOutgoingRinging?("e-out-1")
+        engine.onOutgoingRinging?("e-out-1", false)
         XCTAssertEqual(ui.connecting, ["out-1"])
         engine.onCallEstablished?("e-out-1")
         XCTAssertEqual(ui.connected, ["out-1"])
         XCTAssertEqual(c.activeCalls.first?.phase, .answered)
         XCTAssertEqual(c.activeCalls.first?.direction, .outgoing)
 
-        engine.onCallEnded?("e-out-1", "BYE")
+        engine.onCallEnded?("e-out-1", "BYE", 0)
         XCTAssertEqual(ui.ended.map { $0.0 }, ["out-1"])
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
@@ -343,7 +366,7 @@ final class CallControllerTests: XCTestCase {
         c.userAnswered(callID: id)
         XCTAssertEqual(engine.answered, ["e1"])
 
-        engine.onCallEnded?("e1", "BYE")
+        engine.onCallEnded?("e1", "BYE", 0)
         XCTAssertEqual(ui.ended.map { $0.0 }, [id])
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
@@ -356,7 +379,7 @@ final class CallControllerTests: XCTestCase {
         XCTAssertEqual(ui.reported.count, 1, "wake + INVITE for one call ring once")
         XCTAssertEqual(c.activeCalls.first?.sipArrived, true)
         XCTAssertEqual(c.activeCalls.first?.engineCallID, "e1")
-        engine.onCallEnded?("e1", "caller hung up")
+        engine.onCallEnded?("e1", "caller hung up", 0)
         XCTAssertEqual(ui.ended.map { $0.0 }, ["c1"])
     }
 
@@ -536,7 +559,7 @@ final class CallWaitingTests: XCTestCase {
 
     func testFarEndEndingTheActiveCallResumesTheHeldOne() {
         let (c, ui, engine) = makeTwoCalls()
-        engine.onCallEnded?("e2", "Connection reset by peer")
+        engine.onCallEnded?("e2", "Connection reset by peer", 0)
         XCTAssertEqual(ui.ended.map { $0.0 }, ["sip-2"])
         XCTAssertEqual(ui.resumed, ["sip-1"])
     }
@@ -572,7 +595,7 @@ final class CallWaitingTests: XCTestCase {
         let (c, ui, engine, _) = makeInCall()
         engine.onIncomingCall?("e2", "sip:100@pbx", nil, "c2")
         c.userAnswered(callID: "sip-2")
-        engine.onCallEnded?("e2", "BYE")
+        engine.onCallEnded?("e2", "BYE", 0)
         XCTAssertEqual(ui.ended.map { $0.0 }, ["sip-2"])
         XCTAssertEqual(c.activeCalls.map { $0.wake.callID }, ["sip-1"], "the first call stays (on hold, for the user to resume)")
         XCTAssertEqual(c.activeCalls.first?.held, true)
@@ -642,7 +665,7 @@ final class CallWaitingTests: XCTestCase {
         let (c, ui, engine, _) = makeInCall()
         c.callWaitingEnabled = false
         engine.onIncomingCall?("e2", "sip:100@pbx", nil, nil)
-        engine.onCallEnded?("e2", "rejected 486 Busy Here") // the stack reports the end of what we refused
+        engine.onCallEnded?("e2", "rejected 486 Busy Here", 0) // the stack reports the end of what we refused
         XCTAssertTrue(ui.ended.isEmpty)
         XCTAssertEqual(c.activeCalls.count, 1)
     }

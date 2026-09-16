@@ -335,6 +335,25 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     var onCallWaiting: (Bool) -> Void = { _ in }
     private var waitingCallID: String?
 
+    /// `CallUI.playTone`: the controller's call-progress tones (ring-back,
+    /// busy, congestion — plan Phase J), handed to the app's `TonePlayer`.
+    /// The call-waiting beep has its own hook above because it is decided
+    /// here, by CallKit's view of the calls, not by the controller.
+    /// Unlike the rest of this file it does not hop to the main thread: it
+    /// touches no CallKit state, and the app's sink hops to the main actor
+    /// itself. A second hop here would let a tone stop overtake the
+    /// call-waiting beep's start, which takes only one.
+    var onTone: (CallTones.Tone?) -> Void = { _ in }
+
+    func playTone(_ tone: CallTones.Tone?) { onTone(tone) }
+
+    /// `CallUI.callProgress`: what the in-call screen says under the name.
+    /// CallKit is told nothing — it has no notion of "busy" for a VoIP call
+    /// and shows its own "calling" until the call ends.
+    var onProgress: (String, CallProgress) -> Void = { _, _ in }
+
+    func callProgress(callID: String, _ progress: CallProgress) { onProgress(callID, progress) }
+
     /// A call's capabilities as this app supports them. `supportsHolding`
     /// is, in CallKit's words, "whether the call can be held on its own or
     /// swapped with another call"; grouping is off because the app does

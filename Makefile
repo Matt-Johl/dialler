@@ -72,6 +72,18 @@ harness-wake:
 harness-trunk:
 	sh harness/trunk_test.sh
 
+# Hold music (SPEC §4.4 rule 8b): the app-leg caller holds a trunk call and
+# the desk phone must hear the server's music, not silence. The caller plays
+# silence throughout, so anything the desk phone records is the music.
+harness-hold-music:
+	sh harness/hold_music_test.sh
+
+# A PBX extension with no registration must be refused by the PBX (480),
+# not rung: the dialplan's dial-status context turns Dial()'s outcome into a
+# SIP status. Publishes no host ports, so it is safe beside `make dev-server`.
+harness-pbx-unavailable:
+	sh harness/pbx_unavailable_test.sh
+
 # Echo self-test and audio-quality gate (SPEC §7.2): the app hears its own
 # audio back from the server ("echo", app leg only) or from the PBX ("600",
 # through the trunk); the recording is correlated with the played tone for
@@ -125,21 +137,45 @@ spike-call:
 IOS_SDK = $(shell xcrun --sdk iphonesimulator --show-sdk-path)
 IOS_TRIPLE = arm64-apple-ios17.0-simulator
 IOS_SCRATCH = $${TMPDIR:-/tmp}/spm-build-ios
+# SwiftPM and clang write module caches under ~/Library by default, which
+# the build sandbox refuses — including for the *manifest* compile, so a
+# package cannot even be read without this. Harmless outside the sandbox.
+# (Surfaced 2026-09-16 when an Xcode update invalidated the existing caches.)
+SWIFT_CACHE_ENV = SWIFTPM_MODULECACHE_OVERRIDE="$${TMPDIR:-/tmp}/spm-modcache" \
+  CLANG_MODULE_CACHE_PATH="$${TMPDIR:-/tmp}/clang-modcache"
+# Where SwiftPM leaves the built .swiftmodules. The layout moved with the
+# Xcode that ships Swift 6.4 (flat `debug/`, plus an Xcode-style `out/`);
+# earlier toolchains used `<triple>/debug/Modules`. swiftc ignores an -I
+# that does not exist, so naming all three keeps `make ios-typecheck`
+# working across a toolchain update instead of failing with "no such
+# module" (2026-09-16).
+IOS_MODULE_PATHS = -I "$(IOS_SCRATCH)/debug" \
+  -I "$(IOS_SCRATCH)/out/Products/Debug-iphonesimulator" \
+  -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/Modules" \
+  -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/CBaresip.build" \
+  $(IOS_CMODULE_MAPS)
+# The C module (CBaresip) is reached through a module map, and the newer
+# toolchain generates it as `<Module>.modulemap` rather than the
+# `module.modulemap` that -I looks for — so point swiftc straight at each
+# one. Empty on the older layout, where -I above is enough.
+IOS_CMODULE_MAPS = $(foreach m,\
+  $(wildcard $(TMPDIR)/spm-build-ios/out/Intermediates.noindex/GeneratedModuleMaps-iphonesimulator/CBaresip.modulemap),\
+  -Xcc -fmodule-map-file=$(m))
 
 # Package tests on macOS (no device).
 ios-test:
-	cd ios/DiallerProtocol && swift test
-	cd ios/DiallerCore && swift test
+	cd ios/DiallerProtocol && $(SWIFT_CACHE_ENV) swift test
+	cd ios/DiallerCore && $(SWIFT_CACHE_ENV) swift test
 
 # Compile the packages for the simulator and type-check the app + extension
 # sources against the iOS SDK without Xcode's package resolution. Useful in
 # restricted sandboxes; the real build is `xcodebuild -scheme Dialler`.
 ios-typecheck:
-	cd ios/DiallerEngine && swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --target DiallerEngine 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
-	cd ios/Dialler && swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
-	  -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/Modules" -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/CBaresip.build" App/*.swift
-	cd ios/Dialler && swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
-	  -I "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/Modules" PushProvider/*.swift
+	cd ios/DiallerEngine && $(SWIFT_CACHE_ENV) swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --target DiallerEngine 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
+	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
+	  $(IOS_MODULE_PATHS) App/*.swift
+	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
+	  $(IOS_MODULE_PATHS) PushProvider/*.swift
 
 # Cross-compile libre/baresip/Opus/OpenSSL for iOS device, simulator and macOS
 # into ios/vendor/xcframeworks (required once before the app links
@@ -196,18 +232,24 @@ sim-call:
 sim-call-cw:
 	CALLWAITING=1 sh harness/sim_call.sh
 
-# The incoming, outbound, decline, reconnect and call-waiting runs every
-# call-path change must pass.
+# An outgoing call the server refuses (plan Phase J): the caller must hear
+# the congestion tone and the call must not disappear until it has run.
+sim-call-refused:
+	OUTBOUND=999 REFUSED=1 sh harness/sim_call.sh
+
+# The incoming, outbound, decline, refused, reconnect and call-waiting runs
+# every call-path change must pass.
 sim-call-all:
 	OUTBOUND=212 sh harness/sim_call.sh
 	CALLS=2 sh harness/sim_call.sh
 	DECLINE=1 sh harness/sim_call.sh
+	OUTBOUND=999 REFUSED=1 sh harness/sim_call.sh
 	RESTART_SERVER=1 sh harness/sim_call.sh
 	CALLWAITING=1 sh harness/sim_call.sh
 
 SIM ?= iPhone 16
 audio-probe-sim:
-	cd ios/DiallerEngine && swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --product audio-probe 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
+	cd ios/DiallerEngine && $(SWIFT_CACHE_ENV) swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --product audio-probe 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
 	xcrun simctl boot "$(SIM)" 2>/dev/null || true
 	xcrun simctl spawn "$(SIM)" "$(IOS_SCRATCH)/arm64-apple-ios-simulator/debug/audio-probe"
 

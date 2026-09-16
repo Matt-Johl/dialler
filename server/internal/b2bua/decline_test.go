@@ -90,7 +90,7 @@ func TestRefusalAckEndsTheWakeWaitImmediately(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // the ring timeout
 		done := make(chan error, 1)
 		go func() {
-			_, err := s.wakeAndWaitFrom(ctx, s.log, nil, "call-1", nil, registry.Endpoint{User: "201", DeviceID: "dev-a"})
+			_, err := s.wakeAndWaitFrom(ctx, s.log, nil, "call-1", nil, registry.Endpoint{User: "201", DeviceID: "dev-a"}, nil)
 			done <- err
 		}()
 		// The ack is a no-op until the wait is registered, so keep acking.
@@ -131,7 +131,7 @@ func TestWillAnswerAckDoesNotEndTheWait(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.wakeAndWaitFrom(ctx, s.log, nil, "call-2", nil, registry.Endpoint{User: "202", DeviceID: "dev-b"})
+		_, err := s.wakeAndWaitFrom(ctx, s.log, nil, "call-2", nil, registry.Endpoint{User: "202", DeviceID: "dev-b"}, nil)
 		done <- err
 	}()
 	time.Sleep(20 * time.Millisecond)

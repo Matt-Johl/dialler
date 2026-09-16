@@ -13,6 +13,8 @@
 # machines and macOS CI.
 set -eu
 cd "$(dirname "$0")/.."
+export SWIFTPM_MODULECACHE_OVERRIDE="${TMPDIR:-/tmp}/spm-modcache"
+export CLANG_MODULE_CACHE_PATH="${TMPDIR:-/tmp}/clang-modcache"
 COMPOSE="docker compose -f harness/docker-compose.yml --profile test"
 NET=dialler-harness_default
 HOST="${HOST:-$(ipconfig getifaddr en0 2>/dev/null || true)}"

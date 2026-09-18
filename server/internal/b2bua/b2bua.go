@@ -772,9 +772,12 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 		break
 	}
 	if err != nil && wakeable {
-		// Never bridged: stop the app ringing.
+		// Never bridged: stop the app ringing. "caller_hangup" only when
+		// the caller went away — not when we answered the caller ourselves
+		// (480 for a callee whose connection died), which also ends the
+		// inbound dialog's context.
 		reason := wire.CancelTimeout
-		if in.Context().Err() != nil {
+		if in.Context().Err() != nil && !errors.Is(err, errCalleeFlowGone) {
 			reason = wire.CancelCallerHangup
 		}
 		s.waker.CancelWake(ep.DeviceID, callID, reason)
@@ -1177,6 +1180,7 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	// once (sipgo's forced cancel); with one, the normal CANCEL/487
 	// exchange runs and returns quickly.
 	inviteCtx := ctx
+	inviteDone := make(chan struct{}) // closed once out.Invite has returned
 	retargeted := make(chan registry.Endpoint, 1)
 	var (
 		answered  atomic.Bool // any response from the callee's route
@@ -1225,9 +1229,26 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		}
 		stopParent := context.AfterFunc(ctx, func() { abandon(context.Cause(ctx)) })
 		s.trackWait(callID, func(cause error) {
-			if cause != nil {
-				abandon(cause)
+			if cause == nil {
+				return
 			}
+			if cause == errWakeDeclined || cause == errWakeBusy {
+				// The app refuses on both channels in the same breath: this
+				// ack on the gateway and a 486 on the INVITE. A CANCEL sent
+				// now crosses that 486 — the app answers the CANCEL 481
+				// (its transaction is over) and both sides log a race that
+				// changes nothing. Let the 486 land; CANCEL only if it
+				// does not (the app died right after the ack).
+				go func() {
+					select {
+					case <-inviteDone:
+					case <-time.After(declineGrace):
+						abandon(cause)
+					}
+				}()
+				return
+			}
+			abandon(cause)
 		})
 		wctx, stopWatch := context.WithCancel(ictx)
 		go func() {
@@ -1277,6 +1298,7 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		},
 		OnRefer: call.onRefer(legB),
 	})
+	close(inviteDone)
 	if err != nil {
 		abandonMu.Lock()
 		why := abandoned
@@ -1391,6 +1413,11 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 // seconds. Two seconds is also the longest network stall worth carrying
 // as delay rather than restarting the far end's buffer over.
 const pumpTimelineBreak = 2 * time.Second
+
+// declineGrace is how long a decline or busy wake_ack waits for the app's
+// own 486 on the INVITE before the server CANCELs it itself (bridge). The
+// 486 normally lands within a few ms of the ack, on another connection.
+const declineGrace = 500 * time.Millisecond
 
 type pump struct {
 	r          io.Reader
@@ -1779,6 +1806,13 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 				}
 				breaks := p.breaks.Load()
 				if werr := p.forward(buf[:n]); werr != nil {
+					if errors.Is(werr, net.ErrClosed) {
+						// The destination leg's socket is gone: the call is
+						// ending and this packet crossed the teardown. Not
+						// an error, and nothing more can go this way.
+						log.Info("relay destination closed", "after", p.String())
+						return
+					}
 					if p.writeErrs.Add(1) <= 3 {
 						log.Warn("relay write failed", "err", werr, "after", p.String())
 					}

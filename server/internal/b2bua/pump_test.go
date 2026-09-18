@@ -404,3 +404,91 @@ func TestResumeAfterHoldMusicNeverGoesBackwards(t *testing.T) {
 		t.Errorf("resume left a timestamp gap of %d, want %d", d, ulawFrame)
 	}
 }
+
+// A source whose timestamps part from real time within one SSRC gets a
+// fresh timeline from the relay, whichever way they part. The desk phone's
+// hold/resume on the PBX sent the app's stream 31 s BACKWARDS in one step,
+// same SSRC, packets every 20 ms throughout (2026-09-18 08:45); forwarded
+// as-is, the app's playout buffer (ordered by timestamp) dropped every
+// later frame as old and the call was silent to its end. A timestamp that
+// jumps ahead, or freezes while packets keep arriving, is the same fault
+// in another shape. An honest gap — no packets, then timestamps that
+// account for the time — is not a fault and passes untouched.
+func TestRelayRebasesATimelineThatBreaksWithinOneSSRC(t *testing.T) {
+	const frameDur = 20 * time.Millisecond
+	type shape struct {
+		name    string
+		tsShift int32         // applied to the source's timestamp at packet 20
+		delay   time.Duration // the relay waits this long before packet 20
+		breaks  bool
+	}
+	shapes := []shape{
+		{"backwards 31s", -31 * 50 * ulawFrame, 0, true},
+		// Under the arrival-vs-timeline limit, yet never legitimate: the
+		// sequence number went on while the timestamp went back.
+		{"backwards 60ms", -3 * ulawFrame, 0, true},
+		{"ahead 31s", 31 * 50 * ulawFrame, 0, true},
+		{"frozen while packets arrive", -ulawFrame, 150 * time.Millisecond, true},
+		{"honest gap", 8 * ulawFrame, 8 * frameDur, false},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			src := &fakeSource{delayBefore: map[int]time.Duration{}}
+			if sh.delay > 0 {
+				src.delayBefore[20] = sh.delay
+			}
+			ts := uint32(5000)
+			for i := 0; i < 40; i++ {
+				if i == 20 {
+					ts = uint32(int32(ts) + sh.tsShift)
+				}
+				src.pkts = append(src.pkts, packet(uint16(i), ts, 0x111, false))
+				ts += ulawFrame
+			}
+			sink := &fakeSink{}
+			rr := media.NewRTPPacketReader(src, media.CodecAudioUlaw)
+			rw := media.NewRTPPacketWriter(sink, media.CodecAudioUlaw)
+			p := &pump{r: rr, w: rw, timelineBreak: 100 * time.Millisecond}
+			p.setPacketPath(rr, rw, media.CodecAudioUlaw)
+			drive(t, p, 40)
+			out := sink.all()
+			if got := p.breaks.Load() > 0; got != sh.breaks {
+				t.Fatalf("timeline break detected=%v, want %v (jump_ms=%d)", got, sh.breaks, p.lastBreakMs.Load())
+			}
+			step := int32(out[20].hdr.Timestamp - out[19].hdr.Timestamp)
+			if sh.breaks {
+				// Rebased: our timeline carries on one frame after what we
+				// last sent, marked as a new talk spurt.
+				if step != ulawFrame {
+					t.Fatalf("rebased stream stepped %d, want %d", step, ulawFrame)
+				}
+				if !out[20].hdr.Marker {
+					t.Fatal("first packet after the break must carry the marker")
+				}
+			} else {
+				if step != int32(sh.tsShift)+ulawFrame {
+					t.Fatalf("honest gap not preserved: step %d, want %d", step, int32(sh.tsShift)+ulawFrame)
+				}
+				if out[20].hdr.Marker {
+					t.Fatal("an honest gap is not a new stream")
+				}
+			}
+			// Either way the stream never goes backwards and continues
+			// normally afterwards, sequence numbers untouched.
+			for i := 1; i < len(out); i++ {
+				if d := int32(out[i].hdr.Timestamp - out[i-1].hdr.Timestamp); d <= 0 {
+					t.Fatalf("packet %d: timestamp went backwards by %d", i, -d)
+				}
+				if d := out[i].hdr.SequenceNumber - out[i-1].hdr.SequenceNumber; d != 1 {
+					t.Fatalf("packet %d: sequence stepped %d", i, d)
+				}
+			}
+			if d := out[21].hdr.Timestamp - out[20].hdr.Timestamp; d != ulawFrame {
+				t.Fatalf("timing after the break: step %d", d)
+			}
+			if out[19].hdr.Marker || out[21].hdr.Marker {
+				t.Fatal("marker on a packet that does not start a stream")
+			}
+		})
+	}
+}

@@ -78,6 +78,13 @@ harness-trunk:
 harness-hold-music:
 	sh harness/hold_music_test.sh
 
+# The PBX's own phone holds and resumes (nothing signalled to us): the app
+# must keep hearing it. The LAN phone's resume sent the RTP timeline 31 s
+# backwards on one SSRC and silenced the app (SPEC §9 item 11); the relay
+# now re-bases a timeline that parts from the packets' arrival.
+harness-pbx-hold:
+	sh harness/pbx_hold_test.sh
+
 # The same on an SRTP trunk: the clips the server writes into a trunk leg
 # and the relay that carries on after them, where libsrtp's replay window
 # punishes a sequence-number jump that plain RTP forgives.

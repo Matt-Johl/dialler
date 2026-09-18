@@ -1384,6 +1384,14 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 }
 
 // pump moves encoded audio one way between two legs and counts it.
+// pumpTimelineBreak is how far a source's timestamps may part from its
+// packets' arrival, between one packet and the next, before the relay
+// rebases them (pump.forward). Normal skew here is tens of ms, a burst
+// after a stall a few hundred; a hold/resume that breaks the timeline is
+// seconds. Two seconds is also the longest network stall worth carrying
+// as delay rather than restarting the far end's buffer over.
+const pumpTimelineBreak = 2 * time.Second
+
 type pump struct {
 	r          io.Reader
 	w          io.Writer
@@ -1426,6 +1434,12 @@ type pump struct {
 	// sources interleaved on one stream is noise, and during a transfer the
 	// party being replaced is still sending.
 	localOnly atomic.Bool
+	// How far the source's timestamps may part from its packets' arrival,
+	// between one packet and the next, before the relay stops trusting its
+	// timeline and starts a fresh one (see forward). Zero = pumpTimelineBreak.
+	timelineBreak time.Duration
+	breaks        atomic.Int64 // timeline breaks rebased so far
+	lastBreakMs   atomic.Int64 // size of the last one, signed
 	// Arrival skew of the source against its own timeline, for the log.
 	skewMs     atomic.Int64
 	earlyMaxMs atomic.Int64
@@ -1515,6 +1529,45 @@ func (p *pump) forward(payload []byte) error {
 	// vanishing after resume, with the relay counters still rising
 	// (2026-09-15).
 	newStream := !p.haveSrc || hdr.SSRC != p.srcSSRC || p.localWrote
+	// A source whose timeline has parted from real time is also a new
+	// stream. Within one SSRC the timestamps are trusted only while they
+	// advance with the packets' arrival; when the two disagree by more than
+	// timelineBreak between one packet and the next — a timestamp jumping
+	// ahead or BACK, or freezing while packets keep coming — the far end
+	// must not see it. A desk phone's hold/resume on the PBX did exactly
+	// that (2026-09-18 08:45: 31 s backwards in one step, same SSRC,
+	// packets every 20 ms throughout); forwarded verbatim, the app's
+	// playout buffer, which orders by timestamp, dropped every later frame
+	// as old and the call was silent to its end. An honest gap — no packets
+	// for a while, timestamps that then account for it — keeps arrival and
+	// timeline together and passes untouched.
+	if !newStream {
+		// The source's clock is taken to be the destination codec's: the
+		// relay forwards payloads verbatim, so both legs share a codec. A
+		// transcoding path would have to measure tsGap in the SOURCE clock.
+		arrivalGap := now.Sub(p.lastArrival)
+		tsTicks := int32(hdr.Timestamp - p.lastTs)
+		tsGap := time.Duration(tsTicks) * time.Second / time.Duration(p.codec.SampleRate)
+		limit := p.timelineBreak
+		if limit == 0 {
+			limit = pumpTimelineBreak
+		}
+		diff := tsGap - arrivalGap
+		// Forward or frozen: only beyond the limit, to stay clear of bursts
+		// and stalls. Backwards while the sequence number went forwards:
+		// never legitimate within one SSRC (a reordered packet moves both
+		// back together), and even a small step back costs the far end the
+		// same drop for its length — so any step back of more than a
+		// frame's slack rebases, however short.
+		// (expectSeq is one past the highest sequence number seen, so this
+		// is "beyond everything so far", which a reordered packet is not.)
+		back := tsTicks < -int32(p.codec.SampleTimestamp()) && int16(hdr.SequenceNumber+1-p.expectSeq) > 0
+		if diff > limit || diff < -limit || back {
+			newStream = true
+			p.breaks.Add(1)
+			p.lastBreakMs.Store(diff.Milliseconds())
+		}
+	}
 	if newStream {
 		// Rebase this source's timeline onto ours, continuing right after
 		// what we last sent so the far end sees one monotonic stream.
@@ -1724,12 +1777,17 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 					// what the 2 s line calls "we stopped forwarding".
 					continue
 				}
+				breaks := p.breaks.Load()
 				if werr := p.forward(buf[:n]); werr != nil {
 					if p.writeErrs.Add(1) <= 3 {
 						log.Warn("relay write failed", "err", werr, "after", p.String())
 					}
 				} else {
 					p.written.Add(1)
+				}
+				if p.breaks.Load() != breaks {
+					log.Info("relay: source timeline broke within one SSRC; rebased onto ours",
+						"jump_ms", p.lastBreakMs.Load(), "breaks", p.breaks.Load(), "after", p.String())
 				}
 			}
 			if err != nil {

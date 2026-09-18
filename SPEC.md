@@ -1462,30 +1462,49 @@ it is neither linked nor redistributed.
     `data/logs/dev-server.log` by *events*, never by timestamps — the
     phone's clock ran 37 s ahead of the Mac's on 2026-09-15, enough to
     invert the apparent order of cause and effect.
-11. **OPEN — garbled audio, then silence, after the PBX phone's own
-    hold/resume (2026-09-18 08:45).** 101, on a call with the app, put it
-    on hold to dial 201 a second time (call waiting on the desk phone),
-    the second call was cancelled, and 101 resumed the first. On resume
-    the trunk leg's RTP timeline jumped **31 s within the same SSRC**
-    (server relay: `skew_ms=31267`, `late_max_ms=31377` on
-    `caller→callee`). The relay only re-bases a stream on an SSRC change
-    or after its own hold music (`pump.forward`, `newStream`), so it
-    forwarded the jump verbatim; baresip's jitter buffer took every packet
-    after it as stale and the app rendered garbage, then silence
-    (`RENDERING SILENCE` from 06:46:11 device time) for the rest of the
-    call. Legal per RFC 3550 for a sender, but a B2BUA that normalises
-    every other discontinuity should normalise this one. *Fix to make:*
-    in `forward`, a timestamp step beyond a bound (say 2 s, in either
-    direction) within one SSRC is treated as a new stream — re-base onto
-    our own continuous timeline and set the marker bit — so the far end
-    sees one monotonic stream, as it already does across hold music and
-    transfers. *Test:* harness case where the desk phone (baresip-c)
-    holds and resumes the app during a trunk call, asserting the app's
-    recording continues after the resume (`assert_audio` on `out-211.wav`
-    with the level-comparison used by `hold_music_test.sh`); a unit test
-    in `pump_test.go` driving a source whose timestamps jump by 31 s.
-    Same relay code path both ways, so a jump from the app side is
-    covered by the same change.
+11. **FIXED 2026-09-18 — garbled audio, then silence, after the PBX
+    phone's own hold/resume (08:45; reproduced 18:31).** 101, on a call
+    with the app, put it on hold (call waiting on the desk phone) and
+    resumed. Across the resume the trunk leg's RTP timeline went **31 s
+    backwards in one step, within the same SSRC, with packets still
+    arriving every 20 ms** (server relay: `skew_ms` stepping to 31267 and
+    staying, `read_2s=100` throughout). The relay only re-based a stream
+    on an SSRC change or after its own hold music (`pump.forward`,
+    `newStream`), so it forwarded the step verbatim. On the app, baresip's
+    `timestamp_wrap` accepts a step that size as a normal timestamp
+    (`wrap=0`), the jitter buffer is sequence-ordered and unaffected (its
+    counters stayed clean), but the playout buffer `aubuf` is **ordered
+    by timestamp**: every frame after the step sorted behind what had
+    already been played and was dropped as old — `RENDERING SILENCE` for
+    the rest of the call. The 18:31 repeat had two smaller steps (4.7 s
+    and 5.5 s); the adaptive buffer reset its time base and audio came
+    back with audible gaps. Legal per RFC 3550 for a sender, but a B2BUA
+    that normalises every other discontinuity must normalise this one.
+    *Fix:* in `forward`, within one SSRC the source's timestamps are
+    trusted only while they advance with the packets' arrival; when the
+    two disagree by more than `pumpTimelineBreak` (2 s) between one
+    packet and the next — a timestamp jumping ahead or back, or freezing
+    while packets keep coming — the packet starts a new stream: re-based
+    one frame on from what we last sent, marker bit set, so the far end
+    sees one monotonic stream as it already does across hold music and
+    transfers. The rule is asymmetric: forward and frozen deviations
+    need the 2 s limit (to stay clear of bursts and stalls), but a
+    timestamp that goes **back** while the sequence number goes forward
+    is never legitimate within one SSRC (a reordered packet moves both
+    back together) and re-bases at any size beyond a frame — even a
+    short step back costs the far end the same drop for its length. An
+    honest gap (no packets, then timestamps that account for the time)
+    keeps arrival and timeline together and passes untouched. Assumes
+    the source's RTP clock is the destination codec's, true while the
+    relay forwards payloads verbatim; a transcoding path would have to
+    measure in the source clock. Each rebase is logged (`relay: source timeline broke
+    within one SSRC; rebased onto ours`, with `jump_ms`). Same code path
+    both directions, so a break from the app side is covered too.
+    `TestRelayRebasesATimelineThatBreaksWithinOneSSRC` drives the five
+    shapes (31 s back, 60 ms back, 31 s ahead, frozen, honest gap);
+    `make harness-pbx-hold` has the docker desk phone hold and resume
+    and asserts the app still hears it (docker Asterisk keeps the
+    timeline continuous, so that guards the outcome, not the rebase).
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

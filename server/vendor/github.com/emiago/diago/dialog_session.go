@@ -224,7 +224,24 @@ func dialogReferInvite(d DialogSession, dg *Diago, referToUri sip.Uri, remoteTar
 	// 	opts.Headers = append(opts.Headers, sip.HeaderClone(referredBy))
 	// }
 
-	referDialog, err := dg.NewDialog(referToUri, NewDialogOptions{})
+	// A Refer-To with no transport parameter used to fall through
+	// findTransport to "udp", which fails outright on a stack that has no
+	// UDP transport: a TLS app leg and a TLS trunk (SPEC §6 item 3b). The
+	// REFER was answered 202 and then this returned "transport does not
+	// exists" before OnRefer ever ran, so a transfer simply did nothing.
+	// Absent an explicit transport, the one the REFER itself arrived on is
+	// the sane default.
+	referOpts := NewDialogOptions{}
+	if t, ok := referToUri.UriParams.Get("transport"); !ok || t == "" {
+		if tran, ok := dg.transportForRequest(referReq); ok {
+			if tran.ID != "" {
+				referOpts.TransportID = tran.ID
+			} else {
+				referOpts.Transport = tran.Transport
+			}
+		}
+	}
+	referDialog, err := dg.NewDialog(referToUri, referOpts)
 	if err != nil {
 		return err
 	}

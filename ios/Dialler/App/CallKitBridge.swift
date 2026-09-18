@@ -194,7 +194,17 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     /// only one of which is ended when the caller hangs up, left a phantom
     /// ring the user had to end by hand (2026-09-13 01:32, "sip-1").
     private let pendingLock = NSLock()
-    private var pendingReports = Set<String>()
+    /// Reports queued for the main thread and not yet run, by call id — so
+    /// `reaffirm` can run one on the spot instead of leaving it in the queue
+    /// (see there). Guarded by pendingLock. Each report runs once, from
+    /// whichever path reaches it first, and unregisters only itself: a
+    /// second report for the same id (INVITE path and push path can both
+    /// ask) replaces the entry and still runs, to reach its own completion.
+    private var pendingReports: [String: (token: UUID, run: () -> Void)] = [:]
+    /// Calls reported to CallKit whose completion has not come back yet:
+    /// not counted as "another call is up" (below), because a report can
+    /// still be refused. Main thread only.
+    private var awaitingReport = Set<String>()
 
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
         // PushKit's contract (iOS 13+): reportNewIncomingCall must be called
@@ -207,9 +217,15 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         // (gateway socket, SIP loop) still hop asynchronously: a synchronous
         // hop from the SIP loop could deadlock against a main thread waiting
         // on that loop in run_op.
-        pendingLock.withLock { _ = pendingReports.insert(callID) }
+        let token = UUID()
+        let ran = RanOnce()
         let report = { [self] in
-            pendingLock.withLock { _ = pendingReports.remove(callID) }
+            // Runs once, from whichever path gets to it first: the main-queue
+            // hop below, or `reaffirm` running it inline for a push.
+            guard ran.take() else { return }
+            pendingLock.withLock {
+                if pendingReports[callID]?.token == token { pendingReports[callID] = nil }
+            }
             if let existing = uuids[callID] {
                 onLog("callkit: \(callID) already reported as \(short(existing)); not reporting it twice")
                 completion(nil)
@@ -218,16 +234,25 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             // Not while another call is up: the session is live for it and
             // re-configuring the category mid-call is the hardware
             // reconfiguration hazard noted at the top of this file.
-            let callWaiting = !uuids.isEmpty
+            //
+            // "Up" means CallKit has accepted it. A call whose report is
+            // still out can yet be refused — and was, by a Focus filter, on
+            // 2026-09-17: the refusal came back only when the next call
+            // resumed the app, so that call counted a ghost as a live one,
+            // played the call-waiting beep at nobody, and skipped the audio
+            // session setup it was the only call for.
+            let callWaiting = uuids.keys.contains { !awaitingReport.contains($0) }
             if !callWaiting { configureAudioSession() }
             let uuid = UUID()
             uuids[callID] = uuid
             callIDs[uuid] = callID
+            awaitingReport.insert(callID)
             let update = callUpdate(handle: CXHandle(type: .generic, value: handle), name: displayName)
             lastUpdate[uuid] = update
             onLog("callkit: reporting \(callID) as \(short(uuid)) (app \(appState))")
             provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
                 guard let self else { return }
+                self.awaitingReport.remove(callID)
                 if let error {
                     self.onLog("callkit: report of \(callID) refused: \(error.localizedDescription)")
                     self.uuids[callID] = nil
@@ -244,7 +269,15 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
                 completion(error)
             }
         }
+        pendingLock.withLock { pendingReports[callID] = (token, report) }
         if Thread.isMainThread { report() } else { DispatchQueue.main.async(execute: report) }
+    }
+
+    /// A flag a closure can take exactly once, from any thread.
+    private final class RanOnce {
+        private let lock = NSLock()
+        private var done = false
+        func take() -> Bool { lock.withLock { defer { done = true }; return !done } }
     }
 
     /// A better caller name learned while the call is still ringing (the
@@ -278,10 +311,18 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     func reaffirm(callID: String) -> Bool {
         dispatchPrecondition(condition: .onQueue(.main))
         guard let uuid = uuids[callID] else {
-            if pendingLock.withLock({ pendingReports.contains(callID) }) {
-                // The INVITE's report is queued behind us on the main
-                // thread; it satisfies the push's obligation in a moment.
-                onLog("callkit: reaffirm of \(callID): report already queued; leaving it")
+            if let queued = pendingLock.withLock({ pendingReports[callID]?.run }) {
+                // The INVITE's report is queued behind us on the main thread.
+                // It used to be left there, on the theory that it would
+                // satisfy the push "in a moment" — but the moment is after
+                // the push delegate has returned, and iOS judges the
+                // obligation at that return: it killed the app 250 ms later
+                // (0xBAADCA11, MetricKit 2026-09-17 14:05) while the queued
+                // report was still 30 ms from running. Run it now, here on
+                // the main thread, inside the delegate; the queued copy
+                // finds it done and steps aside.
+                onLog("callkit: reaffirm of \(callID): running its queued report now, inside the push")
+                queued()
                 return true
             }
             onLog("callkit: reaffirm of \(callID): no CallKit call to reaffirm")

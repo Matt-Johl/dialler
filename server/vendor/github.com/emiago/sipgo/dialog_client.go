@@ -354,14 +354,28 @@ func (s *DialogClientSession) inviteCancel(ctx context.Context, tx sip.ClientTra
 		}
 	}
 
+	// A final response to the INVITE settles it whatever becomes of the
+	// CANCEL (RFC 3261 §9.1), and the two routinely cross: a callee that
+	// declines from its own UI sends 486 in the same instant the server
+	// learns of the decline and cancels. Upstream sent the CANCEL and then
+	// waited for the CANCEL's response with no bound at all, reading the
+	// INVITE's responses only afterwards — so a callee that had already
+	// finalised the INVITE and never answered the CANCEL (an iPhone app,
+	// suspended by iOS seconds after declining) left the caller ringing
+	// until the callee's connection died: 9.7 s on 2026-09-17 17:30. The
+	// INVITE's responses are now watched throughout, and the CANCEL's own
+	// wait is bounded by the same 64*T1 as the 487 wait below.
 	cancelReq := newCancelRequest(s.InviteRequest)
-	res, err := s.Do(context.Background(), cancelReq) // Cancel should grab same connection underhood
-	if err != nil {
-		return err
-	}
-	if res.StatusCode != 200 {
-		return fmt.Errorf("cancel failed with non 200. code=%d", res.StatusCode)
-	}
+	cancelCtx, cancelDone := context.WithTimeout(context.Background(), 64*sip.T1)
+	defer cancelDone()
+	cancelRes := make(chan error, 1)
+	go func() {
+		res, err := s.Do(cancelCtx, cancelReq) // Cancel should grab same connection underhood
+		if err == nil && res.StatusCode != 200 {
+			err = fmt.Errorf("cancel failed with non 200. code=%d", res.StatusCode)
+		}
+		cancelRes <- err
+	}()
 
 	// Wait for 487 or just timeout
 	// https://datatracker.ietf.org/doc/html/rfc3261#section-9.1
@@ -369,7 +383,7 @@ func (s *DialogClientSession) inviteCancel(ctx context.Context, tx sip.ClientTra
 	// Terminated) response for the original request, as an RFC 2543-
 	// compliant UAS will not generate such a response.  If there is no
 	// final response for the original request in 64*T1 seconds
-loop_487:
+	timeout := time.After(64 * sip.T1)
 	for {
 		select {
 		case r = <-tx.Responses():
@@ -377,15 +391,29 @@ loop_487:
 				continue
 			}
 			s.InviteResponse = r
-			break loop_487
+			return ctx.Err()
+		case err := <-cancelRes:
+			if err != nil {
+				// The CANCEL failed (481 from a peer that already
+				// finalised, a dead connection, ...). A final for the
+				// INVITE that is already in outranks that error.
+				select {
+				case r = <-tx.Responses():
+					if !r.IsProvisional() {
+						s.InviteResponse = r
+						return ctx.Err()
+					}
+				default:
+				}
+				return err
+			}
+			cancelRes = nil // answered; the INVITE's final is what remains
 		case <-tx.Done():
 			return tx.Err()
-		case <-time.After(64 * sip.T1):
-			break loop_487
+		case <-timeout:
+			return ctx.Err()
 		}
 	}
-
-	return ctx.Err()
 }
 
 // Ack sends ack. Use WriteAck for more customizing

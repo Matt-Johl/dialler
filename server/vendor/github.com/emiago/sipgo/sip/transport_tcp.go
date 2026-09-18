@@ -232,7 +232,7 @@ func (t *TransportTCP) readConnection(conn *TCPConnection, laddr string, raddr s
 		// TODO fallback to parseFull if message size limit is set
 
 		// t.log.Debug().Str("raddr", raddr).Str("data", string(data)).Msg("new message")
-		if err := t.parseStream(par, data, raddr, handler); errors.Is(err, ErrMessageTooLarge) {
+		if err := t.parseStream(par, data, laddr, raddr, handler); errors.Is(err, ErrMessageTooLarge) {
 			// The parser could not frame a message within the size limit, so there
 			// is no boundary left to resync on. Reading on would only let the peer
 			// repeat it, so close the connection instead.
@@ -241,10 +241,16 @@ func (t *TransportTCP) readConnection(conn *TCPConnection, laddr string, raddr s
 	}
 }
 
-func (t *TransportTCP) parseStream(par *ParserStream, data []byte, src string, handler MessageHandler) error {
+func (t *TransportTCP) parseStream(par *ParserStream, data []byte, dst string, src string, handler MessageHandler) error {
 	err := par.ParseSIPStream(data, func(msg Message) {
 		msg.SetTransport(t.Network())
 		msg.SetSource(src)
+		// The local address the message arrived on — NOT SetDestination,
+		// which the transport layer reads when SENDING a request and would
+		// then route to ourselves. Upstream records no such thing, which is
+		// fine until two listeners share a protocol: the port a request
+		// arrived on is then the only thing that says which one it was.
+		msg.SetReceivedOn(dst)
 		handler(msg)
 	})
 

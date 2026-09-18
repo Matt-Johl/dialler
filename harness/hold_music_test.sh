@@ -19,6 +19,25 @@ cd "$(dirname "$0")/.."
 NOPORTS=""
 [ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
+# TRUNK_SRTP=sdes and TRUNK_TLS=1: the same knobs as trunk_test.sh, so the
+# clips the server writes into a trunk leg — hold music, ring-back, busy —
+# and the relay that resumes after them run against an encrypted trunk.
+# Plain RTP forgives a sequence number that jumps; libsrtp's replay window
+# does not, so an SRTP trunk is where a rebase mistake shows (2026-09-17:
+# no audio either way after a server-bridged transfer on the LAN PBX).
+if [ -n "${TRUNK_SRTP:-}" ]; then
+  export ASTERISK_SRTP=yes
+  export DIALLER_TRUNK_SRTP="$TRUNK_SRTP"
+fi
+if [ "${TRUNK_TLS:-0}" = 1 ]; then
+  sh harness/tls/gen_certs.sh
+  export ASTERISK_TLS=yes
+  export DIALLER_TRUNK="sip:172.30.0.20:5061;transport=tls"
+  export DIALLER_TRUNK_ADDR=":5062"
+  export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
+  export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
+  export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
+fi
 NET=dialler-harness_default
 KEEP="${KEEP:-0}"
 

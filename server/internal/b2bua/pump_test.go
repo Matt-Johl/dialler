@@ -290,6 +290,75 @@ func drive(t *testing.T, p *pump, n int) {
 // music and the far end drops every packet as stale. On a device that was
 // the caller's microphone gone for good after a resume, while the relay
 // counters kept rising and nothing logged an error (2026-09-15).
+// A transfer replaces the pumps, but the leg that stays keeps its stream.
+// The pump that takes over writing to it must carry on the numbering the
+// old one left — after the hold music and ring-back the old one wrote — or
+// the far end sees the stream jump: harmless on plain RTP, a replay or a
+// wrong rollover counter to libsrtp, which then drops everything (the LAN
+// PBX's echo test silent both ways after a transfer, 2026-09-17 18:25).
+func TestReplacementPumpContinuesTheLegsNumbering(t *testing.T) {
+	const held = 50
+	sink := &fakeSink{}
+	rw := media.NewRTPPacketWriter(sink, media.CodecAudioUlaw)
+
+	// The pump that carried the call until the transfer: relayed audio,
+	// then the transfer clips written locally.
+	src1 := &fakeSource{}
+	for i := 0; i < 10; i++ {
+		src1.pkts = append(src1.pkts, packet(uint16(i), 1000+uint32(i)*ulawFrame, 0xaaa, i == 0))
+	}
+	rr1 := media.NewRTPPacketReader(src1, media.CodecAudioUlaw)
+	old := &pump{r: rr1, w: rw}
+	old.setPacketPath(rr1, rw, media.CodecAudioUlaw)
+	drive(t, old, 10)
+	for i := 0; i < held; i++ {
+		if err := old.writeLocal(make([]byte, ulawFrame), i == 0); err != nil {
+			t.Fatalf("clip frame %d: %v", i, err)
+		}
+	}
+
+	// The replacement: a different source (the transfer target), another
+	// SSRC and sequence space, writing to the same leg.
+	src2 := &fakeSource{}
+	for i := 0; i < 10; i++ {
+		src2.pkts = append(src2.pkts, packet(40000+uint16(i), 777000+uint32(i)*ulawFrame, 0xbbb, i == 0))
+	}
+	rr2 := media.NewRTPPacketReader(src2, media.CodecAudioUlaw)
+	next := &pump{r: rr2, w: rw}
+	next.setPacketPath(rr2, rw, media.CodecAudioUlaw)
+	next.inheritTimeline(old)
+	drive(t, next, 10)
+
+	out := sink.all()
+	if len(out) != 10+held+10 {
+		t.Fatalf("sink has %d packets, want %d", len(out), 10+held+10)
+	}
+	for i := 1; i < len(out); i++ {
+		if d := int16(out[i].hdr.SequenceNumber - out[i-1].hdr.SequenceNumber); d <= 0 {
+			t.Fatalf("packet %d: sequence went %d (from %d to %d)", i, d, out[i-1].hdr.SequenceNumber, out[i].hdr.SequenceNumber)
+		}
+		if d := int32(out[i].hdr.Timestamp - out[i-1].hdr.Timestamp); d <= 0 {
+			t.Fatalf("packet %d: timestamp went backwards by %d", i, -d)
+		}
+	}
+	// And it follows on immediately: one frame after the last clip frame.
+	first, prev := out[10+held], out[10+held-1]
+	if d := first.hdr.SequenceNumber - prev.hdr.SequenceNumber; d != 1 {
+		t.Errorf("replacement pump left a sequence gap of %d", d)
+	}
+	if d := first.hdr.Timestamp - prev.hdr.Timestamp; d != ulawFrame {
+		t.Errorf("replacement pump left a timestamp gap of %d, want %d", d, ulawFrame)
+	}
+
+	// A pump for a different leg inherits nothing.
+	other := &pump{r: rr2, w: media.NewRTPPacketWriter(&fakeSink{}, media.CodecAudioUlaw)}
+	other.setPacketPath(rr2, other.w.(*media.RTPPacketWriter), media.CodecAudioUlaw)
+	other.inheritTimeline(old)
+	if other.wroteAny {
+		t.Error("a pump writing to another leg must not inherit this one's numbering")
+	}
+}
+
 func TestResumeAfterHoldMusicNeverGoesBackwards(t *testing.T) {
 	const ssrc = 0xabc
 	const held = 50 // frames of hold music: one second

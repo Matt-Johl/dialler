@@ -203,6 +203,34 @@ before. The reference is deliberately not weak: an app linked against an
 XCFramework older than the patch fails to link rather than run without it.
 Bump the level whenever a patch above changes.
 
+## apply-re.sh — a flushed SIP connection must not be able to receive
+
+`sip_transp_flush()` (what baresip's `uag_reset_transp()` calls, and what the
+engine runs on every gateway reconnect) only dropped the hash's reference on
+each connection and freed the transports. A connection pinned by a
+transaction in flight — a 486 waiting for its ACK keeps its request alive
+for Timer H on TCP/TLS, and the request holds the connection — survived
+the flush: still open, still listening, its transports gone. The next
+packet on it (the ACK) completed that transaction inside libre's own
+receive handler; the packet's reference went with `mem_deref(msg)`; the
+connection was destroyed under the handler's feet, and the handler then
+read `conn->mb->end` from freed memory (`transp.c tcp_recv_handler`, the
+line after `sip_recv`). On iOS, whose allocator zeroes small freed blocks,
+that is a SIGSEGV at `NULL+0x18` — four crashes on 2026-09-17 16:29, each a
+reset run while a 486's ACK was in flight. On the simulator the same
+use-after-free is silent (the freed block still reads as a pointer); a
+refcount trace showed it: 2 references at flush, a packet arriving on the
+unhashed connection with 1, garbage after dispatch.
+
+The patch closes every connection before the flush (`conn_close` + the
+hash's deref, via `hash_apply`): the socket goes away, queued sends fail
+through their handlers, and a pinned connection dies quietly when its
+transaction ends. The transport reset was already a "this connection is
+dead" statement (the engine's comment on `cb_reset_transports`); this
+makes libre act on it. Reproducer: `make sim-call-decline-reset` (decline,
+then reset immediately, with the server's ACK delayed so it lands after
+the flush; `SIMCTL_CHILD_MallocScribble=1` to poison freed memory).
+
 ## Not a patch: libre's context is bound to the initialising thread
 
 Recorded here because it looked like a libre bug and nearly became a

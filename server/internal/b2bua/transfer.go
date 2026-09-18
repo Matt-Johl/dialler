@@ -84,6 +84,14 @@ func (c *bridgedCall) startLocked() error {
 	c.stopHoldLocked()
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
+	// The leg that stays keeps its stream: whichever new pump writes to
+	// it carries on from where the old one left off (pump.inheritTimeline).
+	prev := c.pumps
+	inherit := func(p *pump) {
+		for _, old := range prev {
+			p.inheritTimeline(old)
+		}
+	}
 	c.pumps = nil
 	if c.b == nil {
 		// Echo: the remaining party hears itself.
@@ -91,6 +99,7 @@ func (c *bridgedCall) startLocked() error {
 		if err != nil {
 			return err
 		}
+		inherit(p)
 		c.pumps = []*pump{p}
 		go p.run(ctx, c.log.With("dir", c.a.name+"→"+c.a.name))
 		return nil
@@ -103,6 +112,8 @@ func (c *bridgedCall) startLocked() error {
 	if err != nil {
 		return err
 	}
+	inherit(ab)
+	inherit(ba)
 	c.pumps = []*pump{ab, ba}
 	go ab.run(ctx, c.log.With("dir", c.a.name+"→"+c.b.name))
 	go ba.run(ctx, c.log.With("dir", c.b.name+"→"+c.a.name))
@@ -333,7 +344,7 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 		if err != nil {
 			return err
 		}
-		out, err := c.s.dg.NewDialog(dst, diago.NewDialogOptions{})
+		out, err := c.s.dg.NewDialog(dst, diago.NewDialogOptions{TransportID: legTransport(trunk)})
 		if err != nil {
 			return err
 		}

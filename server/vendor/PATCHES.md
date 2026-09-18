@@ -77,9 +77,53 @@ upstream release named in `modules.txt`; re-apply when bumping.
   counter, and a fresh context on an unchanged key fails after the first
   sequence wrap (~22 min of audio).
 
+- `diago.go` (`transportForRequest`, used by `OnInvite`) — an inbound INVITE
+  is matched to the transport it arrived on, by the port, instead of to the
+  first transport with the same protocol name. Upstream's `getTransport`
+  takes only the protocol (its own comment: "What if multiple server
+  transports?"), which is fine until two listeners share one — a TLS app
+  leg and a TLS trunk (SPEC §6 item 3b). Every app INVITE then picked up
+  the trunk's settings: `MediaSRTP` 0, so the server answered an app's
+  RTP/SAVP offer with no crypto context ("remote requested secure RTP, but
+  no context is created") and every app-originated call failed the moment
+  a TLS trunk was configured. Needs `sip.Message.ReceivedOn` below. Covers
+  `OnInvite`, which is the only inbound path that resolves a transport; the
+  three remaining `getTransport` callers are outbound (`InviteBridge`,
+  `RegisterTransaction`, `ReferTransaction.Accept`) and carry the same
+  latent ambiguity, but none is on our call path.
+- `dialog_session.go` (`dialogReferInvite`) — the dialog diago builds for an
+  incoming REFER uses the transport the REFER arrived on when the Refer-To
+  URI names none, instead of falling through to UDP. On a stack with no UDP
+  transport at all (TLS app leg + TLS trunk) `NewDialog` then failed with
+  "transport does not exists" *before* `OnRefer` was called: the REFER was
+  answered 202 and nothing else happened, so a blind transfer silently did
+  nothing. The B2BUA routes the target itself and only reads the Refer-To
+  off this dialog, but it has to be reached to do so.
+
 ## github.com/emiago/sipgo
 
+- `dialog_client.go` (`inviteCancel`) — cancelling an INVITE watches the
+  INVITE's own responses while the CANCEL is out, and bounds the CANCEL's
+  wait (64*T1). Upstream sent the CANCEL and blocked on its response with
+  `context.Background()`, only then reading the INVITE's responses. A
+  callee whose own final response crosses the CANCEL — an app declining
+  from its UI sends 486 as the server, told of the decline, cancels — and
+  which never answers the CANCEL (the iPhone app, suspended by iOS a few
+  seconds after declining) left the caller ringing until the callee's
+  connection died (9.7 s, device 2026-09-17 17:30; the other declines
+  that session won the race and took 7 ms). RFC 3261 §9.1: a final
+  response settles the INVITE regardless of the CANCEL.
 - `server.go` (`sipgo.ListenConfig`, `listenUDP/TCP/TLS`) — QoS: every SIP
   listener is opened through a package-level `net.ListenConfig` so the
   B2BUA can mark them DSCP CS3; accepted connections inherit it.
+- `sip/message.go` (`Message.ReceivedOn`/`SetReceivedOn`) and
+  `sip/transport_tcp.go` (`parseStream` takes the local address) — records
+  the local `host:port` an inbound message was read from. Upstream keeps
+  only the source and the protocol, so nothing downstream can tell two
+  listeners on the same protocol apart; diago's `transportForRequest` above
+  needs it. Deliberately a new field rather than `SetDestination`:
+  `dest` is where a message is to be *sent* and the transport layer routes
+  on it, so filling it in on receive would have the server answering
+  itself. TCP only (TLS embeds it); UDP and WS are untouched and leave it
+  empty, which the diago side treats as "fall back to the protocol match".
 

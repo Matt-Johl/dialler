@@ -78,7 +78,7 @@ public protocol CallEngine: AnyObject {
     /// Drop the current registration and its connection so the next
     /// `register` starts a fresh one: the gateway session came back after a
     /// drop, and the SIP connection died in the same suspension. A no-op
-    /// during a call.
+    /// during a call, ringing included.
     func resetRegistration()
     /// Answer the incoming call `engineCallID` (its INVITE has arrived).
     func answer(engineCallID: String)
@@ -663,7 +663,19 @@ public final class CallController {
             guard let self else { return }
             if let err {
                 self.log("CallKit refused call \(w.callID): \(err)")
-                self.lock.withLock { self.calls[w.callID] = nil }
+                // The INVITE may have reached the stack while the report
+                // was out (it usually has: the server dials as soon as the
+                // wake's registration lands). Dropping only our record left
+                // that SIP call ringing inside the engine with nothing to
+                // ever answer or cancel it — the engine stayed "ringing",
+                // deferred every registration reset, and no later call
+                // reached the phone until it timed out (2026-09-17 13:22).
+                let engineID: String? = self.lock.withLock {
+                    let id = self.calls[w.callID]?.engineCallID
+                    self.calls[w.callID] = nil
+                    return id
+                }
+                if let engineID { self.engine?.hangup(engineCallID: engineID) }
                 self.transport?.send(.wakeAck(WakeAck(callID: w.callID, action: .busy)))
                 return
             }

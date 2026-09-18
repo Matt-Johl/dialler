@@ -62,7 +62,13 @@ let transferTo: String? = args.count > 12 && !args[12].isEmpty ? args[12] : nil
 /// `answerDelayMs` of ringing instead of answering it — the red button. The
 /// caller must then get 486 Busy Here, which sim_call.sh asserts on phone-b's
 /// log; here we assert the call rang, was never established, and ended.
-let declineMode = args.count > 13 && args[13] == "decline"
+let declineMode = args.count > 13 && (args[13] == "decline" || args[13] == "decline-reset")
+/// "decline-reset": decline, then reset the SIP transports at once — the
+/// sequence that crashed the app four times on 2026-09-17 16:29: the 486's
+/// ACK arrives on a connection the reset has just dismembered. Run under
+/// IMPAIR=1 so the server's ACK is late enough to be certain to land after
+/// the reset. The verdict is the process surviving to report at all.
+let resetAfterDecline = args.count > 13 && args[13] == "decline-reset"
 /// Call-waiting test (plan Phase I): while call 1 is up, a second caller
 /// rings; the scripted user takes Hold & Accept, talks on call 2, swaps
 /// back to call 1, then ends both. Asserted on RTP reaching whichever call
@@ -73,6 +79,14 @@ let callWaitingMode = args.count > 13 && args[13] == "callwaiting"
 /// CallKit takes the audio session away with the call, so the end report is
 /// held back for the length of the tone.
 let refusedMode = args.count > 13 && args[13] == "refused"
+/// "ring-reset": the registration reset the app runs when its gateway
+/// session comes back is issued while the call is ringing — the sequence
+/// of 2026-09-18 15:12, where the INVITE was read 0.3 ms after the app's
+/// "no call is up" check and the reset then freed the user agent under it
+/// (486 to the caller, who was told the call failed; the phone rang on the
+/// wake's replay anyway). The stack must refuse the reset and the call
+/// must go on to be answered as usual.
+let ringResetMode = args.count > 13 && args[13] == "ring-reset"
 
 /// RTP received on the current call so far (cumulative).
 func rtpReceived() -> UInt32 {
@@ -87,6 +101,26 @@ func stamp() -> String { String(format: "%7.3f", Date().timeIntervalSince(t0)) }
 func out(_ s: String) { print("\(stamp()) sim: \(s)") }
 
 let engine = BaresipCallEngine(acceptAnyCertificate: true)
+
+/// Process CPU time every 5 s, against wall time: what iOS's CPU-resource
+/// limit measures (a killed app on 2026-09-18 08:45 had used 48 s of CPU in
+/// 49 s — the libre loop spinning through a whole call). A healthy engine
+/// on a call sits well under 30 %; anything near 100 % is a loop that
+/// returns without waiting, and the harness has no other way to see it.
+let cpuMeterStart = Date()
+Thread {
+    var last = 0.0
+    while true {
+        Thread.sleep(forTimeInterval: 5)
+        var ru = rusage()
+        getrusage(RUSAGE_SELF, &ru)
+        let cpu = Double(ru.ru_utime.tv_sec) + Double(ru.ru_utime.tv_usec) / 1e6
+                + Double(ru.ru_stime.tv_sec) + Double(ru.ru_stime.tv_usec) / 1e6
+        let wall = Date().timeIntervalSince(cpuMeterStart)
+        out(String(format: "cpu: %.1fs used of %.0fs wall (%.0f%% overall, %.0f%% last 5s)", cpu, wall, cpu / wall * 100, (cpu - last) / 5 * 100))
+        last = cpu
+    }
+}.start()
 engine.setCredentials(username: deviceID, password: token) // SIP Digest on the app leg
 engine.audioSourceOverride = sourceOverride
 var lastCloseReason = ""
@@ -152,6 +186,15 @@ final class ScriptedCallKit: CallUI {
                 lock.lock(); if self.current == callID { ended = true }; lock.unlock()
             }
             return
+        }
+        if ringResetMode {
+            // Off this thread, as the app's welcome handler is: the reset
+            // is queued to the loop thread while the call it must not touch
+            // is already in the stack's list.
+            DispatchQueue.global().async {
+                out("ring-reset: resetting the registration while \(callID) rings")
+                engine.resetRegistration()
+            }
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(answerDelayMs)) {
             out("callkit: answer action for \(callID) (after \(answerDelayMs)ms ringing)")
@@ -301,7 +344,34 @@ let impaired = ProcessInfo.processInfo.environment["IMPAIRED"] == "1"
 let callKit = ScriptedCallKit()
 let controller = CallController(ui: callKit, engine: engine, log: { print("\(stamp())   \($0)") })
 callKit.onAnswer = { controller.userAnswered(callID: $0) }
-callKit.onDecline = { controller.userEnded(callID: $0) }
+/// decline-reset: how long after the 486 the reset runs (ms; env
+/// DECLINE_RESET_DELAY_MS, forwarded by simctl as SIMCTL_CHILD_…). On the
+/// phone the ACK arrives 2–5 ms after the 486, so the reset that crashed
+/// it ran while the ACK was in flight; sweeping this places the reset
+/// before, around and after the ACK's arrival.
+let resetDelayMs = Int(ProcessInfo.processInfo.environment["DECLINE_RESET_DELAY_MS"] ?? "") ?? 0
+callKit.onDecline = {
+    let id = $0
+    controller.userEnded(callID: id) // 486 on the SIP leg, decline ack on the wire
+    if resetAfterDecline {
+        // What the app does when its gateway session comes back: drop the
+        // registration and flush libre's cached connections — here while
+        // the 486's transaction is still waiting for its ACK.
+        let fire = {
+            out("decline-reset: resetting transports \(resetDelayMs)ms behind the 486")
+            engine.resetRegistration()
+            // And what follows the reset in the app: the welcome's
+            // register, which allocates a fresh user agent while the old
+            // connection's last packets may still be arriving.
+            controller.setAccount(user: "203@dialler", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
+        }
+        if resetDelayMs > 0 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(resetDelayMs), execute: fire)
+        } else {
+            fire()
+        }
+    }
+}
 callKit.onStart = { controller.userStarted(callID: $0) }
 callKit.noCallsLeft = { controller.activeCalls.isEmpty }
 

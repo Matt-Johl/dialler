@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -59,11 +60,27 @@ func main() {
 		rtpSym      = flag.Bool("rtp-symmetric", true, "re-target a phone's media at the source of its first RTP packet (needed behind NAT); false where that source is not a deliverable reply address (Docker Desktop harness)")
 		pubSIPPort  = flag.Int("public-sip-port", 0, "SIP port advertised to apps (welcome, wakes) when it differs from -sip-addr, e.g. a container published on another host port; 0 = same as -sip-addr")
 		trunk       = flag.String("trunk", "", "PBX SIP peer for non-local destinations, e.g. sip:asterisk:5060;transport=tcp (empty: standalone, app↔app only)")
-		trunkAddr   = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5061 for a TLS trunk); transport follows -trunk")
+		trunkAddr   = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5062 for a TLS trunk — not 5061, which is the app leg's); transport follows -trunk")
 		trunkExt    = flag.String("trunk-external-host", "", "address the PBX reaches this server at, used in trunk-leg Contact and SDP (default: this host's first address)")
+		trunkSRTP   = flag.String("trunk-srtp", "off", "SDES (RFC 4568) on the PBX leg: off (plain RTP) or sdes (offer RTP/SAVP, mirror the PBX's, and refuse a leg that did not end up encrypted). Default off: a PBX without encryption refuses an SAVP offer with 488. Use a TLS trunk with it — SDES keys travel in the SDP")
 		trunkCodecs = flag.String("trunk-codecs", "g722,pcmu,pcma", "codecs offered to the PBX in order of preference (g722, pcmu, pcma, opus); the app leg is answered with whichever the PBX takes, never transcoded")
+		trunkCert   = flag.String("trunk-tls-cert", "", "certificate PEM presented on the PBX leg, in both directions (CUCM's secure trunks do mutual TLS); needed when -trunk uses transport=tls")
+		trunkKey    = flag.String("trunk-tls-key", "", "private key PEM for -trunk-tls-cert")
+		trunkCA     = flag.String("trunk-tls-ca", "", "CA PEM the PBX's certificate is verified against (empty: the system roots, which reject the private CA most PBX deployments use)")
+		trunkNoVer  = flag.Bool("trunk-tls-insecure", false, "accept any certificate from the PBX: a dev convenience against a self-signed PBX, and an open door to anyone who can intercept the trunk")
+		trunkTLSMin = flag.String("trunk-tls-min-version", "1.2", "lowest TLS version accepted on the PBX leg: 1.2 or 1.3. The app leg always pins 1.3; CUCM's secure trunks generally speak 1.2, so raising this may leave the exchange unreachable")
 	)
 	flag.Parse()
+	trunkTLSMinVer, err := tlsutil.MinTLSVersion(*trunkTLSMin)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bad -trunk-tls-min-version:", err)
+		os.Exit(2)
+	}
+	trunkSRTPMode, err := b2bua.ParseTrunkSRTP(*trunkSRTP)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bad -trunk-srtp:", err)
+		os.Exit(2)
+	}
 	trunkCodecList, err := b2bua.ParseCodecs(*trunkCodecs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bad -trunk-codecs:", err)
@@ -98,6 +115,12 @@ func main() {
 		trunkAddr:             *trunkAddr,
 		trunkExternalHost:     *trunkExt,
 		trunkCodecs:           trunkCodecList,
+		trunkSRTP:             trunkSRTPMode,
+		trunkCert:             *trunkCert,
+		trunkKey:              *trunkKey,
+		trunkCA:               *trunkCA,
+		trunkTLSInsecure:      *trunkNoVer,
+		trunkTLSMin:           trunkTLSMinVer,
 	}); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -117,6 +140,10 @@ type options struct {
 	trunk, trunkAddr              string
 	trunkExternalHost             string
 	trunkCodecs                   []media.Codec
+	trunkSRTP                     b2bua.TrunkSRTPMode
+	trunkCert, trunkKey, trunkCA  string
+	trunkTLSInsecure              bool
+	trunkTLSMin                   uint16
 }
 
 func run(ctx context.Context, log *slog.Logger, o options) error {
@@ -171,6 +198,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	}
 	var adapter pbx.Adapter = pbx.None{}
 	var trunkCfg *pbx.Trunk
+	var trunkTLS *tls.Config
 	if o.trunk != "" {
 		t, err := pbx.ParseTrunk(o.trunk)
 		if err != nil {
@@ -178,6 +206,24 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		}
 		trunkCfg = &t
 		adapter = pbx.NewSIPTrunk(t)
+		if strings.EqualFold(t.Transport, "tls") {
+			trunkTLS, err = tlsutil.PeerConfig(o.trunkCert, o.trunkKey, o.trunkCA, o.trunkTLSMin, o.trunkTLSInsecure)
+			if err != nil {
+				return err
+			}
+			// A TLS trunk with no certificate listens with none: the PBX's
+			// inbound calls fail the handshake, so only our outbound
+			// direction would work. Better to say so at startup than to
+			// have half the calls quietly stop arriving.
+			if o.trunkCert == "" {
+				log.Warn("-trunk uses transport=tls but no -trunk-tls-cert was given; calls the PBX places to us cannot complete a handshake")
+			}
+			if o.trunkTLSInsecure {
+				log.Warn("-trunk-tls-insecure: the PBX's certificate is not verified, so a machine that can intercept the trunk can impersonate the PBX and read every call")
+			}
+		} else if o.trunkCert != "" || o.trunkCA != "" || o.trunkTLSInsecure {
+			log.Warn("trunk TLS flags ignored: -trunk is not transport=tls", "trunk_transport", t.Transport)
+		}
 	}
 	router := routing.New(reg, []string{o.localDomain, o.publicHost}, func() bool { _, ok := adapter.Trunk(); return ok })
 
@@ -227,6 +273,8 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		TrunkBind:             o.trunkAddr,
 		TrunkExternalHost:     o.trunkExternalHost,
 		TrunkCodecs:           o.trunkCodecs,
+		TrunkSRTP:             o.trunkSRTP,
+		TrunkTLS:              trunkTLS,
 		RingTimeout:           o.ringTimeout,
 		Auth:                  sipauth.New(o.localDomain, devices),
 		Logger:                log,

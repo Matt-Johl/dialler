@@ -5,7 +5,8 @@
 # Env: SIP_USER, SIP_DOMAIN, REGINT, OUTBOUND (host:port), TRANSPORT
 # (tls|udp|tcp; default tls), AUTH_USER / AUTH_PASS (Digest, desk phones),
 # CODECS (baresip audio_codecs list), AUDIO_SOURCE (baresip audio_source;
-# default the test tone, "aufile,/media/silence.wav" for a silent phone).
+# default the test tone, "aufile,/media/silence.wav" for a silent phone),
+# ANSWER_MODE (auto|manual).
 set -eu
 : "${SIP_USER:=211}"
 : "${SIP_DOMAIN:=dialler}"
@@ -20,6 +21,8 @@ set -eu
 # clock the SDP carries (RFC 3551); G722/8000/1 is "audio codec not found".
 : "${CODECS:=opus/48000/1,G722/16000/1,PCMU/8000/1}"
 : "${AUDIO_SOURCE:=aufile,/media/in.wav}"
+# auto answers every call (the default); manual rings and never answers.
+: "${ANSWER_MODE:=auto}"
 CFG="$HOME/.baresip"
 mkdir -p "$CFG"
 
@@ -43,7 +46,8 @@ else
   [ "$TRANSPORT" = tls ] && MENC=";mediaenc=srtp-mand"
   sed -e "s|@SIP_USER@|$SIP_USER|g" -e "s|@SIP_DOMAIN@|$SIP_DOMAIN|g" -e "s|@REGINT@|$REGINT|g" \
       -e "s|@TRANSPORT@|$TRANSPORT|g" -e "s|@AUTH_USER@|$AUTH_USER|g" -e "s|@AUTH_PASS@|$AUTH_PASS|g" \
-      -e "s|@CODECS@|$CODECS|g" -e "s|@OUTBOUND@|$OB|g" -e "s|@MEDIAENC@|$MENC|g" /opt/baresip/accounts > "$CFG/accounts"
+      -e "s|@CODECS@|$CODECS|g" -e "s|@OUTBOUND@|$OB|g" -e "s|@MEDIAENC@|$MENC|g" \
+      -e "s|@ANSWERMODE@|$ANSWER_MODE|g" /opt/baresip/accounts > "$CFG/accounts"
 fi
 
 [ -f /media/in.wav ] || echo "warning: /media/in.wav missing; run harness/baresip/media/gen_tone.py"

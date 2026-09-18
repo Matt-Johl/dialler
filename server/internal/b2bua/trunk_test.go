@@ -36,8 +36,13 @@ func TestTrunkBind(t *testing.T) {
 	if h, p, err := trunkBind("", tcp); err != nil || h != "0.0.0.0" || p != 5060 {
 		t.Errorf("default tcp bind = %s:%d %v", h, p, err)
 	}
-	if h, p, err := trunkBind("", tls); err != nil || h != "0.0.0.0" || p != 5061 {
+	// 5062, not the conventional 5061: that is the app leg's port and the
+	// two transports cannot share a socket.
+	if h, p, err := trunkBind("", tls); err != nil || h != "0.0.0.0" || p != 5062 {
 		t.Errorf("default tls bind = %s:%d %v", h, p, err)
+	}
+	if h, p, err := trunkBind("", &pbx.Trunk{Host: "pbx", Port: 5061, Transport: "TLS"}); err != nil || p != 5062 {
+		t.Errorf("uppercase transport → %s:%d %v", h, p, err)
 	}
 	if h, p, err := trunkBind(":5062", tcp); err != nil || h != "0.0.0.0" || p != 5062 {
 		t.Errorf(":5062 → %s:%d %v", h, p, err)

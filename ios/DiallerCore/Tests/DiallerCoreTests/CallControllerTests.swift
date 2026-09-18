@@ -14,9 +14,19 @@ final class FakeCallUI: CallUI {
     var tones: [CallTones.Tone?] = []
     /// Every progress report in order, as (call, progress).
     var progress: [(String, CallProgress)] = []
+    /// When set, reports do not complete until `completePendingReports` —
+    /// as on the device, where CallKit answers asynchronously and, for a
+    /// suspended app, only once the process next runs.
+    var deferReports = false
+    var pendingCompletions: [(String, (Error?) -> Void)] = []
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
         reported.append((callID, displayName))
-        completion(refuse)
+        if deferReports { pendingCompletions.append((callID, completion)) } else { completion(refuse) }
+    }
+    func completePendingReports(with error: Error?) {
+        let pending = pendingCompletions
+        pendingCompletions = []
+        for (_, done) in pending { done(error) }
     }
     func updateIncoming(callID: String, displayName: String) { updated.append((callID, displayName)) }
     func end(callID: String, reason: CallEndReason) { ended.append((callID, reason)) }
@@ -342,6 +352,37 @@ final class CallControllerTests: XCTestCase {
         ui.refuse = NSError(domain: "callkit", code: 1)
         c.handle(.wake(wake("c2")))
         XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "c2", action: .busy)))
+        XCTAssertTrue(c.activeCalls.isEmpty)
+    }
+
+    // Device, 2026-09-17 13:22: the wake rang, the server dialled as soon as
+    // the registration landed, and only then did CallKit refuse the report
+    // (a Focus filter; the answer reached the app 20 s later, when the next
+    // call resumed it). Dropping the record alone left the INVITE ringing
+    // inside the SIP stack with nothing to answer or cancel it, which kept
+    // the engine "in a call" and every later call off the phone.
+    func testUIRefusalAfterTheInviteArrivedHangsUpTheSIPCall() {
+        let (c, ui, engine, tr) = make()
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        ui.deferReports = true
+        c.handle(.wake(wake("c1")))
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "c1") // joins the ringing call
+        XCTAssertEqual(c.activeCalls.first?.engineCallID, "e1")
+        XCTAssertTrue(engine.hungUp.isEmpty)
+
+        ui.completePendingReports(with: NSError(domain: "com.apple.CallKit.error.incomingcall", code: 3))
+        XCTAssertEqual(engine.hungUp, ["e1"], "the SIP call must not outlive the refused report")
+        XCTAssertTrue(c.activeCalls.isEmpty)
+        XCTAssertEqual(tr.sent.last, .wakeAck(WakeAck(callID: "c1", action: .busy)))
+    }
+
+    /// The same refusal before any INVITE: nothing in the stack to hang up.
+    func testUIRefusalBeforeTheInviteHangsUpNothing() {
+        let (c, ui, engine, _) = make()
+        ui.deferReports = true
+        c.handle(.wake(wake("c1")))
+        ui.completePendingReports(with: NSError(domain: "callkit", code: 3))
+        XCTAssertTrue(engine.hungUp.isEmpty)
         XCTAssertTrue(c.activeCalls.isEmpty)
     }
 

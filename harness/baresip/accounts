@@ -11,4 +11,7 @@
 # @MEDIAENC@ is ";mediaenc=srtp-mand" on the app leg (TLS to the light
 # server: SRTP is mandatory there, SPEC §4.4 rule 4) and empty for the desk
 # phone (plain RTP to the PBX, like the trunk).
-<sip:@SIP_USER@@@SIP_DOMAIN@;transport=@TRANSPORT@>;auth_user=@AUTH_USER@;auth_pass=@AUTH_PASS@;regint=@REGINT@;answermode=auto@MEDIAENC@;audio_codecs=@CODECS@@OUTBOUND@
+# @ANSWERMODE@ is auto (the default: every call is answered at once, so the
+# tests can assert on audio) or manual (the phone rings and never answers —
+# for tests about what happens while a callee is still ringing).
+<sip:@SIP_USER@@@SIP_DOMAIN@;transport=@TRANSPORT@>;auth_user=@AUTH_USER@;auth_pass=@AUTH_PASS@;regint=@REGINT@;answermode=@ANSWERMODE@@MEDIAENC@;audio_codecs=@CODECS@@OUTBOUND@

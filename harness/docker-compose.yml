@@ -42,10 +42,22 @@ services:
       # (the SIP default); the server listens for trunk-originated calls
       # on :5060/udp.
       - -trunk=${DIALLER_TRUNK:-sip:172.30.0.20:5060;transport=udp}
-      - -trunk-addr=:5060
+      # :5062 for a TLS trunk, not the conventional 5061 — that is the app
+      # leg's port and the two cannot share a socket.
+      - -trunk-addr=${DIALLER_TRUNK_ADDR:-:5060}
       # What the PBX is offered: G.722 wideband first, G.711 fallback; a
       # narrowband-only PBX gets "pcmu,pcma".
       - -trunk-codecs=${DIALLER_TRUNK_CODECS:-g722,pcmu,pcma}
+      # SDES on the PBX leg: off, offer or require (SPEC §6 item 3a). Off by
+      # default, matching production until a PBX is known to accept it.
+      - -trunk-srtp=${DIALLER_TRUNK_SRTP:-off}
+      # SIP over TLS on the PBX leg (SPEC §6 item 3b). Empty by default:
+      # the flags are only read when -trunk says transport=tls, and the
+      # certificates under harness/tls are generated, not committed, so a
+      # plain-trunk run must not depend on them existing.
+      - -trunk-tls-cert=${DIALLER_TRUNK_TLS_CERT:-}
+      - -trunk-tls-key=${DIALLER_TRUNK_TLS_KEY:-}
+      - -trunk-tls-ca=${DIALLER_TRUNK_TLS_CA:-}
       # Off here on purpose: Docker Desktop's UDP port proxy rewrites a LAN
       # phone's RTP source, and replies to that rewritten source are not
       # delivered, so learning the source (symmetric RTP) silences the phone
@@ -55,6 +67,11 @@ services:
       - -log-level=${DIALLER_LOG_LEVEL:-info} # debug shows the relay's RTP source learning
     volumes:
       - dialler-data:/data
+      # The trunk's CA and certificate. Bind-mounted rather than baked in so
+      # `make harness-tls-certs` can regenerate them without a rebuild; the
+      # directory holds only gen_certs.sh until it is run, which is why the
+      # flags above default to empty.
+      - ./tls:/tls:ro
     networks:
       default:
         ipv4_address: 172.30.0.10
@@ -69,7 +86,11 @@ services:
       context: ./asterisk
       args:
         ASTERISK_CODECS: ${ASTERISK_CODECS:-g722,ulaw,alaw} # ulaw,alaw = narrowband-only PBX
+        ASTERISK_SRTP: ${ASTERISK_SRTP:-no}                  # yes = a PBX with a secure trunk profile
+        ASTERISK_TLS: ${ASTERISK_TLS:-no}                    # yes = the trunk endpoint moves to SIP/TLS, mutually authenticated
     depends_on: [dialler]
+    volumes:
+      - ./tls:/tls:ro # the PBX's own certificate and the shared CA, when ASTERISK_TLS=yes
     networks:
       default:
         ipv4_address: 172.30.0.20
@@ -166,6 +187,7 @@ services:
       AUTH_USER: dev-hb
       AUTH_PASS: tok_dev_hb_harness_fixed
       REGINT: "${BARESIP_B_REGINT:-300}" # 0 → starts unregistered (wake test)
+      ANSWER_MODE: "${BARESIP_B_ANSWER_MODE:-auto}" # manual → rings and never answers (cancel_before_answer_test.sh)
       # Set to <mac-ip>:5061 to register with a server running natively on
       # the Mac instead of the dialler container (harness/ring_native.sh).
       OUTBOUND: "${BARESIP_B_OUTBOUND:-}"

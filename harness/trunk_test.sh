@@ -25,6 +25,15 @@
 #
 #   make harness-trunk              # all four
 #   DIRECTION=out|in|transfer|xfer-app make harness-trunk
+#   TRUNK_SRTP=sdes make harness-trunk # the PBX is built with
+#                                   media_encryption=sdes and the trunk leg
+#                                   must come up encrypted both ways.
+#   TRUNK_TLS=1 make harness-trunk  # the trunk moves to SIP/TLS, mutually
+#                                   authenticated against a private CA (the
+#                                   PBX demands a client certificate), which
+#                                   is what secures the SDES keys above —
+#                                   so the two are usually run together:
+#                                   TRUNK_TLS=1 TRUNK_SRTP=sdes
 #   NARROWBAND=1 make harness-trunk # Asterisk allows ulaw/alaw only: every
 #                                   # scenario must fall back to PCMU (the
 #                                   # server's G.722-first offer must not
@@ -43,6 +52,26 @@ PBX_CODEC=G722
 if [ "${NARROWBAND:-0}" = 1 ]; then
   export ASTERISK_CODECS=ulaw,alaw
   PBX_CODEC=PCMU
+fi
+# TRUNK_SRTP=sdes builds the PBX with a secure trunk profile and
+# tells the server to use it, then asserts the trunk leg really is encrypted
+# (SPEC §6 item 3a). Unset = the default deployment: plain RTP to the PBX.
+if [ -n "${TRUNK_SRTP:-}" ]; then
+  export ASTERISK_SRTP=yes
+  export DIALLER_TRUNK_SRTP="$TRUNK_SRTP"
+fi
+# TRUNK_TLS=1 moves the whole trunk leg onto SIP/TLS with mutual
+# authentication against a private CA — the shape of a CUCM secure trunk
+# (SPEC §6 item 3b). Certificates are generated, not committed.
+if [ "${TRUNK_TLS:-0}" = 1 ]; then
+  sh harness/tls/gen_certs.sh
+  export ASTERISK_TLS=yes
+  export DIALLER_TRUNK="sip:172.30.0.20:5061;transport=tls"
+  # Not :5061 — that is the app leg's port.
+  export DIALLER_TRUNK_ADDR=":5062"
+  export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
+  export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
+  export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
 fi
 NET=dialler-harness_default
 MEDIA_DIR=harness/baresip/media
@@ -89,6 +118,32 @@ until $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -q "is now Reachable.*R
   sleep 1
 done
 echo "   Asterisk qualified the server's trunk listener (Reachable)"
+
+fail=0
+
+# TRUNK_TLS: both ends must really be on SIP/TLS. Asterisk qualifies the
+# trunk with OPTIONS over the endpoint's transport and will not mark it
+# Reachable otherwise, so arriving here at all already means a mutually
+# authenticated handshake succeeded (require_client_cert=yes) — these
+# checks name which end is misconfigured when it does not.
+if [ "${TRUNK_TLS:-0}" = 1 ]; then
+  ok=1
+  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "b2bua listening.*trunk_tls=true" || {
+    echo "   FAIL: the server did not build a trunk TLS config"; ok=0; }
+  $COMPOSE exec -T asterisk asterisk -rx "pjsip show transport transport-tls" 2>/dev/null | grep -q "0.0.0.0:5061" || {
+    echo "   FAIL: Asterisk has no TLS transport listening"
+    $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "tls|ssl|cert" | tail -6 | sed 's/^/   asterisk: /'; ok=0; }
+  $COMPOSE exec -T asterisk asterisk -rx "pjsip show aor dialler" 2>/dev/null | grep -q "transport=tls" || {
+    echo "   FAIL: Asterisk's trunk contact is not a TLS URI"; ok=0; }
+  # The warning §6 item 3a leaves on an unencrypted trunk: with TLS it must
+  # be gone. Asserting on its absence is what keeps the two items honest —
+  # SDES keys in cleartext SDP is the thing TLS is here to stop.
+  if [ -n "${TRUNK_SRTP:-}" ] && $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "trunk SRTP over unencrypted signalling"; then
+    echo "   FAIL: the server still thinks the trunk signalling is in the clear"; ok=0
+  fi
+  [ "$ok" = 1 ] && echo "   trunk is SIP/TLS, mutually authenticated (Asterisk requires a client certificate)"
+  [ "$ok" = 1 ] || fail=1
+fi
 # Wideband on the trunk needs the PBX's G.722 codec module (ships with the
 # Asterisk core, but an install without it silently falls back to G.711).
 if $COMPOSE exec -T asterisk asterisk -rx "core show codecs audio" 2>/dev/null | grep -q g722; then
@@ -108,7 +163,21 @@ codec_check() {
   fi
 }
 
-fail=0
+# TRUNK_SRTP: with the PBX built for SDES and the server told to use it, the
+# trunk leg must actually come up encrypted — otherwise the whole point of
+# SPEC §6 item 3a is lost silently, since an unencrypted call still works.
+# `$1` is the leg to check as the server logs it ("callee" out, "caller" in).
+srtp_check() {
+  [ -n "${TRUNK_SRTP:-}" ] || return 0
+  if $COMPOSE logs --no-log-prefix --since 60s dialler 2>&1 | grep -qE "bridged.*$2_srtp=on"; then
+    echo "   trunk leg is SRTP ($2_srtp=on)"
+  else
+    echo "FAIL $1: the trunk leg is not encrypted under -trunk-srtp=$TRUNK_SRTP"
+    $COMPOSE logs --no-log-prefix --since 60s dialler 2>&1 | grep -E 'bridged|callee answered' | tail -2 | sed 's/^/   /'
+    fail=1
+  fi
+}
+
 if [ "$DIRECTION" = out ] || [ "$DIRECTION" = both ]; then
   echo "== out: app 211 dials 100 (desk phone via the trunk)"
   ctl baresip-a '{"command":"dial","params":"100@dialler"}'
@@ -120,6 +189,7 @@ if [ "$DIRECTION" = out ] || [ "$DIRECTION" = both ]; then
        --max-gap-ms "${MAX_GAP_MS:-0}" --max-gaps "${MAX_GAPS:-0}"; then
     echo "PASS out: the desk phone heard the app through the trunk"
     codec_check out
+    srtp_check out callee
   else
     echo "FAIL out"; fail=1
     $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialler|100|error|warn|rtp" | tail -8 | sed 's/^/   asterisk: /'
@@ -138,6 +208,7 @@ if [ "$DIRECTION" = in ] || [ "$DIRECTION" = both ]; then
        --max-gap-ms "${MAX_GAP_MS:-0}" --max-gaps "${MAX_GAPS:-0}"; then
     echo "PASS in: the app heard the desk phone through the trunk"
     codec_check in
+    srtp_check in caller
   else
     echo "FAIL in"; fail=1
     $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialler|211|error|warn" | tail -8 | sed 's/^/   asterisk: /'
@@ -210,6 +281,45 @@ if [ "$DIRECTION" = xfer-app ] || [ "$DIRECTION" = both ]; then
   if [ "$ok" != 1 ]; then
     echo "FAIL xfer-app"; fail=1
     $COMPOSE logs --no-log-prefix --since "$MARK" baresip-b 2>&1 | grep -iE "invite|update|codec|G722|opus|error" | tail -8 | sed 's/^/   212: /'
+  fi
+fi
+
+if [ "$DIRECTION" = xfer-echo ] || [ "$DIRECTION" = both ]; then
+  echo "== xfer-echo: app 211 dials 600 (PBX echo), then transfers 600 to desk phone 100 — the PBX cannot REFER an unbridged Echo() channel, so the server bridges the two trunk legs itself"
+  # The phone scenario of 2026-09-17 18:25: no audio either way after
+  # the transfer, on an SRTP trunk only. Echo() is not in a bridge, so
+  # Asterisk answers the REFER with 400 and the server falls back to
+  # relaying trunk↔trunk — the one transfer shape no other scenario runs.
+  # The desk phone hears its own tone come back through 600 only if BOTH
+  # directions of that relay work, so one recording proves both.
+  AUDIO_SOURCE="aufile,/media/silence.wav" $COMPOSE up -d --no-deps --force-recreate baresip-a >/dev/null 2>&1
+  sleep 5
+  rm -f "$MEDIA_DIR/out-100.wav"
+  MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ctl baresip-a '{"command":"dial","params":"600@dialler"}'
+  sleep 4
+  ctl baresip-a '{"command":"transfer","params":"100"}'
+  sleep "$CALL_SECONDS"
+  ctl baresip-c '{"command":"hangup"}'
+  sleep 2
+  logs="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+  echo "$logs" | grep -E 'transfer|msg=relay.*transfer|call ended|level=(ERROR|WARN)' | tail -8 | sed 's/^/   /'
+  ok=1
+  if echo "$logs" | grep -q 'transfer: offloaded to PBX'; then
+    echo "   (the PBX took the REFER after all: this run did not exercise the server-bridged path)"
+  else
+    echo "$logs" | grep -q 'transfer: bridged' || { echo "   FAIL: the server neither offloaded nor bridged the transfer"; ok=0; }
+  fi
+  if python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-100.wav" --reference "$MEDIA_DIR/in.wav" \
+       --max-gap-ms "${XFER_MAX_GAP_MS:-40}" --max-gaps "${XFER_MAX_GAPS:-2}"; then
+    [ "$ok" = 1 ] && echo "PASS xfer-echo: the desk phone heard its own tone back through 600 across the transferred, server-bridged trunk legs"
+  else
+    echo "   FAIL: the desk phone heard nothing back through 600 after the transfer"; ok=0
+  fi
+  if [ "$ok" != 1 ]; then
+    echo "FAIL xfer-echo"; fail=1
+    echo "$logs" | grep -E 'msg=relay' | tail -4 | sed 's/^/   /'
+    $COMPOSE logs --no-log-prefix --since "$MARK" asterisk 2>&1 | grep -iE "refer|srtp|unprotect|replay|error|warn" | tail -8 | sed 's/^/   asterisk: /'
   fi
 fi
 

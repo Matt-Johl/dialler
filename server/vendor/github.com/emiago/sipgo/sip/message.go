@@ -121,6 +121,8 @@ type Message interface {
 	SetSource(src string)
 	Destination() string
 	SetDestination(dest string)
+	ReceivedOn() string
+	SetReceivedOn(addr string)
 
 	remoteAddress() Addr
 }
@@ -136,6 +138,14 @@ type MessageData struct {
 	// This is for internal routing
 	src  string
 	dest string
+
+	// recvOn is the local address a message was READ from, set by the
+	// transports on inbound only. Deliberately not dest: dest is where a
+	// message is to be SENT, and a UAS that confused the two would answer
+	// itself. Nothing in routing reads this — it is here so a stack with
+	// two listeners on one protocol can tell which of them a request
+	// arrived on, which the protocol alone does not say.
+	recvOn string
 }
 
 func (msg *MessageData) Body() []byte {
@@ -192,4 +202,14 @@ func (msg *MessageData) Destination() string {
 
 func (msg *MessageData) SetDestination(dest string) {
 	msg.dest = dest
+}
+
+// ReceivedOn is the local "host:port" this message was read from, or empty
+// for one we built ourselves. See the recvOn field.
+func (msg *MessageData) ReceivedOn() string {
+	return msg.recvOn
+}
+
+func (msg *MessageData) SetReceivedOn(addr string) {
+	msg.recvOn = addr
 }

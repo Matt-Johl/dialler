@@ -29,6 +29,7 @@ audio. Passing on 2026-09-05 (callee RMS ≈ 6500 against a threshold of 200).
 |---|---|
 | `dialler/` | Builds `dialler-server` from `../server` into a distroless image |
 | `asterisk/` | Alpine-packaged Asterisk (Debian 12 dropped it) as the customer PBX peer: desk phone `100` (G.722 first, G.711 fallback), trunk peer `dialler` |
+| `tls/` | `gen_certs.sh` — a private CA and a certificate each for the server and the PBX, for the TLS trunk (`make harness-trunk-tls`, SPEC §6 item 3b). Generated on demand and gitignored; only the script is committed. The default set is for the compose addresses; `OUT=lan DIALLER_IP=… ASTERISK_IP=…` makes a second set for the Ubuntu PBX (see `asterisk-native/README.md`), because a certificate's SANs must be the addresses each side is really dialled by |
 | `sipp/` | App-leg conformance: REGISTER over TLS succeeds, plain TCP is refused, INVITE returns 501 until the B2BUA exists |
 | `baresip/` | Two headless phones (`211`, `212`) registering over TLS with WAV audio in/out; SRTP mandatory on that leg (`mediaenc=srtp-mand`, set by `entrypoint.sh` for TLS), plain RTP for the desk phone on UDP |
 | `provision.sh` | Enrols the two phones and seeds the directory via the admin API |

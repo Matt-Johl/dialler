@@ -40,13 +40,39 @@ if ! grep -q 'Dialler: net service type' "$SRC/src/tcp/tcp.c"; then
 fi
 echo "   re: Apple net-service-type QoS patch present"
 
+# A flushed SIP connection must not be able to receive. sip_transp_flush()
+# only drops the hash's reference on each connection and frees the
+# transports; a connection pinned by a transaction in flight — a 486 waiting
+# for its ACK on TCP/TLS keeps its request for Timer H, and the request keeps
+# the connection — stays open and listening with its transports gone. The
+# next packet on it completes that transaction inside the receive handler,
+# the packet's own reference goes with mem_deref(msg), the connection is
+# destroyed under the handler's feet, and the handler reads conn->mb->end
+# from freed memory (transp.c tcp_recv_handler, after sip_recv). On iOS,
+# whose allocator zeroes freed blocks, that is SIGSEGV at NULL+0x18: four
+# crashes on 2026-09-17 16:29, each a reset run while a 486's ACK was in
+# flight. Now every connection is closed before the flush: its socket goes
+# away, queued sends fail through their handlers, and a pinned connection
+# dies quietly when its transaction ends.
+if ! grep -q 'Dialler: close before flush' "$SRC/src/sip/transp.c"; then
+  perl -0pi -e 's/(void sip_transp_flush\(struct sip \*sip\)\n\{\n\tif \(!sip\)\n\t\treturn;\n\n)(\thash_flush\(sip->ht_conn\);\n)/\/* Dialler: close before flush, see ios\/vendor\/patches\/apply-re.sh *\/\nstatic bool flush_conn_close_handler(struct le *le, void *arg)\n{\n\tstruct sip_conn *conn = le->data;\n\t(void)arg;\n\n\tconn_close(conn, ECONNRESET);\n\tmem_deref(conn);\n\n\treturn false;\n}\n\n\n$1\thash_apply(sip->ht_conn, flush_conn_close_handler, NULL);\n$2/' "$SRC/src/sip/transp.c"
+  grep -q 'Dialler: close before flush' "$SRC/src/sip/transp.c" || { echo "patch: re transp.c sip_transp_flush anchor not found"; exit 1; }
+  grep -q 'hash_apply(sip->ht_conn, flush_conn_close_handler, NULL);' "$SRC/src/sip/transp.c" || { echo "patch: re transp.c flush call not inserted"; exit 1; }
+fi
+echo "   re: close-before-flush in sip_transp_flush present"
+
 # ---- patch level ------------------------------------------------------------
 # Exported so the app can log which libre it was linked against; bump when a
 # patch above changes. cb_version() prints it as "libre patch level N".
 #   1: re_main EBADF guard   2: + Apple SO_NET_SERVICE_TYPE / IPV6_TCLASS marks
-RE_PATCH_LEVEL=2
+#   3: + sip_transp_flush closes connections before dropping them
+RE_PATCH_LEVEL=3
 if ! grep -q 're_dialler_patchlevel' "$SRC/src/main/main.c"; then
   printf '\n/* Dialler: patch level, see ios/vendor/patches/apply-re.sh */\nint re_dialler_patchlevel(void)\n{\n\treturn %s;\n}\n' "$RE_PATCH_LEVEL" >> "$SRC/src/main/main.c"
 fi
-grep -q "return $RE_PATCH_LEVEL;" "$SRC/src/main/main.c" || perl -pi -e 's/(int re_dialler_patchlevel\(void\)\n\{\n\treturn )\d+;/${1}'"$RE_PATCH_LEVEL"';/' "$SRC/src/main/main.c"
+# -0: the pattern spans lines. Without it (as it was until level 3) the
+# bump silently never matched and the app kept reporting the old level
+# while carrying the new code (2026-09-18).
+grep -q "return $RE_PATCH_LEVEL;" "$SRC/src/main/main.c" || perl -0pi -e 's/(int re_dialler_patchlevel\(void\)\n\{\n\treturn )\d+;/${1}'"$RE_PATCH_LEVEL"';/' "$SRC/src/main/main.c"
+grep -q "return $RE_PATCH_LEVEL;" "$SRC/src/main/main.c" || { echo "patch: re patch level not updated"; exit 1; }
 echo "   re: patch level $RE_PATCH_LEVEL"

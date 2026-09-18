@@ -83,6 +83,39 @@ type Config struct {
 	// it differs from Port (container published on another host port).
 	// 0 = Port.
 	PublicPort int
+	// TrunkSRTP is SDES on the PBX leg (SPEC §6 near-term item 3a):
+	//
+	//	off   plain RTP, and an encrypted offer from the PBX is answered
+	//	      in the clear. The default: a PBX that does not do SDES
+	//	      refuses an RTP/SAVP offer with 488, so this cannot be on
+	//	      until the PBX is known to accept it.
+	//	sdes  offer RTP/SAVP with a=crypto (RFC 4568), mirror what the PBX
+	//	      offers us, and refuse a leg that did not actually end up
+	//	      encrypted.
+	//
+	// There is deliberately no "best effort" mode. RFC 4568 puts crypto on
+	// a secure m-line, and RFC 3264 §6 makes an answer keep the offer's
+	// profile, so "offered SAVP, answered in the clear" is malformed rather
+	// than a downgrade: a PBX that cannot do SDES sends 488 instead. A mode
+	// that bridged such an answer anyway would encrypt to a far end unable
+	// to decrypt — garbled audio in place of a clean failure. The industry
+	// work-arounds for genuine best-effort are all non-standard and are
+	// listed under §6 "Much later".
+	//
+	// Each leg keys its own media session; the relay copies encoded payload
+	// between them, so the app leg stays encrypted whatever the trunk does.
+	TrunkSRTP TrunkSRTPMode
+
+	// TrunkTLS is the TLS configuration for the PBX leg when the trunk's
+	// transport is "tls" (SPEC §6 near-term item 3b). Nil elsewhere.
+	//
+	// Separate from TLS above on purpose: that one is the app leg, which we
+	// own both ends of and can pin to TLS 1.3, while a PBX we do not own
+	// cannot be. It also carries the trust for verifying the PBX, which the
+	// app leg has no use for — apps dial us, so we are never the client
+	// there. See tlsutil.PeerConfig.
+	TrunkTLS *tls.Config
+
 	// Trunk is the PBX peer for non-local destinations (SPEC §4.4 rule 7);
 	// nil = standalone (app↔app only). Trunk-originated calls arrive on a
 	// second listener, TrunkBind ("0.0.0.0:5060"), over Trunk.Transport.
@@ -145,7 +178,40 @@ type Server struct {
 var (
 	errWakeDeclined = errors.New("callee declined")
 	errWakeBusy     = errors.New("callee busy")
+	// The registered callee's TLS connection closed while its INVITE was
+	// out and unanswered: nothing can answer on it, and the app it belonged
+	// to has been suspended or killed. The caller is told 480 at once
+	// (see bridge) rather than ringing on until the ring timeout.
+	errCalleeFlowGone = errors.New("callee connection died while ringing")
 )
+
+// flowPollInterval is how often a ringing app callee's connection is
+// checked for still being in the pool. A lookup, no I/O.
+const flowPollInterval = 500 * time.Millisecond
+
+// flowGoneGrace is how long a ringing callee whose connection has died is
+// given to come back on a new one (re-register → retarget) before the
+// caller is answered 480. A suspended app never does; the caller hears
+// unavailable ~2.5 s after the socket went instead of 15–30 s.
+const flowGoneGrace = 2 * time.Second
+
+// watchFlow polls alive every interval until ctx ends. The first time it
+// reports false, onGone runs once and the watch stops.
+func watchFlow(ctx context.Context, interval time.Duration, alive func() bool, onGone func()) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if !alive() {
+				onGone()
+				return
+			}
+		}
+	}
+}
 
 // HandleWakeAck is the gateway's wake_ack hook: a decline or busy from the
 // woken device ends that call's wait immediately. will_answer is not an
@@ -213,7 +279,24 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 	media.ListenConfig.Control = qos.Control(qos.DSCPEF)
 	sipgo.ListenConfig.Control = qos.Control(qos.DSCPCS3)
 
-	ua, err := sipgo.NewUA(sipgo.WithUserAgent("dialler"), sipgo.WithUserAgentHostname(cfg.ExternalHost))
+	uaOpts := []sipgo.UserAgentOption{sipgo.WithUserAgent("dialler"), sipgo.WithUserAgentHostname(cfg.ExternalHost)}
+	if cfg.TrunkTLS != nil {
+		// What we use when WE dial over TLS — the trust for verifying the
+		// PBX, and our certificate for its mutual TLS.
+		//
+		// sipgo takes one client config for the whole user agent rather
+		// than per transport, which looks as though it could weaken the app
+		// leg. It cannot: a client config governs outbound connections, and
+		// the app leg is inbound — apps dial us and we are the TLS server
+		// there, where client verification never runs. The server only
+		// dials an app whose TLS connection is already pooled (see
+		// flowAlive), so it reuses that connection rather than performing a
+		// fresh handshake; the one path that would dial an app directly is
+		// -rewrite-contact=false, which exists to demonstrate a broken NAT
+		// configuration and whose target has no server certificate anyway.
+		uaOpts = append(uaOpts, sipgo.WithUserAgenTLSConfig(cfg.TrunkTLS))
+	}
+	ua, err := sipgo.NewUA(uaOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -234,12 +317,18 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 		if err != nil {
 			return nil, err
 		}
+		// Both legs listening on one port is not a configuration we can
+		// serve, and the failure it produces otherwise is an "address in
+		// use" from inside diago with nothing naming which leg lost.
+		if port == cfg.Port && (host == cfg.BindHost || host == "0.0.0.0" || cfg.BindHost == "0.0.0.0") {
+			return nil, fmt.Errorf("b2bua: trunk bind %s:%d collides with the app leg; give -trunk-addr another port", host, port)
+		}
 		ext := cfg.TrunkExternalHost
 		if ext == "" {
 			ext = firstIPv4()
 		}
 		opts = append(opts, diago.WithTransport(diago.Transport{
-			ID:           "trunk",
+			ID:           transportTrunk,
 			Transport:    cfg.Trunk.Transport,
 			BindHost:     host,
 			BindPort:     port,
@@ -251,12 +340,79 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 			// connection like TLS) the ACK never arrives and answering the
 			// inbound leg blocks for 32 s (Timer H) then fails — silent call.
 			ExternalPort: port,
+			// SDES on the PBX leg when the deployment says the PBX can
+			// take it. Off by default: an RTP/SAVP offer to a PBX without
+			// encryption comes back 488 and the call simply fails.
+			MediaSRTP: srtpOption(cfg.TrunkSRTP),
+			// The certificate we present when the PBX calls us. Nil unless
+			// the trunk's transport is tls, in which case diago listens
+			// with it (diago.go: ListenAndServeTLS when TLSConf != nil or
+			// the transport is tls — so a tls trunk without this would try
+			// to listen with no certificate at all).
+			TLSConf: cfg.TrunkTLS,
+			// sip:…;transport=tls in our Contact, not sips:. Both Asterisk
+			// and CUCM emit the former on a secure trunk and some stacks
+			// route a sips: Contact poorly (the app leg sets this for
+			// exactly that reason). It is also the more honest claim:
+			// RFC 5630 §3.3 reads sips: as a promise that the whole
+			// remaining path is TLS, and past a B2BUA nothing on this leg
+			// can promise anything about the other one.
+			TLSURINoSIPS: true,
 		}))
 	}
 	opts = append(opts, mediaOptions(cfg)...)
 	s.dg = diago.NewDiago(ua, opts...)
 	return s, nil
 }
+
+// The two listeners' diago transport IDs. Legs are dialled out of one by
+// name because diago otherwise picks the first transport whose protocol
+// matches, and with a TLS trunk (SPEC §6 item 3b) both of ours are "tls":
+// an app callee would then be offered the trunk's media settings — plain
+// RTP where the app leg requires SRTP — and refuse the call with 488.
+const (
+	transportApp   = "app"
+	transportTrunk = "trunk"
+)
+
+// legTransport names the listener a leg belongs to.
+func legTransport(trunk bool) string {
+	if trunk {
+		return transportTrunk
+	}
+	return transportApp
+}
+
+// srtpOption is diago's per-transport setting: 0 none, 1 SDES.
+func srtpOption(m TrunkSRTPMode) int {
+	if m.offers() {
+		return 1
+	}
+	return 0
+}
+
+// TrunkSRTPMode is how far SDES goes on the PBX leg.
+type TrunkSRTPMode string
+
+const (
+	TrunkSRTPOff  TrunkSRTPMode = "off"
+	TrunkSRTPSDES TrunkSRTPMode = "sdes"
+)
+
+// ParseTrunkSRTP reads the -trunk-srtp flag.
+func ParseTrunkSRTP(s string) (TrunkSRTPMode, error) {
+	switch m := TrunkSRTPMode(strings.ToLower(strings.TrimSpace(s))); m {
+	case "", TrunkSRTPOff:
+		return TrunkSRTPOff, nil
+	case TrunkSRTPSDES:
+		return m, nil
+	default:
+		return "", fmt.Errorf("want off or sdes; got %q", s)
+	}
+}
+
+// offers reports whether this mode puts a=crypto on the trunk leg at all.
+func (m TrunkSRTPMode) offers() bool { return m == TrunkSRTPSDES }
 
 // mediaOptions is the app-leg transport (always present) and the codec set.
 func mediaOptions(cfg Config) []diago.DiagoOption {
@@ -272,6 +428,10 @@ func mediaOptions(cfg Config) []diago.DiagoOption {
 	}
 	return []diago.DiagoOption{
 		diago.WithTransport(diago.Transport{
+			// Named so a leg can be dialled out of a chosen transport
+			// rather than the first one with a matching protocol —
+			// ambiguous the moment the trunk is TLS too (see legTransport).
+			ID:           transportApp,
 			Transport:    "tls",
 			BindHost:     cfg.BindHost,
 			BindPort:     cfg.Port,
@@ -303,7 +463,24 @@ func (s *Server) Serve(ctx context.Context) error {
 		trunk = s.cfg.Trunk.URI("*")
 	}
 	s.log.Info("b2bua listening", "bind", fmt.Sprintf("%s:%d", s.cfg.BindHost, s.cfg.Port), "external", s.cfg.ExternalHost, "domains", s.cfg.Domains,
-		"app_leg_symmetric_rtp", !s.cfg.NoSymmetricRTP, "rewrite_contact", !s.cfg.KeepAdvertisedContact, "trunk", trunk)
+		"app_leg_symmetric_rtp", !s.cfg.NoSymmetricRTP, "rewrite_contact", !s.cfg.KeepAdvertisedContact, "trunk", trunk,
+		"trunk_srtp", s.cfg.TrunkSRTP, "trunk_tls", s.cfg.TrunkTLS != nil)
+	// Immediately after the line that describes the trunk, not before the
+	// startup banner: warnings emitted during construction scroll past above
+	// the line everyone reads as the beginning, next to the self-signed-cert
+	// warning people have learned to ignore, and this one was missed on a
+	// real deployment (2026-09-17).
+	//
+	// SDES carries the media keys in the SDP, so over signalling that is not
+	// itself encrypted anyone who can read the INVITE can read the keys.
+	// Against an attacker who sees both planes — the usual case on one LAN —
+	// the media encryption adds nothing; it still helps against one who can
+	// see only the media path. RFC 4568 §7.1 requires a protected signalling
+	// channel for exactly this reason.
+	if s.cfg.Trunk != nil && s.cfg.TrunkSRTP.offers() && !strings.EqualFold(s.cfg.Trunk.Transport, "tls") {
+		s.log.Warn("trunk SRTP over unencrypted signalling: the SDES keys travel in the SDP, so anyone who can read the INVITE can decrypt the media; use a TLS trunk",
+			"trunk_transport", s.cfg.Trunk.Transport, "trunk_srtp", s.cfg.TrunkSRTP)
+	}
 	err := s.dg.Serve(ctx, s.serveDialog)
 	if ctx.Err() != nil {
 		return nil
@@ -814,6 +991,22 @@ func ParseCodecs(list string) ([]media.Codec, error) {
 // share (the relay does not transcode); app↔app keeps the full set.
 func callTouchesTrunk(l legs) bool { return l.callerTrunk || l.calleeTrunk }
 
+// requireTrunkSRTP enforces -trunk-srtp=sdes on a trunk leg: nil unless
+// this is the PBX leg, encryption was asked for, and the session did not
+// actually get it. Only the trunk leg is checked — the app leg is unconditionally
+// SRTP (rule 4) and has no mode.
+func (s *Server) requireTrunkSRTP(trunk bool, ms *media.MediaSession) error {
+	if !trunk || s.cfg.TrunkSRTP != TrunkSRTPSDES {
+		return nil
+	}
+	if ms != nil && ms.SecureRTPActive() {
+		return nil
+	}
+	return errTrunkNotSecure
+}
+
+var errTrunkNotSecure = errors.New("trunk leg is not SRTP and -trunk-srtp=sdes")
+
 // srtpState is the per-leg log value: "on" when both directions of the
 // leg's media are SRTP-protected, "off" otherwise (the trunk, always).
 func srtpState(ms *media.MediaSession) string {
@@ -887,8 +1080,11 @@ func isTrunkSource(transport, source string, t *pbx.Trunk) bool {
 func trunkBind(addr string, t *pbx.Trunk) (string, int, error) {
 	if addr == "" {
 		port := 5060
-		if t.Transport == "tls" {
-			port = 5061
+		if strings.EqualFold(t.Transport, "tls") {
+			// Not 5061, the conventional SIP/TLS port: that is the app
+			// leg's, and the two transports would fight over the same
+			// socket on any default configuration.
+			port = 5062
 		}
 		return "0.0.0.0", port, nil
 	}
@@ -931,7 +1127,7 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	// The callee leg is offered the caller's codecs (Originator reads the
 	// caller's INVITE SDP, which does not require it to be answered) and
 	// symmetric RTP where the deployment wants it.
-	out, err := s.dg.NewDialog(dst, diago.NewDialogOptions{})
+	out, err := s.dg.NewDialog(dst, diago.NewDialogOptions{TransportID: legTransport(l.calleeTrunk)})
 	if err != nil {
 		log.Error("new callee dialog", "dst", dst.String(), "err", err)
 		_ = in.Respond(500, "Server Internal Error", nil)
@@ -1015,6 +1211,18 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 				cancelInvite(sipgo.WaitAnswerForceCancelErr)
 			}
 		}
+		// abandonDead is abandon for a callee whose connection is gone:
+		// there is nobody to CANCEL, and trying would have sipgo dial the
+		// dead address and hang on connect, so the INVITE is dropped
+		// outright whether or not a 180 was seen.
+		abandonDead := func(reason error) {
+			abandonMu.Lock()
+			if abandoned == nil {
+				abandoned = reason
+			}
+			abandonMu.Unlock()
+			cancelInvite(sipgo.WaitAnswerForceCancelErr)
+		}
 		stopParent := context.AfterFunc(ctx, func() { abandon(context.Cause(ctx)) })
 		s.trackWait(callID, func(cause error) {
 			if cause != nil {
@@ -1028,6 +1236,31 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 				abandon(errRetarget)
 			}
 		}()
+		// The connection the INVITE went down can die while it is out:
+		// iOS suspends the app 160 ms after it registered when CallKit
+		// has refused to present the call (a Focus filter, 2026-09-18
+		// 01:55), and the socket goes with it. Nothing will ever answer on
+		// it — not even a CANCEL can be delivered — and the pre-dial check
+		// (registration flow gone) has already passed, so the caller rang
+		// until it gave up: 15 s that night. A 180 already received
+		// changes nothing (baresip sends one the instant the INVITE
+		// lands). The one way the call could still complete is the app
+		// coming back on a NEW connection, and that arrives as a fresh
+		// REGISTER, which the retarget watch above turns into a new
+		// INVITE; a short grace lets it win the race before the caller is
+		// answered. Not with -rewrite-contact=false: an advertised route
+		// has no pooled connection to watch.
+		if !s.cfg.KeepAdvertisedContact && l.calleeRoute != "" {
+			go watchFlow(wctx, flowPollInterval,
+				func() bool { return s.flowAlive(l.calleeRoute) },
+				func() {
+					select {
+					case <-wctx.Done(): // answered, retargeted or cancelled meanwhile
+					case <-time.After(flowGoneGrace):
+						abandonDead(errCalleeFlowGone)
+					}
+				})
+		}
 		defer func() {
 			stopParent()
 			stopWatch()
@@ -1063,6 +1296,20 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 				_ = in.Respond(486, "Busy Here", nil)
 			}
 			return why
+		case errCalleeFlowGone:
+			// 480, not 486: the callee registered and vanished, it did
+			// not refuse. The caller may try again — and on the phone a
+			// repeat call is what breaks through a Focus filter.
+			log.Info("invite callee: callee's connection died while ringing; answering the caller", "route", l.calleeRoute)
+			// The caller first, and no Hangup on the callee: its
+			// connection is gone, so a BYE/CANCEL would only make sipgo
+			// dial the dead address and block. The INVITE transaction was
+			// terminated by the forced cancel; Close releases the rest.
+			if in.Context().Err() == nil {
+				_ = in.Respond(480, "Temporarily Unavailable", nil)
+			}
+			out.Close()
+			return why
 		}
 		log.Error("invite callee", "dst", dst.String(), "offered", codecNames(out.Media().MediaSession()), "err", err)
 		_ = out.Hangup(out.Context())
@@ -1083,12 +1330,34 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	negotiated := media.CodecAudioFromSession(out.Media().MediaSession())
 	log.Info("callee answered", "codec", negotiated.Name, "callee_trunk", l.calleeTrunk, "caller_trunk", l.callerTrunk,
 		"callee_srtp", srtpState(out.Media().MediaSession()))
+	// A PBX that answered our RTP/SAVP offer without usable crypto would
+	// carry this call unencrypted — or, worse, be unable to decrypt what we
+	// send. Fail it rather than bridge it.
+	if err := s.requireTrunkSRTP(l.calleeTrunk, out.Media().MediaSession()); err != nil {
+		log.Error("callee leg would not secure the media", "err", err)
+		_ = out.Hangup(out.Context())
+		out.Close()
+		if in.Context().Err() == nil {
+			_ = in.Respond(488, "Not Acceptable Here", nil)
+		}
+		return err
+	}
 	legA.codec, legB.codec = negotiated, negotiated
 	if err := in.AnswerOptions(diago.AnswerOptions{RTPNAT: s.legNAT(l.callerTrunk), Codecs: []media.Codec{negotiated},
 		OnRefer: call.onRefer(legA), OnMediaUpdate: onMedia(legA)}); err != nil {
 		log.Error("answer caller", "err", err)
 		_ = out.Hangup(out.Context())
 		out.Close()
+		return err
+	}
+	// Same rule the other way round, and only now: a leg's session is not
+	// secure until BOTH crypto contexts exist, and ours is created when we
+	// answer — so asking at INVITE time calls every inbound call insecure,
+	// encrypted ones included (2026-09-16).
+	if err := s.requireTrunkSRTP(l.callerTrunk, in.Media().MediaSession()); err != nil {
+		log.Error("caller leg would not secure the media", "err", err)
+		out.Close()
+		_ = in.Hangup(in.Context())
 		return err
 	}
 	if err := out.Ack(ctx); err != nil {
@@ -1249,8 +1518,12 @@ func (p *pump) forward(payload []byte) error {
 	if newStream {
 		// Rebase this source's timeline onto ours, continuing right after
 		// what we last sent so the far end sees one monotonic stream.
+		// "What we last sent" is what matters, not whether THIS pump has
+		// seen a source: a pump that replaced another on the same leg
+		// (transfer) inherited its predecessor's numbering and must carry
+		// it on, or the far end sees the stream jump.
 		start := p.rw.InitTimestamp()
-		if p.haveSrc {
+		if p.wroteAny {
 			start = p.lastOut + p.codec.SampleTimestamp()
 		}
 		p.tsOffset = start - hdr.Timestamp
@@ -1346,6 +1619,31 @@ func (p *pump) writeLocal(payload []byte, marker bool) error {
 	}
 	p.lastSeq, p.lastOut, p.wroteAny, p.localWrote = seq, want, true, true
 	return nil
+}
+
+// inheritTimeline continues this pump's outbound numbering from prev, a
+// pump that wrote to the same leg before it and has been stopped. A
+// transfer replaces every pump, but the leg that stays keeps its RTP
+// stream — same SSRC, same SRTP context at the far end — and a new pump
+// starting at a random sequence number (rebaseSeq, a stream's first
+// packet) made that stream jump. Plain RTP shrugs; SRTP does not: a jump
+// backwards is a replay to libsrtp, a large one a wrong rollover counter,
+// and every packet is dropped unheard — the PBX's echo test went silent
+// both ways after a transfer on the LAN, on an SRTP trunk only, on
+// whichever side of the coin the random start fell (2026-09-17 18:25).
+func (p *pump) inheritTimeline(prev *pump) {
+	if prev == nil || prev == p || p.rw == nil || prev.rw != p.rw {
+		return
+	}
+	prev.mu.Lock()
+	lastSeq, lastOut, wrote := prev.lastSeq, prev.lastOut, prev.wroteAny
+	prev.mu.Unlock()
+	if !wrote {
+		return
+	}
+	p.mu.Lock()
+	p.lastSeq, p.lastOut, p.wroteAny = lastSeq, lastOut, true
+	p.mu.Unlock()
 }
 
 // playHold loops frames onto this pump's destination leg until ctx ends.

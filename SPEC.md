@@ -684,18 +684,112 @@ on by config — see §7.4.
      2026-09-14, inbound calls land on PCMU because the PBX's INVITE
      lists PCMU first — the phone's own offer order — while outbound
      calls get G.722; the server follows the caller's order by design).
-  3a. **Trunk-leg SRTP.** Offer and accept SDES on the PBX leg when the
-     PBX supports it (Asterisk `media_encryption=sdes` on the trunk
-     endpoint; CUCM secure SIP trunk profile), so every hop between the
-     phones and the PBX is encrypted — the strongest form the
-     architecture allows (Phase F did the app leg only, 2026-09-13).
-     The server's trunk transport takes `MediaSRTP: 1` like the app
-     leg; the flag becomes `-trunk-srtp off|offer|require`, default
-     `off` until the PBX is known to accept it (an offer of RTP/SAVP is
-     refused with 488 by a PBX without encryption, so it cannot be
-     unconditional). Harness: an Asterisk endpoint variant with
-     `media_encryption=sdes` and `caller_srtp/callee_srtp` asserted
-     `on` for the trunk leg in `make harness-trunk`.
+
+     **Two CUCM trunk settings to get right before blaming the code**
+     (2026-09-17, from reading our own SDP handling — neither is yet
+     tested against a live CUCM):
+     - **Tick "Early Offer support for voice and video calls (insert MTP
+       if needed)" on the SIP trunk.** Without it CUCM sends a
+       *delayed-offer* INVITE — no SDP at all — and expects our 200 OK to
+       carry the offer. We cannot do that: diago refuses with "no sdp
+       present in INVITE" (`dialog_server_session.go`), and the whole
+       bridge narrows the callee's offer from the caller's SDP
+       (`Originator`), so with no caller SDP there is nothing to narrow.
+       It is unchecked by default on many CUCM versions, so the first
+       symptom is every inbound call from CUCM failing at once. The cost
+       of ticking it is CUCM inserting an MTP when it cannot build an
+       early offer natively, which consumes media resources. Supporting
+       delayed offer properly is ours to do and is listed under "Much
+       later"; the checkbox is the deployment work-around.
+     - **Check the region codec preference for the trunk.** We offer
+       G.722, PCMU and PCMA and have **no G.729**. CUCM deployments
+       commonly set inter-region bandwidth to G.729, and a region pairing
+       that permits only G.729 cannot negotiate with us at all.
+       `-trunk-codecs` can narrow what we offer but cannot add a codec we
+       do not have.
+     - **A secure trunk needs CUCM's SIP Trunk Security Profile, not just
+       our flags** (item 3b). Set its device security mode to Encrypted,
+       transport TLS, incoming port 5061, and **X.509 Subject Name to the
+       CN in the certificate we present** — CUCM matches the name on the
+       certificate against that field, not against the source address, and
+       a mismatch is refused at the handshake with nothing useful in our
+       log. Upload our CA to CUCM as a CallManager-trust certificate and
+       give `-trunk-tls-ca` CUCM's, since neither side's chain is public.
+       CUCM's secure trunks are generally **TLS 1.2**, which is why
+       `-trunk-tls-min-version` defaults there rather than to the app leg's
+       1.3. Encrypted mode also implies SRTP on the media, so this pairs
+       with `-trunk-srtp=sdes` (item 3a) rather than replacing it.
+     *Already confirmed to work:* CUCM polls a trunk with SIP `OPTIONS`
+     and marks it down if unanswered — diago replies 200 with `Allow` and
+     `Accept`, so the trunk comes up. Worth checking first when CUCM
+     simply never sends us a call.
+  3a. **Trunk-leg SRTP.** *Done 2026-09-16.* `-trunk-srtp off|sdes`
+     (default `off`): the trunk transport takes diago's `MediaSRTP` like the
+     app leg, so offers carry RTP/SAVP + `a=crypto` (RFC 4568) and inbound
+     offers are mirrored. `sdes` also refuses a leg that did not end up
+     encrypted — checked **after** the leg is answered, because a session is
+     only secure once both crypto contexts exist and ours is created by our
+     own answer; asking at INVITE time calls every inbound call insecure.
+     **Use it with a TLS trunk.** SDES carries the media keys in the SDP, so
+     over unencrypted signalling anyone who can read the INVITE can read the
+     keys and the media is not really protected (RFC 4568 §7.1); the server
+     warns at startup if the trunk is not TLS.
+     There is deliberately **no best-effort mode**. The offer is SAVP only
+     (one m-line, one profile) and RFC 3264 §6 makes an answer keep the
+     offer's profile, so "answered in the clear" is malformed rather than a
+     downgrade — a PBX that cannot do SDES sends 488 instead. An earlier
+     three-mode design (`off|offer|require`) was collapsed for this reason:
+     its two secure modes differed only for a malformed peer, and the
+     permissive one would have encrypted to a far end unable to decrypt.
+     The non-standard work-arounds are under "Much later". And Alpine's
+     `asterisk` package **does not include `res_srtp.so`** — it is the
+     separate `asterisk-srtp` package, and without it an endpoint with
+     `media_encryption=sdes` refuses every call with 488, which looks
+     exactly like a malformed offer from us. Asserted by
+     `make harness-trunk-srtp` (both directions, with the PBX built
+     `media_encryption=sdes`); the default plain-RTP path stays covered by
+     `make harness-trunk`.
+  3b. **Trunk-leg TLS.** *Done 2026-09-17.* `-trunk=...;transport=tls` plus
+     `-trunk-tls-cert` / `-trunk-tls-key` (presented in **both**
+     directions — we are the TLS server for calls the PBX places and the
+     TLS client for the ones we place, and CUCM's secure trunks demand a
+     client certificate), `-trunk-tls-ca` (what we verify the PBX against;
+     empty means the system roots, wrong for the private CA most
+     deployments run), `-trunk-tls-insecure` (dev only, warned about) and
+     `-trunk-tls-min-version` (**1.2** by default). The app leg keeps its
+     TLS 1.3 floor — we own both ends of it — while the trunk cannot: CUCM
+     secure trunks are generally TLS 1.2, so pinning 1.3 there would refuse
+     the exchange this exists for. Our Contact is
+     `sip:…;transport=tls`, not `sips:`: both Asterisk and CUCM emit the
+     former, and RFC 5630 §3.3 reads `sips:` as a promise about the whole
+     remaining path, which past a B2BUA no leg can make about the other.
+     A TLS trunk defaults to binding **:5062**, not the conventional 5061 —
+     that is the app leg's, and two SIP listeners on one address cannot
+     share a port, so the server refuses a collision rather than failing
+     inside the SIP stack with a bare "address in use". A plain UDP/TCP
+     trunk still defaults to 5060. The cost is one field on the PBX (the
+     AOR contact on Asterisk, *Destination Port* on a CUCM trunk) and
+     nothing outbound, where we dial the PBX's own port; our Contact always
+     carries an explicit port, so no in-dialog request can fall back to a
+     scheme default. `-trunk-addr` moves it for a deployment that wants the
+     trunk on 5061, which then needs the app leg moved (`-sip-addr` plus
+     `-public-sip-port`) or the two legs on separate addresses.
+     Two listeners on one protocol turned out to be new ground for the
+     stack, and both `vendor/PATCHES.md` entries come from it: diago matched
+     an inbound INVITE to the *first* transport with the right protocol, so
+     with a TLS trunk configured every app call was answered with the
+     trunk's media settings and failed; and its REFER handling fell back to
+     UDP for a `Refer-To` without a transport, which on a UDP-less stack
+     made blind transfer silently do nothing. Legs are now dialled out of a
+     named transport (`app`/`trunk`) rather than by protocol.
+     Asserted by `make harness-trunk-tls` (all four trunk scenarios over a
+     mutually authenticated trunk — the PBX is configured
+     `require_client_cert=yes`, so it will not even qualify us without a
+     valid certificate) and `make harness-trunk-secure` (with SDES on top,
+     which also asserts the item-3a warning is *absent*). Certificates come
+     from `harness/tls/gen_certs.sh`, generated and gitignored;
+     `TRUNK_TLS=1 harness/asterisk-native/install-ubuntu.sh` sets the same
+     thing up on the LAN box.
   4. Before release: third-party acknowledgements screen and the App Store
      export-compliance declaration (see `ios/README.md`).
   4a. **Volume and tone balancing.** Every level in the app was chosen by
@@ -798,6 +892,22 @@ on by config — see §7.4.
 Kept here so the design intent is not lost and so existing references to the
 old phase labels still resolve. None of this is on the roadmap.
 
+- **Faster busy for a Focus-filtered call (optional, 2026-09-18).** When
+  CallKit refuses to present a call (`FilteredByDoNotDisturb`, a Sleep or
+  Focus schedule), the app does hear about it — `reportNewIncomingCall`'s
+  completion carries the error and the app then hangs up the SIP call and
+  acks the wake as busy — but iOS suspends the process ~160 ms after the
+  report, before that completion runs, so it arrives on the *next* wake,
+  20 s later. The server covers the caller meanwhile: it notices the
+  callee's connection die and answers 480 within ~3 s (`bridge`,
+  `watchFlow`). Possible improvement: hold a `beginBackgroundTask`
+  assertion across the report so the process lives the few hundred
+  milliseconds CallKit needs to answer, and the busy ack goes out at once
+  (caller hears busy in ~200 ms). Cheap to try; whether iOS grants that
+  time to a push-launched process that ended up presenting no call is
+  undocumented and only a device test can say. There is no API that
+  predicts the filter (Focus rules, "Allow Calls From", repeated calls all
+  live in the system), so refusing pre-emptively is not an option.
 - **Mid-call address change (audio plan Phase G; optional, 2026-09-14).**
   A call that spans a Wi-Fi handoff between two listed SSIDs keeps its
   media on the old address until it drops; the handoff itself (the
@@ -825,6 +935,40 @@ old phase labels still resolve. None of this is on the roadmap.
     one reason to revisit §4.5.
   - The APNS sibling would also have to pass the §7.1 transport conformance
     suite on-device.
+- **Delayed-offer INVITEs on the trunk (optional).** An INVITE with no SDP,
+  where the answerer makes the offer in its 200 OK and the caller answers in
+  the ACK (RFC 3261 §13.2.1). CUCM sends these unless Early Offer is enabled
+  on the trunk (§6 near-term item 3), and other PBXs do too. We refuse them:
+  diago needs the INVITE body, and the bridge narrows the callee's offer from
+  the caller's SDP, so there is nothing to narrow from. Supporting it means
+  the B2BUA generating its own offer toward the caller before it knows what
+  the callee will take — which is exactly the tandem-coding problem the
+  copy-relay exists to avoid, since the two legs could then settle on
+  different codecs. The honest options are to offer our full set and re-INVITE
+  the caller once the callee has chosen (a second round trip on every such
+  call), or to keep requiring early offer and document the checkbox. Not
+  scheduled: the checkbox costs nothing and the alternative touches the one
+  design decision the media path is built on.
+- **Best-effort SRTP on the trunk (optional).** `-trunk-srtp=sdes` is
+  all-or-nothing by design (item 3a): a PBX without SDES refuses the SAVP
+  offer with 488, because RFC 4568 puts crypto on a secure m-line and there
+  is no standard way to offer secure and insecure at once. Every way round
+  that is a vendor extension, and each would be a deliberate choice to leave
+  the standard:
+  - *Optimistic / opportunistic SRTP* — put `a=crypto` on a plain `RTP/AVP`
+    m-line and use it only if the answer echoes it. Asterisk's
+    `media_encryption_optimistic`, Cisco's "Best-Effort SRTP". Widely
+    tolerated, explicitly not RFC 4568 (which requires SAVP). Needs diago to
+    emit crypto on an AVP m-line, which it does not do today.
+  - *Dual m-lines* — offer SAVP and AVP as separate audio streams and let
+    the answerer pick. Legal SDP; many endpoints mishandle a second audio
+    stream, and the relay would have to follow whichever was accepted.
+  - *488-and-retry* — re-offer in the clear after a refusal, as SBCs often
+    do. Simplest for us and the easiest to reason about, at the cost of a
+    failed INVITE per call and an easy downgrade for anyone able to inject a
+    488.
+  None is scheduled. The first question for any of them is whether a call
+  that silently drops to plain RTP is one this product should place at all.
 - **Video (was Phase 5).** WebRTC/BSD + VideoToolbox. If it ever happens,
   libwebrtc could carry audio too and retire baresip; that is the second
   reason to revisit §4.5.
@@ -856,11 +1000,21 @@ the question worth asking — instead of *"has the far end had CPU lately"*,
 which we cannot expect it to satisfy. `TestAnsweringClientIsNeverTimedOut`
 pins it: a client that only ever answers must never be closed.
 
-Still to do from that comparison: retire the client's own send-timer (it is
-now redundant), and give the extension's `handleTimerEvent()` a staleness
-check like the sample's `evaluate()`, so a stale-but-nominally-connected
-session is rebuilt — today it only rebuilds when it knows it is
-disconnected.
+Done from that comparison (2026-09-16): the client's send-timer is retired
+(`evaluateLiveness()` reads the clock and sends nothing), the extension
+drives the check from `handleTimerEvent()` via `GatewaySession.checkLiveness`,
+and the interval is 10 s with a 30 s deadline.
+
+**A spurious reconnect after a suspension is not a bug to design around.**
+The app reads no frames while iOS has it suspended, so on returning to the
+foreground the idle rule fires and the session is rebuilt — half a second,
+end to end, and correct (device, 2026-09-16). Apple's sample behaves the
+same way and does not guard against it: `HeartbeatMonitor.evaluate()`
+compares wall-clock times with no allowance for not having been running.
+A guard was written for this and reverted the same day: it bought a handful
+of avoided half-second reconnects, and cost an interval of *slower*
+detection of a genuinely dead link, which is the wrong way round. If this
+ever looks worth revisiting, price it against that.
 
 ## 7. Validation strategy: maximise automation, bound the human touch
 
@@ -1126,6 +1280,30 @@ it is neither linked nor redistributed.
    when a better path exists; a handoff to a new address is exactly a
    better path, and the transport closes on it so the keeper reconnects
    at once over the new network (PROTOCOL.md §5).
+   *2026-09-18 15:12, "the caller was told call failed, then the app woke
+   and rang anyway":* not a wake failure — the wake, the app's resume and
+   its REGISTER all worked, and the INVITE reached the stack 76 ms after
+   the REGISTER. The app then answered it **486 Busy** itself, 0.3 ms
+   later: the gateway session had come back at the same moment and the
+   app's "session came back → drop the registration and its dead
+   connection" path ran. Its guard ("not while a call is up") read the
+   engine's `state` on the main thread and saw no call; the free was then
+   queued to the libre loop thread, which read the INVITE off the socket
+   (it was queued behind the REGISTER's 200 OK) *before* draining the
+   queue — so `ua_free` found a ringing call and hung it up. The caller
+   heard busy; the phone rang because the server replayed the wake onto
+   the app's new session (`gateway.go sendWake`) and the wake_cancel for
+   the failed call followed a second later. Fix: the decision moved to
+   the only thread where it cannot go stale. `cb_ua_free`,
+   `cb_ua_alloc` (which frees the previous UA) and `cb_reset_transports`
+   refuse with `EBUSY` when the UA holds a call, checked on the loop
+   thread against the UA's own call list; the engine leaves the call and
+   its registration alone (`registration reset refused by the stack`)
+   and, for a refused re-alloc, retries after the call. The Swift-side
+   `state` check is gone: one guard, in the right place. Reproduced and
+   asserted by `make sim-call-ring-reset` (the reset issued while the
+   simulated phone rings; the stack must refuse it and the call must be
+   answered as in the plain run).
 8. **OPEN — SIP loop thread spinning at 100 % CPU; root cause not found
    (2026-09-12; spin contained the same day).** Report
    `Dialler.cpu_resource_fatal-2026-09-12-141400.ips` (iOS 26.6.2, the
@@ -1187,6 +1365,31 @@ it is neither linked nor redistributed.
    Next time: the last `launch:` breadcrumb in `data/diag/` names the
    hanging step; an Analytics `.ips` with `0x8badf00d` (launch watchdog)
    would show the blocked call directly.
+   *Third episode, 2026-09-18 08:45 (MetricKit
+   `20260918T064557.700Z-metrickit.json`, symbolicated):* the same
+   signature — iOS CPU-resource kill, 48 s of CPU in the 49 s window, all
+   16 samples on the loop thread: 14 in kernel calls under `re_main`
+   (`kevent` returning at once), 2 in `udp_read_handler → mbuf_alloc`.
+   This time mid-call, in the background (the call had been answered from
+   the lock screen and audio was flowing normally throughout — the loop
+   still served packets while it spun). Not the EBADF path: the level-1
+   guard would have logged `fd_poll EBADF` and ended the loop, and nothing
+   of the kind is in the log. The one flush in that run was at 08:44:25,
+   on a socket iOS had aborted (`tls: SSL_write: 5` right before it) —
+   the first day the libre patch level 3 (close-before-flush) was on the
+   device, which made it the obvious suspect; but this item predates
+   level 3 by a week with the identical stack, the simulator shows no
+   spin after flushing live or dead connections (engine CPU meter in
+   `sim-call`), and closing a connection from outside a TCP event is what
+   libre's own idle timeout does. Level 3 stays. What the samples say
+   without saying which descriptor: a level-triggered readiness nobody
+   drains. *Added:* the engine watchdog now samples the loop thread's CPU
+   (`thread_info`) every 500 ms and, at ≥80 % for 5 s, prints the loop's
+   own backtrace to the app log (`LOOP THREAD BUSY`, at most once a
+   minute) — the same SIGUSR1 dump a stall gets. *Next time:* that
+   backtrace names the handler and, through it, the descriptor; collect
+   it with the server log for the same minute. Also seen in that call
+   and separate from the spin: the garbled audio, which is item 11.
 9. **CLOSED — "app silent after a wake, then launches that hang and cannot
    be killed" (2026-09-13 06:13 SAST; same shape as the 00:37 episode and
    the 2026-09-12 "restart needed a reboot"): the app was running under
@@ -1259,6 +1462,30 @@ it is neither linked nor redistributed.
     `data/logs/dev-server.log` by *events*, never by timestamps — the
     phone's clock ran 37 s ahead of the Mac's on 2026-09-15, enough to
     invert the apparent order of cause and effect.
+11. **OPEN — garbled audio, then silence, after the PBX phone's own
+    hold/resume (2026-09-18 08:45).** 101, on a call with the app, put it
+    on hold to dial 201 a second time (call waiting on the desk phone),
+    the second call was cancelled, and 101 resumed the first. On resume
+    the trunk leg's RTP timeline jumped **31 s within the same SSRC**
+    (server relay: `skew_ms=31267`, `late_max_ms=31377` on
+    `caller→callee`). The relay only re-bases a stream on an SSRC change
+    or after its own hold music (`pump.forward`, `newStream`), so it
+    forwarded the jump verbatim; baresip's jitter buffer took every packet
+    after it as stale and the app rendered garbage, then silence
+    (`RENDERING SILENCE` from 06:46:11 device time) for the rest of the
+    call. Legal per RFC 3550 for a sender, but a B2BUA that normalises
+    every other discontinuity should normalise this one. *Fix to make:*
+    in `forward`, a timestamp step beyond a bound (say 2 s, in either
+    direction) within one SSRC is treated as a new stream — re-base onto
+    our own continuous timeline and set the marker bit — so the far end
+    sees one monotonic stream, as it already does across hold music and
+    transfers. *Test:* harness case where the desk phone (baresip-c)
+    holds and resumes the app during a trunk call, asserting the app's
+    recording continues after the resume (`assert_audio` on `out-211.wav`
+    with the level-comparison used by `hold_music_test.sh`); a unit test
+    in `pump_test.go` driving a source whose timestamps jump by 31 s.
+    Same relay code path both ways, so a jump from the app side is
+    covered by the same change.
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

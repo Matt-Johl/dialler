@@ -138,6 +138,16 @@ public final class BaresipCallEngine: CallEngine {
         log("engine: registering \(user) via \(sip.host):\(sip.port)/tls")
         state = .registering
         let rc = cb_ua_alloc(aor)
+        if rc == -EBUSY {
+            // The user agent to be replaced holds a call (its INVITE was
+            // read after the state check above): leave it, and its
+            // registration, to the call. Try again once it is over.
+            lock.withLock { account = nil }
+            refreshState()
+            log("engine: registration left to the call in progress; retrying after it")
+            scheduleRegisterRetry()
+            return
+        }
         if rc != 0 {
             lock.withLock { account = nil }
             // rc is -errno straight from the SIP stack: a synchronous
@@ -369,7 +379,7 @@ public final class BaresipCallEngine: CallEngine {
 
     /// Tear the stack down (e.g. app going to background with no call).
     public func stop() {
-        cb_ua_free()
+        _ = cb_ua_free() // EBUSY with a call up; cb_stop hangs it up anyway
         cb_stop()
         lock.withLock {
             account = nil; calls.removeAll()
@@ -385,13 +395,6 @@ public final class BaresipCallEngine: CallEngine {
     /// let the welcome's `register` start a fresh one. Left alone during a
     /// call.
     public func resetRegistration() {
-        switch state {
-        case .ringing, .dialing, .inCall:
-            log("engine: registration reset deferred: a call is in progress")
-            return
-        default:
-            break
-        }
         if stackRunning && !cb_alive() {
             // The loop thread died with the connection; a fresh stack is
             // the only way back, and the welcome's register starts it.
@@ -399,12 +402,31 @@ public final class BaresipCallEngine: CallEngine {
             stop()
             return
         }
+        // Not while a call is in progress — including one that is only
+        // ringing. Hanging those up here after a suspension, on the theory
+        // that a ringing call at this point must be an orphan, was wrong:
+        // the drop being reported is the PREVIOUS suspension's, delivered
+        // late as the app resumes, while the ringing call is the new one
+        // whose INVITE beat the welcome (2026-09-17 16:29, "Call failed:
+        // busy" for the caller). The orphan case is handled where it
+        // arises: the controller hangs up the SIP call when CallKit refuses
+        // it. And the decision is the stack's, not a check of `state` here:
+        // `state` is written by the loop thread as it reads the INVITE, and
+        // this op is queued to that same thread — on 2026-09-18 15:12 the
+        // INVITE was read 0.3 ms after the check here had passed and before
+        // the free ran, and the free hung the new call up (486). The stack
+        // refuses with EBUSY when it holds a call, and the call keeps its
+        // registration and connection: they are evidently alive.
+        let rc = cb_ua_free()
+        if rc == -EBUSY {
+            log("engine: registration reset refused by the stack: a call is in progress; left alone")
+            return
+        }
         lock.withLock {
             account = nil
             registerRetries = 0
             retryGeneration += 1
         }
-        cb_ua_free()
         // iOS tore the SIP socket down with the gateway's; libre still has
         // it cached and would send the next REGISTER on it (EPROTO, seen
         // as "ua_alloc -100" after every unlock). Rebuild the transports.

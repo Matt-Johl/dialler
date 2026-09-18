@@ -68,9 +68,19 @@ BIN="$SCRATCH/debug/sim-call"
 
 # SERVER=native: the server runs on this Mac (`make dev-server`); only the
 # docker caller is started, registered to it over outbound NAT.
+#
+# What this run starts, it tears down on exit (KEEP=1 to leave it up for a
+# look); a harness the user brought up themselves (`make harness-up`) is
+# left alone. A harness left running after a test has captured the user's
+# phone twice — with the native server stopped, the iPhone registers to the
+# docker server through the published ports and takes, or loses, the calls
+# (2026-09-18) — so nothing that publishes 5061/7443 may outlive the test
+# that needed it.
+STARTED=0
 SERVER="${SERVER:-docker}"
 if [ "$SERVER" = native ]; then
   echo "== native server at $HOST (make dev-server); starting the docker caller only"
+  STARTED=1
   BARESIP_B_OUTBOUND="$HOST:5061" $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
 elif docker ps --format '{{.Names}}' | grep -q '^dialler-harness-dialler-1$'; then
   # Leave a running server alone (its flags, e.g. -log-level, were chosen
@@ -80,6 +90,7 @@ elif docker ps --format '{{.Names}}' | grep -q '^dialler-harness-dialler-1$'; th
   [ -n "${OUTBOUND:-}" ] || $C up -d --no-deps baresip-b >/dev/null 2>&1
 else
   echo "== server advertising $HOST"
+  STARTED=1
   # --build: the other suites rebuild the server image; without it this one
   # ran whatever image was last built (a stale one failed Phase F for an
   # hour, 2026-09-13).
@@ -153,6 +164,22 @@ if [ -n "${TRANSFER:-}" ]; then SOURCE=""; fi   # silent phone, so any audio pho
 # (the red button) after ANSWER_MS of ringing. Asserts the caller (phone-b)
 # is told 486 Busy Here — not 480, which PBXs and phones show as "no
 # response" — and that our side never established the call.
+# DECLINE_RESET=1: the same, and the SIP transports are reset the instant
+# the decline is sent — the 486's ACK then lands on a connection the reset
+# has torn down. That crashed the app (SIGSEGV in libre's receive handler,
+# 2026-09-17 16:29). Pair with IMPAIR=1: the 30 ms the server's packets are
+# held makes the ACK certain to arrive after the reset. The verdict is the
+# process living to report at all.
+# RING_RESET=1: the registration reset the app runs when its gateway session
+# comes back is issued while the call rings, as on 2026-09-18 15:12 when the
+# INVITE was read 0.3 ms after the app's "no call is up" check and the reset
+# freed the user agent under it (486: the caller was told the call failed).
+# The stack must refuse the reset ("registration reset refused by the
+# stack") and the call must be answered as in the plain run.
+KIND=""
+[ -n "${DECLINE:-}" ] && KIND=decline
+[ -n "${DECLINE_RESET:-}" ] && { DECLINE=1; KIND=decline-reset; }
+[ -n "${RING_RESET:-}" ] && KIND=ring-reset
 if [ -n "${DECLINE:-}" ]; then SOURCE=""; fi
 # REFUSED=1 (with OUTBOUND=<target the server will refuse>): the far end
 # refuses our outgoing call, and the caller must hear busy or congestion
@@ -166,9 +193,15 @@ if [ -n "${REFUSED:-}" ]; then SOURCE=""; fi
 # calls too. The simulated phone takes it with Hold & Accept, swaps back,
 # and ends both; asserted in the sim (RTP per active call, two stack ids)
 # and on phone-a's recording (it heard the sim while it was the active call).
-xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${DECLINE:+decline}${CALLWAITING:+callwaiting}${REFUSED:+refused}" > "$OUT" 2>&1 &
+xcrun simctl spawn "$SIM" "$BIN" "$HOST" "$SIGNAL_PORT" dev-s tok_dev_s_harness_fixed "$WAIT" "$ACTIVATE_MS" "$SOURCE" "$ANSWER_MS" "$CALLS" "$MODE" "${HOLD_MS:-0}" "${TRANSFER:-}" "${KIND}${CALLWAITING:+callwaiting}${REFUSED:+refused}" > "$OUT" 2>&1 &
 PID=$!
-trap 'kill $PID 2>/dev/null || true' EXIT
+cleanup() {
+  kill $PID 2>/dev/null || true
+  if [ "$STARTED" = 1 ] && [ "${KEEP:-0}" != 1 ]; then
+    $C --profile impair down -v >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 i=0
 until grep -q 'sim: registered' "$OUT"; do
@@ -251,7 +284,8 @@ until grep -q 'sim: PASS\|sim: FAIL' "$OUT"; do
   sleep 1
 done
 wait $PID 2>/dev/null || true
-trap - EXIT
+# The EXIT trap stays armed: the container logs below are read first,
+# and the teardown runs when the script ends.
 
 echo "== simulated phone"
 grep -E 'sim:|engine:|callkit|audiounit:|stream:|INVITE|answered|incoming|wake|call .* ended|registering' "$OUT" | grep -v '^  baresip:' | sed 's/^/   /'
@@ -326,6 +360,13 @@ if [ "$SERVER" = native ]; then
 else
   echo "== server"
   $C logs --no-log-prefix --since 90s dialler 2>&1 | grep -E 'invite|woke|wake_ack|register|bridged|ended|480|rtp|media|relay|RELAY' | tail -20 | sed 's/^/   /' || true
+fi
+
+if [ -n "${RING_RESET:-}" ]; then
+  echo "== ring-reset: was the reset refused while the call rang, and the call answered regardless?"
+  grep -q 'ring-reset: resetting the registration' "$OUT" || { echo "FAIL: the reset was never issued"; exit 1; }
+  grep -q 'registration reset refused by the stack' "$OUT" || { echo "FAIL: the stack did not refuse the reset — the ringing call was freed under the caller"; exit 1; }
+  grep -E 'ring-reset:|refused by the stack|cbaresip: ua_free' "$OUT" | sed 's/^/   /'
 fi
 
 grep -q 'sim: PASS' "$OUT"

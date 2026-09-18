@@ -19,6 +19,7 @@
 
 #include <errno.h>
 #include <execinfo.h>
+#include <mach/mach.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -247,11 +248,33 @@ static void event_handler(enum ua_event ev, struct bevent *event, void *arg)
 
 /* ---- operations (always executed on the loop thread) ----------------------- */
 
+/* Calls the user agent holds right now — ringing, dialling or up. Decided
+ * HERE, on the loop thread, because that is the only place the answer
+ * cannot change under the op: the host's "is a call up?" check runs on
+ * another thread, and an INVITE queued behind the REGISTER's 200 OK is
+ * read by this thread between that check and the op it guarded. On
+ * 2026-09-18 15:12 that window was 0.3 ms wide and the registration reset
+ * freed a user agent whose INVITE had just arrived — 486 to the caller,
+ * "call failed" on the phone that dialled. The ops that would take a live
+ * call down with them (free the UA, replace it, drop its connections)
+ * refuse with EBUSY instead and the host leaves the call alone. */
+static const char *busy_with_calls(const char *what)
+{
+    if (!g.ua || !list_head(ua_calls(g.ua)))
+        return NULL;
+    info("cbaresip: %s: refused, %u call(s) up\n", what, list_count(ua_calls(g.ua)));
+    return what;
+}
+
 static int do_op(struct op *op)
 {
     int err = 0;
     switch (op->type) {
     case OP_UA_ALLOC:
+        if (busy_with_calls("ua_alloc")) {
+            err = EBUSY; /* the previous user agent keeps its calls */
+            break;
+        }
         if (g.ua) {
             info("cbaresip: ua_alloc: freeing the previous user agent\n");
             g.ua = mem_deref(g.ua);
@@ -367,6 +390,10 @@ static int do_op(struct op *op)
         }
         break;
     case OP_TRANSP_RESET:
+        if (busy_with_calls("transports reset")) {
+            err = EBUSY; /* a call's signalling connection is among them */
+            break;
+        }
         /* libre keeps SIP TCP/TLS connections cached per destination and
          * sends on a cached one synchronously. After iOS has torn the
          * app's sockets down (suspension), that cached connection is dead
@@ -389,11 +416,12 @@ static int do_op(struct op *op)
         info("cbaresip: transports reset (err=%d)\n", err);
         break;
     case OP_UA_FREE:
+        if (busy_with_calls("ua_free")) {
+            err = EBUSY; /* freeing it would hang them up (486) */
+            break;
+        }
         if (g.ua) {
-            struct le *le;
-            info("cbaresip: ua_free: hanging up and freeing the user agent\n");
-            while ((le = list_head(ua_calls(g.ua))) != NULL)
-                ua_hangup(g.ua, le->data, 0, NULL);
+            info("cbaresip: ua_free: freeing the user agent\n");
             g.ua = mem_deref(g.ua);
             info("cbaresip: ua_free: done\n");
         }
@@ -546,6 +574,30 @@ static struct tmr g_beat_tmr;
 static pthread_t g_loop_pthread;
 static _Atomic int g_watchdog_run;
 static _Atomic int g_stall_reported;
+/* The other failure a loop can have: not stuck, but spinning — kevent()
+ * returning at once, over and over, because a descriptor reports readiness
+ * that no handler drains. iOS killed the app for that on 2026-09-18 08:45
+ * (48 s of CPU in 49 s, all on the loop thread, mid-call; MetricKit's 16
+ * samples said only "kevent and a udp read"). The watchdog samples the
+ * loop thread's CPU; sustained saturation gets the same stack dump a stall
+ * does, so the next occurrence names the descriptor and handler itself. */
+static _Atomic int g_busy_dump;      /* stall_dump: say "busy", not "stalled" */
+static uint64_t g_busy_last_report;  /* watchdog thread only: mono_ms */
+#define LOOP_BUSY_PCT 80             /* of one core, over LOOP_BUSY_SAMPLES */
+#define LOOP_BUSY_SAMPLES 10         /* × 500 ms watchdog period = 5 s */
+#define LOOP_BUSY_REPORT_MS 60000    /* one dump a minute while it lasts */
+
+/* CPU time (user+system, µs) the loop thread has consumed, from the kernel. */
+static uint64_t loop_cpu_us(void)
+{
+    thread_basic_info_data_t info;
+    mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+    mach_port_t t = pthread_mach_thread_np(g_loop_pthread);
+    if (thread_info(t, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS)
+        return 0;
+    return (uint64_t)info.user_time.seconds * 1000000 + (uint64_t)info.user_time.microseconds +
+           (uint64_t)info.system_time.seconds * 1000000 + (uint64_t)info.system_time.microseconds;
+}
 
 static uint64_t mono_ms(void)
 {
@@ -565,11 +617,17 @@ static void stall_dump(int sig)
 {
     void *bt[64];
     int n;
-    static const char msg[] =
+    static const char stalled[] =
         "cbaresip: LOOP THREAD STALLED (no heartbeat for 3 s); its stack:\n";
+    static const char busy[] =
+        "cbaresip: LOOP THREAD BUSY (saturating a core for 5 s); its stack:\n";
     (void)sig;
     n = backtrace(bt, 64);
-    (void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    /* Async-signal-safe: one atomic read, two static strings, write(2). */
+    if (atomic_load(&g_busy_dump))
+        (void)!write(STDERR_FILENO, busy, sizeof(busy) - 1);
+    else
+        (void)!write(STDERR_FILENO, stalled, sizeof(stalled) - 1);
     backtrace_symbols_fd(bt, n, STDERR_FILENO);
 }
 
@@ -583,13 +641,36 @@ static void wd_say(const char *fmt, uint64_t v)
 
 static void *watchdog_thread(void *arg)
 {
+    uint64_t cpu_prev = 0, wall_prev = 0;
+    int busy_run = 0;
     (void)arg;
     while (g.running) {
         usleep(500000);
         uint64_t beat = atomic_load(&g_loop_beat);
         if (!beat)
             continue;
-        uint64_t age = mono_ms() - beat;
+        uint64_t now = mono_ms();
+        /* Spinning: loop CPU over the last period, as a percentage of one
+         * core. Sustained for LOOP_BUSY_SAMPLES periods → one stack dump,
+         * repeated at most once a minute while it lasts. */
+        uint64_t cpu = loop_cpu_us();
+        if (cpu && wall_prev) {
+            uint64_t dwall = now - wall_prev;
+            uint64_t pct = dwall ? (cpu - cpu_prev) / 10 / dwall : 0; /* µs/ms/10 = % */
+            busy_run = pct >= LOOP_BUSY_PCT ? busy_run + 1 : 0;
+            if (busy_run >= LOOP_BUSY_SAMPLES && now - g_busy_last_report >= LOOP_BUSY_REPORT_MS) {
+                g_busy_last_report = now;
+                wd_say("cbaresip: watchdog: loop thread at %llu%% CPU for 5 s "
+                       "(spinning, not stalled); asking it for its stack\n", pct);
+                atomic_store(&g_busy_dump, 1);
+                pthread_kill(g_loop_pthread, SIGUSR1);
+                usleep(100000); /* let the handler print before the flag flips back */
+                atomic_store(&g_busy_dump, 0);
+            }
+        }
+        cpu_prev = cpu;
+        wall_prev = now;
+        uint64_t age = now - beat;
         if (age > 3000) {
             if (!atomic_exchange(&g_stall_reported, 1)) {
                 wd_say("cbaresip: watchdog: loop heartbeat stalled %llu ms; "
@@ -846,9 +927,9 @@ int cb_reject(const char *call_id, uint16_t status, const char *reason)
     return run_full(&op);
 }
 
-void cb_ua_free(void)
+int cb_ua_free(void)
 {
-    run_op(OP_UA_FREE, NULL);
+    return run_op(OP_UA_FREE, NULL);
 }
 
 int cb_reset_transports(void)

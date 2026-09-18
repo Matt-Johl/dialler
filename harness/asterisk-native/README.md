@@ -15,6 +15,9 @@ ssh ubuntu-box 'sudo DIALLER_HOST=<this Mac's LAN address> sh asterisk-native/in
 ASTERISK_HOST=<ubuntu-box address> make dev-server     # the light server, trunked to it
 ```
 
+That gives a plain UDP trunk. For the encrypted one see **Secure trunk**
+below — it needs certificates generated first, so it is not the default.
+
 `install-ubuntu.sh` installs the `asterisk` package if needed, keeps the
 package's original `/etc/asterisk` as `/etc/asterisk.dist`, renders
 `pjsip.conf` with the light server's address, copies the other configs
@@ -52,11 +55,68 @@ PBX refuses the REFER, the server completes the transfer itself as before,
 which keeps it in the media path; on a CUCM trunk, enable REFER on the
 trunk profile to get the offload.
 
+## Secure trunk (TLS, and SDES on top)
+
+By default the trunk is plain UDP, which is what most PBXs run. To test the
+secure path (SPEC §6 items 3a/3b) — SIP over TLS with each side
+authenticating the other against a private CA, and SDES media keys carried
+inside it — generate a certificate set for the **real** addresses, copy it
+over with the configs, and install with `TRUNK_TLS=1`:
+
+```sh
+# on the Mac. OUT=lan keeps these apart from the docker harness's set,
+# whose SANs are compose addresses and which the containers still need.
+OUT=lan DIALLER_IP=<mac-ip> ASTERISK_IP=<ubuntu-ip> sh harness/tls/gen_certs.sh
+scp -r harness/asterisk-native harness/tls/lan ubuntu-box:~/
+ssh ubuntu-box 'sudo TRUNK_TLS=1 TRUNK_SRTP=1 DIALLER_HOST=<mac-ip> sh asterisk-native/install-ubuntu.sh'
+
+TRUNK_TLS=1 TRUNK_SRTP=sdes ASTERISK_HOST=<ubuntu-ip> make dev-server
+```
+
+The two `TRUNK_SRTP`s have to travel together. The installer's puts
+`media_encryption=sdes` on the `dialler` endpoint; the server's makes it
+offer RTP/SAVP. Either one without the other is refused with **488 Not
+Acceptable Here** on every trunk call — the PBX rejecting an encrypted
+offer it cannot answer, or a plain offer it is configured to refuse — and
+that 488 looks identical to a broken SDP. The installer renders
+`pjsip.conf` from the repo copy on every run, so a `media_encryption` line
+added by hand on the box does not survive the next re-run; pass the flag
+instead.
+
+The SANs are the addresses each side is **dialled by**, so a set generated
+for the wrong addresses verifies by hand and then fails every call; the
+installer prints the SAN of what it is about to install for that reason.
+Regenerate with `FORCE=1` after either machine changes address.
+
+Asterisk then listens on **5061/tcp** with `require_client_cert=yes`, so it
+will not even qualify the server without a valid certificate — `pjsip show
+endpoints` showing `dialler` Avail is itself proof the mutual handshake
+worked. Check the transport loaded with `asterisk -rx 'pjsip show transport
+transport-tls'`; a missing certificate file leaves Asterisk running with no
+TLS listener at all rather than failing loudly.
+
+Without `TRUNK_SRTP=sdes` the media stays in the clear and the server says
+so at startup (`trunk SRTP over unencrypted signalling` is the opposite
+warning — SDES *without* TLS). The same pairing is asserted headlessly by
+`make harness-trunk-secure`.
+
 ## Ports
 
-Ubuntu box: 5060/udp (SIP), 10000–10200/udp (RTP, `rtp.conf`).
-Mac: 5061/tcp+tls and 7443/tls (light server, app side), 5062/udp (the
-server's trunk listener), 20000–20100/udp (server media relay).
+Ubuntu box: 5060/udp (SIP), **5061/tcp only with `TRUNK_TLS=1`** (SIP over
+TLS), 10000–10200/udp (RTP, `rtp.conf`).
+Mac: 5061/tcp+tls and 7443/tls (light server, app side), **5062** (the
+server's trunk listener — udp for a plain trunk, tcp/tls for a TLS one),
+20000–20100/udp (server media relay).
+
+5062 rather than the conventional 5061 for a TLS trunk: 5061 is the app
+leg's port and two SIP listeners on one address cannot share it. The server
+refuses a configuration where they collide rather than failing with a bare
+"address in use". It costs one field on the PBX — `contact=sip:<mac>:5062`
+in the `dialler` AOR here, *Destination Port* on a CUCM trunk — and nothing
+at all outbound, where we dial the PBX's own 5060/5061. `-trunk-addr`
+changes it if a deployment needs the trunk on 5061; the app leg would then
+have to move (`-sip-addr` plus `-public-sip-port`), or the two legs be
+given separate addresses.
 
 ## Refusing extensions that are not there
 

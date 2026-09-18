@@ -262,7 +262,7 @@ func NewDiago(ua *sipgo.UserAgent, opts ...DiagoOption) *Diago {
 			return dg.handleReInvite(req, tx, id)
 		}
 
-		tran, _ := dg.getTransport(req.Transport())
+		tran, _ := dg.transportForRequest(req)
 
 		// Proceed as new call
 		dialogUA := sipgo.DialogUA{
@@ -737,6 +737,51 @@ func (dg *Diago) getClient(tran *Transport) *sipgo.Client {
 	}
 
 	return tran.client
+}
+
+// transportForRequest resolves an INBOUND request to the transport it
+// actually arrived on. getTransport matches the protocol name alone and
+// returns the first transport that has it — upstream's "What if multiple
+// server transports?" — which is wrong as soon as two listeners share a
+// protocol, as a B2BUA with a TLS app leg and a TLS trunk does: every
+// request then takes the first one's SRTP setting, Contact and
+// rewrite-contact behaviour, and the second listener's calls fail in ways
+// that point nowhere near the transport table.
+//
+// The local address a request was read from is what separates them
+// (sip.ReceivedOn). Falls back to the protocol match when that is unknown —
+// a UDP or WS transport, which do not record it, or a request we built
+// ourselves; with one listener per protocol the two agree anyway.
+func (dg *Diago) transportForRequest(req *sip.Request) (*Transport, bool) {
+	recv := req.ReceivedOn()
+	if recv == "" {
+		return dg.getTransport(req.Transport())
+	}
+	host, portStr, err := net.SplitHostPort(recv)
+	if err != nil {
+		return dg.getTransport(req.Transport())
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return dg.getTransport(req.Transport())
+	}
+	ip := net.ParseIP(host)
+	proto := sip.NetworkToLower(req.Transport())
+	for i, t := range dg.transports {
+		if t.BindPort != port || sip.NetworkToLower(t.Transport) != proto {
+			continue
+		}
+		// Two transports may legitimately share a port on different
+		// addresses, so the port alone is not always the answer. A
+		// transport bound to a wildcard accepts on every address and
+		// matches whatever came in; one bound to a specific address only
+		// matches its own. net.IP.Equal so a v4-mapped v6 local address
+		// still matches its IPv4 bind.
+		if t.bindIP == nil || t.bindIP.IsUnspecified() || ip == nil || t.bindIP.Equal(ip) {
+			return &dg.transports[i], true
+		}
+	}
+	return dg.getTransport(req.Transport())
 }
 
 func (dg *Diago) getTransport(transport string) (*Transport, bool) {

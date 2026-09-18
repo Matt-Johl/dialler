@@ -69,7 +69,9 @@ bool cb_alive(void);
 
 /// Create the user agent for `aor` (baresip account line, e.g.
 /// "<sip:201@dialler;transport=tls>;outbound=\"sip:10.0.0.5:5061;transport=tls\";regint=300;answermode=manual")
-/// and start registering. Returns 0 or a negative errno.
+/// and start registering, replacing the previous user agent — unless that
+/// one holds a call, in which case -EBUSY and nothing changes (see
+/// cb_ua_free). Returns 0 or a negative errno.
 int cb_ua_alloc(const char *aor);
 
 /// Send a fresh REGISTER for the existing user agent now (new flow if the
@@ -111,17 +113,22 @@ void cb_hangup(const char *call_id);
 /// third call). Returns 0 or a negative errno.
 int cb_reject(const char *call_id, uint16_t status, const char *reason);
 
-/// Unregister and free the user agent.
-void cb_ua_free(void);
+/// Unregister and free the user agent. Refused with -EBUSY while it holds
+/// a call (ringing, dialling or up): freeing it would hang the call up.
+/// The check is made on the loop thread, where an INVITE cannot slip in
+/// between it and the free — the host's own view of "a call is up" is a
+/// thread away and was 0.3 ms stale on 2026-09-18 (486 to the caller).
+/// Returns 0 or a negative errno.
+int cb_ua_free(void);
 
 /// Drop every cached SIP TCP/TLS connection and rebuild the transports on
 /// the current local addresses (baresip's network-change reset, without
 /// re-registering). Call it whenever the SIP flow may be dead without the
 /// stack having noticed — after iOS suspended the app, on a new gateway
 /// session — since a send on a dead cached connection fails at once
-/// (EPROTO, "ua_alloc -100") and nothing else evicts it. Not while a call
-/// is up: it drops the call's signalling connection too. Returns 0 or a
-/// negative errno.
+/// (EPROTO, "ua_alloc -100") and nothing else evicts it. Refused with
+/// -EBUSY while a call is up (as cb_ua_free): it would drop the call's
+/// signalling connection too. Returns 0 or a negative errno.
 int cb_reset_transports(void);
 
 /// Whether the UA holds a live registration.

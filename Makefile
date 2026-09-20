@@ -103,11 +103,13 @@ harness-pbx-unavailable:
 harness-cancel-before-answer:
 	sh harness/cancel_before_answer_test.sh
 
-# The callee's connection dies while its INVITE is out (a phone suspended
-# by iOS mid-ring): the caller must hear 480 within seconds, not ring until
-# the timeout. Publishes no host ports.
-harness-ringing-callee-dies:
-	sh harness/ringing_callee_dies_test.sh
+# A trunk TCP/TLS connection gone silently dead (a network blip on either
+# side): the per-call watchdog must drop it and redial within seconds, not
+# sit on it until Timer B, and the OPTIONS qualify must drop it before any
+# call is placed so the next one rings at once. Black-holes the server's
+# packets to the PBX with a tc filter. Publishes no host ports.
+harness-trunk-stall:
+	sh harness/trunk_stall_test.sh
 
 # Trunk-leg SRTP (SPEC §6 near-term item 3a): the PBX is built with a secure
 # trunk profile and the server told to use it; both trunk directions must

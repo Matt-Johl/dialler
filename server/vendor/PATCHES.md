@@ -127,3 +127,9 @@ upstream release named in `modules.txt`; re-apply when bumping.
   itself. TCP only (TLS embeds it); UDP and WS are untouched and leave it
   empty, which the diago side treats as "fall back to the protocol match".
 
+- `diago.go` (`Diago.Client(transportID)`) — returns the per-transport SIP
+  client diago builds for each named transport, so the B2BUA can send a
+  request outside any dialog out of a chosen transport (the trunk's
+  OPTIONS keep-alive, `internal/b2bua/qualify.go`) with that transport's
+  Via, Contact and bind address. Upstream exposes the clients only through
+  `NewDialog`/`Invite`/`Register`.

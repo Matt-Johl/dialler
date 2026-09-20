@@ -61,12 +61,30 @@ if ! grep -q 'Dialler: close before flush' "$SRC/src/sip/transp.c"; then
 fi
 echo "   re: close-before-flush in sip_transp_flush present"
 
+# A descriptor the kqueue reports ready but nobody handles must not be left
+# registered. fd_poll() dispatches an event only `if (fhs && fhs->fh)` and
+# otherwise ignores it — but the registration stays, and kqueue is
+# level-triggered: kevent() returns that descriptor at once on every call,
+# so the loop never blocks again. That is the engine thread at 100 % CPU
+# while still serving every other event (audio kept flowing), until iOS
+# kills the app for CPU (cpu_resource_fatal: 2026-09-12, -09-18, -09-20 —
+# 48 s of CPU in 49 s, 14/16 samples in kevent under re_main). Such a
+# registration is a leak by definition (fd_close() clears the handler and
+# deletes the events together), so drop it where it is seen and name the
+# descriptor, so the next occurrence points at whoever left it.
+if ! grep -q 'Dialler: a descriptor the kqueue reports' "$SRC/src/main/main.c"; then
+  perl -0pi -e 's/(\t\tif \(fhs && fhs->fh\) \{\n#if MAIN_DEBUG\n\t\t\tfd_handler\(fhs, flags\);\n#else\n\t\t\tfhs->fh\(flags, fhs->arg\);\n#endif\n\t\t\})\n\n(\t\t\/\* Handle only active events \*\/\n)/$1\n#ifdef HAVE_KQUEUE\n\t\telse if (re->method == METHOD_KQUEUE) {\n\t\t\t\/* Dialler: a descriptor the kqueue reports ready but nobody\n\t\t\t * handles (handler cleared, registration kept) is level-\n\t\t\t * triggered forever: the loop stops blocking and spins at\n\t\t\t * 100 % CPU until iOS kills the app. A leak by definition;\n\t\t\t * drop it and say which. See ios\/vendor\/patches\/apply-re.sh *\/\n\t\t\tstruct kevent kdel[2];\n\t\t\tDEBUG_WARNING("fd_poll: fd %d ready (flags %x) with no handler; dropping it from the kqueue\\n", fd, flags);\n\t\t\tEV_SET(&kdel[0], fd, EVFILT_READ,  EV_DELETE, 0, 0, 0);\n\t\t\tEV_SET(&kdel[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, 0);\n\t\t\t(void)kevent(re->kqfd, kdel, 2, NULL, 0, NULL);\n\t\t}\n#endif\n\n$2/' "$SRC/src/main/main.c"
+  grep -q 'Dialler: a descriptor the kqueue reports' "$SRC/src/main/main.c" || { echo "patch: re main.c fd_poll dispatch anchor not found"; exit 1; }
+fi
+echo "   re: kqueue no-handler descriptor guard present"
+
 # ---- patch level ------------------------------------------------------------
 # Exported so the app can log which libre it was linked against; bump when a
 # patch above changes. cb_version() prints it as "libre patch level N".
 #   1: re_main EBADF guard   2: + Apple SO_NET_SERVICE_TYPE / IPV6_TCLASS marks
 #   3: + sip_transp_flush closes connections before dropping them
-RE_PATCH_LEVEL=3
+#   4: + fd_poll drops a ready kqueue descriptor that has no handler
+RE_PATCH_LEVEL=4
 if ! grep -q 're_dialler_patchlevel' "$SRC/src/main/main.c"; then
   printf '\n/* Dialler: patch level, see ios/vendor/patches/apply-re.sh */\nint re_dialler_patchlevel(void)\n{\n\treturn %s;\n}\n' "$RE_PATCH_LEVEL" >> "$SRC/src/main/main.c"
 fi

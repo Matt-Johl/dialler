@@ -813,6 +813,18 @@ func (dg *Diago) findTransport(transport string, id string) (*Transport, bool) {
 	return dg.getTransport("udp")
 }
 
+// Client returns the SIP client that sends out of the transport with the
+// given ID (Via, Contact and bind address of that transport) — for requests
+// outside a dialog, such as an OPTIONS keep-alive to a peer. Nil when no
+// transport has that ID. (Dialler vendor patch.)
+func (dg *Diago) Client(transportID string) *sipgo.Client {
+	tran, ok := dg.findTransport("", transportID)
+	if !ok {
+		return nil
+	}
+	return dg.getClient(tran)
+}
+
 // Register will create register transaction and keep registration ongoing until error is hit.
 // For more granular control over registrations use RegisterTransaction
 func (dg *Diago) Register(ctx context.Context, recipient sip.Uri, opts RegisterOptions) error {

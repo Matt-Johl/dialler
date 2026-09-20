@@ -83,6 +83,18 @@ public final class FileLog: @unchecked Sendable {
         }
         handle = try? FileHandle(forWritingTo: url)
         _ = try? handle?.seekToEnd()
+        // stderr goes into this file too. The engine's watchdog reports a
+        // loop thread that stalls or spins — and its backtrace, from a
+        // signal handler, where only write(2) to a descriptor is safe — on
+        // stderr; so do libre's own warnings and the Swift runtime's. On a
+        // device none of that reaches anyone: the process was killed for
+        // 49 s at 100 % CPU on 2026-09-20 and the dump that would have named
+        // the spinning handler went to a stderr nobody was reading. Redone
+        // on every reopen (rotation, a drain), since the descriptor follows
+        // the file it was pointed at.
+        if let fd = handle?.fileDescriptor {
+            _ = dup2(fd, STDERR_FILENO)
+        }
     }
 
     private func rotateLocked() {

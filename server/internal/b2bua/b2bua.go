@@ -125,9 +125,13 @@ type Config struct {
 	// signalling Contact and media). Empty = this host's first address.
 	TrunkExternalHost string
 	RingTimeout       time.Duration
-	MinExpires        int
-	MaxExpires        int
-	Logger            *slog.Logger
+	// TrunkQualify is how often the trunk's pooled TCP/TLS connection is
+	// probed with OPTIONS so one that has gone silently dead is dropped
+	// before a call needs it (qualify.go). 0 = off. Ignored over UDP.
+	TrunkQualify time.Duration
+	MinExpires   int
+	MaxExpires   int
+	Logger       *slog.Logger
 	// Auth challenges every app-leg REGISTER and initial INVITE with SIP
 	// Digest against the device enrolment store and refuses a SIP user
 	// other than the device's enrolled one (SPEC §4.4 rule 2). nil = no
@@ -174,44 +178,35 @@ type Server struct {
 }
 
 // Why a woken callee's wait ended early: the device answered the wake with
-// a refusal. The caller is told 486 (see wakeAndWaitFrom).
+// a refusal. The caller is told 486 (decline) or rung through to the ring
+// timeout (busy/Focus); see wakeAndWaitFrom and bridge.
 var (
 	errWakeDeclined = errors.New("callee declined")
 	errWakeBusy     = errors.New("callee busy")
-	// The registered callee's TLS connection closed while its INVITE was
-	// out and unanswered: nothing can answer on it, and the app it belonged
-	// to has been suspended or killed. The caller is told 480 at once
-	// (see bridge) rather than ringing on until the ring timeout.
-	errCalleeFlowGone = errors.New("callee connection died while ringing")
+	// The pooled TCP/TLS connection to the trunk delivered nothing back for
+	// the INVITE — not even 100 Trying — within trunkResponseTimeout: it is
+	// defunct. bridge drops the INVITE and the connection; serveDialog
+	// redials once on a fresh one.
+	errTrunkUnresponsive = errors.New("trunk connection unresponsive")
 )
 
-// flowPollInterval is how often a ringing app callee's connection is
-// checked for still being in the pool. A lookup, no I/O.
-const flowPollInterval = 500 * time.Millisecond
+// trunkResponseTimeout is how long an INVITE to the trunk over TCP/TLS may
+// go with no response at all before its connection is judged dead. A live
+// PBX answers with 100 Trying within milliseconds (RFC 3261 §8.2.6 asks for
+// it within 200 ms); a LAN or campus link adds a few. Three seconds is well
+// clear of that and a tenth of Timer B.
+const trunkResponseTimeout = 3 * time.Second
 
-// flowGoneGrace is how long a ringing callee whose connection has died is
-// given to come back on a new one (re-register → retarget) before the
-// caller is answered 480. A suspended app never does; the caller hears
-// unavailable ~2.5 s after the socket went instead of 15–30 s.
-const flowGoneGrace = 2 * time.Second
-
-// watchFlow polls alive every interval until ctx ends. The first time it
-// reports false, onGone runs once and the watch stops.
-func watchFlow(ctx context.Context, interval time.Duration, alive func() bool, onGone func()) {
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			if !alive() {
-				onGone()
-				return
-			}
-		}
-	}
-}
+// Note: the app callee's TLS connection dying while its INVITE is out (iOS
+// suspends the app after a Focus/DND filter, and the socket goes with it)
+// is deliberately NOT treated as a fast failure. It is indistinguishable
+// from a phone that is momentarily unreachable, so — like any PBX with a
+// registered-but-unreachable phone — the caller rings on to the ring
+// timeout, then 480. A watcher that answered the caller 480 within ~2 s of
+// the socket dying was removed (2026-09-19) for that consistency: a phone
+// in DND must ring through, oblivious, not fast-fail the caller. If the app
+// comes back on a new connection meanwhile it re-registers and the retarget
+// watch (WaitRouteChange, below) sends a fresh INVITE, as before.
 
 // HandleWakeAck is the gateway's wake_ack hook: a decline or busy from the
 // woken device ends that call's wait immediately. will_answer is not an
@@ -481,6 +476,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.log.Warn("trunk SRTP over unencrypted signalling: the SDES keys travel in the SDP, so anyone who can read the INVITE can decrypt the media; use a TLS trunk",
 			"trunk_transport", s.cfg.Trunk.Transport, "trunk_srtp", s.cfg.TrunkSRTP)
 	}
+	s.startTrunkQualify(ctx)
 	err := s.dg.Serve(ctx, s.serveDialog)
 	if ctx.Err() != nil {
 		return nil
@@ -644,6 +640,43 @@ func (s *Server) flowAlive(route string) bool {
 	return err == nil
 }
 
+// reliableTransport is whether SIP over `transport` keeps a connection that
+// can go silently dead (TCP, TLS) — as opposed to UDP, which pools nothing.
+func reliableTransport(transport string) bool {
+	switch strings.ToLower(transport) {
+	case "tcp", "tls":
+		return true
+	}
+	return false
+}
+
+// dropTrunkConnection closes the pooled connection to the trunk, if there is
+// one, so the next request to it dials afresh. sipgo keys the pool by the
+// dialled IP:port, so a trunk configured by name is looked up under each
+// address the name resolves to as well.
+func (s *Server) dropTrunkConnection(log *slog.Logger) {
+	t := s.cfg.Trunk
+	if t == nil || !reliableTransport(t.Transport) {
+		return
+	}
+	addrs := []string{t.Address()}
+	if net.ParseIP(t.Host) == nil {
+		if ips, err := net.LookupIP(t.Host); err == nil {
+			for _, ip := range ips {
+				addrs = append(addrs, net.JoinHostPort(ip.String(), strconv.Itoa(t.Port)))
+			}
+		}
+	}
+	for _, addr := range addrs {
+		c, err := s.tl.GetConnection(t.Transport, addr)
+		if err != nil {
+			continue
+		}
+		log.Warn("trunk: dropping its pooled connection", "addr", addr)
+		_ = c.Close() // hard close: the read loop then evicts it from the pool
+	}
+}
+
 // rewriteContact returns the URI to route to for a registration: the
 // Contact's user part at the request's source ip:port over TLS. If the
 // source cannot be parsed the Contact is kept as advertised.
@@ -726,8 +759,23 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 		}
 		legs.calleeTrunk = true
 		log.Info("invite: to trunk", "dst", dst.String(), "from_trunk", legs.callerTrunk)
-		_ = s.bridge(ctx, log, in, dst, callID, legs)
-		return
+		// One redial on a fresh connection when the pooled one turns out to
+		// be dead (errTrunkUnresponsive: bridge dropped it). A second failure
+		// is answered as unreachable.
+		for attempt := 0; ; attempt++ {
+			err := s.bridge(ctx, log, in, dst, callID, legs)
+			if !errors.Is(err, errTrunkUnresponsive) {
+				return
+			}
+			if attempt == 0 && ctx.Err() == nil {
+				log.Warn("invite: trunk connection unresponsive; dropped it, redialling on a fresh one")
+				continue
+			}
+			if in.Context().Err() == nil {
+				_ = in.Respond(480, "Temporarily Unavailable", nil)
+			}
+			return
+		}
 	}
 
 	ep := d.Endpoint
@@ -773,11 +821,10 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 	}
 	if err != nil && wakeable {
 		// Never bridged: stop the app ringing. "caller_hangup" only when
-		// the caller went away — not when we answered the caller ourselves
-		// (480 for a callee whose connection died), which also ends the
-		// inbound dialog's context.
+		// the caller went away (its dialog context ended); otherwise the
+		// ring timed out.
 		reason := wire.CancelTimeout
-		if in.Context().Err() != nil && !errors.Is(err, errCalleeFlowGone) {
+		if in.Context().Err() != nil {
 			reason = wire.CancelCallerHangup
 		}
 		s.waker.CancelWake(ep.DeviceID, callID, reason)
@@ -859,13 +906,31 @@ func (s *Server) wakeAndWaitFrom(ctx context.Context, log *slog.Logger, in *diag
 	woken, err := s.reg.WaitRegistered(wctx, ep.User)
 	if err != nil {
 		cause := context.Cause(wctx)
-		if cause == errWakeDeclined || cause == errWakeBusy {
-			// The user refused the call. Tell the caller 486 so the PBX
+		if cause == errWakeDeclined {
+			// The user actively declined. Tell the caller 486 so the PBX
 			// applies its busy rule (busy tone / forward-on-busy), not 480,
-			// which reads as "nobody there". The device has already stopped
-			// ringing, so no wake_cancel is needed.
-			log.Info("invite: callee refused the wake", "cause", cause)
+			// which reads as "nobody there". The device stopped ringing
+			// itself, so no wake_cancel is needed.
+			log.Info("invite: callee declined the wake", "cause", cause)
 			respond(486, "Busy Here")
+			return ep, cause
+		}
+		if cause == errWakeBusy {
+			// The device filtered the call itself (Focus / Sleep / DND): it
+			// was alerted but the system suppressed the ring, so nobody will
+			// answer. That is an unanswered call, not a rejection — with a
+			// caller leg, keep it ringing to the ring timeout then 480, as
+			// for any woken device that never answers (industry "DND rings
+			// through"; only a user decline, above, fast-fails with 486).
+			// With no caller leg (a transfer) there is nothing to ring, so
+			// return at once. No wake_cancel either way — the device is idle.
+			log.Info("invite: callee device filtered the wake (Focus/DND)", "cause", cause)
+			if in != nil {
+				<-ctx.Done() // the ring timeout, or the caller giving up
+				if in.Context().Err() == nil {
+					respond(480, "Temporarily Unavailable")
+				}
+			}
 			return ep, cause
 		}
 		reason := wire.CancelTimeout
@@ -1200,6 +1265,39 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		}
 		return nil
 	}
+	if l.calleeTrunk && reliableTransport(s.cfg.Trunk.Transport) {
+		// A pooled TCP/TLS connection to the PBX can be dead without
+		// anything having said so: after a network interruption on either
+		// side the socket stays open here while its packets go nowhere, and
+		// TCP takes a minute or two to notice. Every outbound trunk call in
+		// that window sat on it until Timer B (32 s), and the INVITE,
+		// delivered a minute late, rang the PBX phone after the caller had
+		// gone (2026-09-19 13:09). A live PBX answers an INVITE with 100
+		// Trying within milliseconds, so no response at all for
+		// trunkResponseTimeout is proof the connection is defunct: the
+		// INVITE is dropped outright (a CANCEL would go the same way) and
+		// the connection closed, which also discards the unsent INVITE;
+		// serveDialog then redials once on a fresh connection. UDP pools
+		// nothing and has its own retransmissions, so it is left to Timer B.
+		ictx, cancelInvite := context.WithCancelCause(ctx)
+		inviteCtx = ictx
+		go func() {
+			select {
+			case <-inviteDone:
+			case <-ictx.Done():
+			case <-time.After(trunkResponseTimeout):
+				if answered.Load() {
+					return
+				}
+				abandonMu.Lock()
+				if abandoned == nil {
+					abandoned = errTrunkUnresponsive
+				}
+				abandonMu.Unlock()
+				cancelInvite(sipgo.WaitAnswerForceCancelErr)
+			}
+		}()
+	}
 	if l.calleeUser != "" {
 		ictx, cancelInvite := context.WithCancelCause(context.Background())
 		inviteCtx = ictx
@@ -1215,30 +1313,31 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 				cancelInvite(sipgo.WaitAnswerForceCancelErr)
 			}
 		}
-		// abandonDead is abandon for a callee whose connection is gone:
-		// there is nobody to CANCEL, and trying would have sipgo dial the
-		// dead address and hang on connect, so the INVITE is dropped
-		// outright whether or not a 180 was seen.
-		abandonDead := func(reason error) {
-			abandonMu.Lock()
-			if abandoned == nil {
-				abandoned = reason
-			}
-			abandonMu.Unlock()
-			cancelInvite(sipgo.WaitAnswerForceCancelErr)
-		}
 		stopParent := context.AfterFunc(ctx, func() { abandon(context.Cause(ctx)) })
 		s.trackWait(callID, func(cause error) {
 			if cause == nil {
 				return
 			}
 			if cause == errWakeDeclined || cause == errWakeBusy {
-				// The app refuses on both channels in the same breath: this
-				// ack on the gateway and a 486 on the INVITE. A CANCEL sent
-				// now crosses that 486 — the app answers the CANCEL 481
-				// (its transaction is over) and both sides log a race that
-				// changes nothing. Let the 486 land; CANCEL only if it
-				// does not (the app died right after the ack).
+				// The app answers on both channels in the same breath: this
+				// ack on the gateway, and its own final on the INVITE (486 for
+				// a decline; the hang-up it does on a Focus/DND filter). A
+				// CANCEL sent now would cross that final — the app answers the
+				// CANCEL 481 — so hold it: let the final land, and force the
+				// CANCEL only if it never comes (the app died after the ack).
+				//
+				// For a system busy, also record the cause now so the caller's
+				// response is decided by errWakeBusy (ring through to 480 at
+				// the timeout), not by the app's simultaneous 486 relayed as a
+				// fast rejection. A decline leaves the cause unset, so the
+				// app's own 486 reaches the caller unchanged (callerStatus).
+				if cause == errWakeBusy {
+					abandonMu.Lock()
+					if abandoned == nil {
+						abandoned = cause
+					}
+					abandonMu.Unlock()
+				}
 				go func() {
 					select {
 					case <-inviteDone:
@@ -1250,6 +1349,12 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 			}
 			abandon(cause)
 		})
+		// If the callee's connection dies while its INVITE is out (the app
+		// suspended after a Focus/DND filter, say), the caller is NOT failed
+		// fast: it rings on to the ring timeout like any unreachable phone
+		// (see the note by errWakeBusy). The one way the call still completes
+		// is the app coming back on a NEW connection — that arrives as a
+		// fresh REGISTER, which this watch turns into a new INVITE.
 		wctx, stopWatch := context.WithCancel(ictx)
 		go func() {
 			if ep, err := s.reg.WaitRouteChange(wctx, l.calleeUser, l.calleeRoute); err == nil {
@@ -1257,31 +1362,6 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 				abandon(errRetarget)
 			}
 		}()
-		// The connection the INVITE went down can die while it is out:
-		// iOS suspends the app 160 ms after it registered when CallKit
-		// has refused to present the call (a Focus filter, 2026-09-18
-		// 01:55), and the socket goes with it. Nothing will ever answer on
-		// it — not even a CANCEL can be delivered — and the pre-dial check
-		// (registration flow gone) has already passed, so the caller rang
-		// until it gave up: 15 s that night. A 180 already received
-		// changes nothing (baresip sends one the instant the INVITE
-		// lands). The one way the call could still complete is the app
-		// coming back on a NEW connection, and that arrives as a fresh
-		// REGISTER, which the retarget watch above turns into a new
-		// INVITE; a short grace lets it win the race before the caller is
-		// answered. Not with -rewrite-contact=false: an advertised route
-		// has no pooled connection to watch.
-		if !s.cfg.KeepAdvertisedContact && l.calleeRoute != "" {
-			go watchFlow(wctx, flowPollInterval,
-				func() bool { return s.flowAlive(l.calleeRoute) },
-				func() {
-					select {
-					case <-wctx.Done(): // answered, retargeted or cancelled meanwhile
-					case <-time.After(flowGoneGrace):
-						abandonDead(errCalleeFlowGone)
-					}
-				})
-		}
 		defer func() {
 			stopParent()
 			stopWatch()
@@ -1310,27 +1390,39 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 			_ = out.Hangup(out.Context())
 			out.Close()
 			return &retargetError{ep: ep}
-		case errWakeDeclined, errWakeBusy:
-			log.Info("invite callee: refused on the wake before the INVITE was answered", "cause", why)
+		case errWakeDeclined:
+			// The user actively declined while the INVITE was out. 486 so
+			// the PBX applies its busy rule.
+			log.Info("invite callee: user declined on the wake before the INVITE was answered", "cause", why)
 			_ = out.Hangup(out.Context())
 			out.Close()
 			if in.Context().Err() == nil {
 				_ = in.Respond(486, "Busy Here", nil)
 			}
 			return why
-		case errCalleeFlowGone:
-			// 480, not 486: the callee registered and vanished, it did
-			// not refuse. The caller may try again — and on the phone a
-			// repeat call is what breaks through a Focus filter.
-			log.Info("invite callee: callee's connection died while ringing; answering the caller", "route", l.calleeRoute)
-			// The caller first, and no Hangup on the callee: its
-			// connection is gone, so a BYE/CANCEL would only make sipgo
-			// dial the dead address and block. The INVITE transaction was
-			// terminated by the forced cancel; Close releases the rest.
+		case errWakeBusy:
+			// The device filtered the call itself (Focus / Sleep / DND): it
+			// was alerted but the system suppressed the ring, so nobody will
+			// answer. Not a rejection — the caller keeps the ringback it
+			// already has until the ring timeout (or it gives up), then 480,
+			// exactly as when any woken device never answers. Industry "DND
+			// rings through"; a user decline (above) is the only fast 486.
+			log.Info("invite callee: device filtered the call (Focus/DND); ringing to the timeout", "cause", why)
+			_ = out.Hangup(out.Context())
+			out.Close()
+			<-ctx.Done() // the ring timeout, or the caller giving up
 			if in.Context().Err() == nil {
 				_ = in.Respond(480, "Temporarily Unavailable", nil)
 			}
+			return why
+		case errTrunkUnresponsive:
+			// Nothing to CANCEL: the transaction was terminated by the
+			// forced cancel, and a CANCEL would go down the same dead
+			// connection. Drop that connection so the redial (serveDialog)
+			// opens a fresh one; the caller is answered there, not here.
+			log.Warn("invite callee: no response from the trunk; its connection is dead", "dst", dst.String(), "after", trunkResponseTimeout)
 			out.Close()
+			s.dropTrunkConnection(log)
 			return why
 		}
 		log.Error("invite callee", "dst", dst.String(), "offered", codecNames(out.Media().MediaSession()), "err", err)

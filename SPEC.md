@@ -892,22 +892,32 @@ on by config — see §7.4.
 Kept here so the design intent is not lost and so existing references to the
 old phase labels still resolve. None of this is on the roadmap.
 
-- **Faster busy for a Focus-filtered call (optional, 2026-09-18).** When
-  CallKit refuses to present a call (`FilteredByDoNotDisturb`, a Sleep or
-  Focus schedule), the app does hear about it — `reportNewIncomingCall`'s
-  completion carries the error and the app then hangs up the SIP call and
-  acks the wake as busy — but iOS suspends the process ~160 ms after the
-  report, before that completion runs, so it arrives on the *next* wake,
-  20 s later. The server covers the caller meanwhile: it notices the
-  callee's connection die and answers 480 within ~3 s (`bridge`,
-  `watchFlow`). Possible improvement: hold a `beginBackgroundTask`
-  assertion across the report so the process lives the few hundred
-  milliseconds CallKit needs to answer, and the busy ack goes out at once
-  (caller hears busy in ~200 ms). Cheap to try; whether iOS grants that
-  time to a push-launched process that ended up presenting no call is
-  undocumented and only a device test can say. There is no API that
-  predicts the filter (Focus rules, "Allow Calls From", repeated calls all
-  live in the system), so refusing pre-emptively is not an option.
+- **Focus/Sleep-filtered call rings through (decided 2026-09-19).** A phone
+  in Do Not Disturb / Sleep / a Focus schedule must ring through to the
+  caller exactly as an unanswered phone does behind any PBX (Cisco CUCM's
+  DND "Ringer Off" default; iOS's own native Focus behaviour) — the caller
+  keeps its ringback to the ring timeout, then 480. It must NOT be able to
+  tell DND from an unanswered phone. This reverses two earlier "fast-fail
+  the caller" behaviours, both dropped for that consistency:
+  - When CallKit refuses the report (`FilteredByDoNotDisturb`) and the app
+    stays alive long enough to ack the wake `busy`, the server treats that
+    `busy` as an unanswered ring, not a 486. A user's active *decline* is
+    the only case that still fast-fails with 486; `busy` (system filter)
+    and `decline` (user) are split at both points that inspect the wake
+    cause (`wakeAndWaitFrom`, `bridge`), and the busy cause is recorded up
+    front so it wins over the app's simultaneous SIP 486.
+  - When the app is instead suspended by iOS and its SIP connection dies
+    mid-ring (the common case — CallKit never presents, so nothing keeps
+    the app alive), the server no longer answers the caller 480 within
+    ~2 s. The `watchFlow` watcher that did so was **removed**: a dead
+    callee connection is indistinguishable from a momentarily unreachable
+    phone, so the caller rings on to the ring timeout, then 480. The cost:
+    a genuinely crashed/unreachable app also rings the caller for the full
+    timeout — accepted, as that is what a PBX does with a registered phone
+    it cannot reach. Retarget still applies: if the app comes back on a new
+    connection it re-registers and `WaitRouteChange` sends a fresh INVITE.
+  All server-side; no app change. (`errCalleeFlowGone`, `watchFlow` and the
+  `harness-ringing-callee-dies` test were removed with the watcher.)
 - **Mid-call address change (audio plan Phase G; optional, 2026-09-14).**
   A call that spans a Wi-Fi handoff between two listed SSIDs keeps its
   media on the old address until it drops; the handoff itself (the
@@ -1390,6 +1400,31 @@ it is neither linked nor redistributed.
    backtrace names the handler and, through it, the descriptor; collect
    it with the server log for the same minute. Also seen in that call
    and separate from the spin: the garbled audio, which is item 11.
+   *Fourth episode, 2026-09-20 10:24 (MetricKit
+   `20260920T082439.221Z-metrickit.json`):* the same signature again —
+   48 s of CPU in a 49 s window, 13/16 samples in `kevent` under
+   `re_main`, 2 in `udp_read_handler → mbuf_alloc`, audio flowing
+   throughout; mid-call (`35a1f0fa`, a call with three PBX-side
+   hold/resume rebases), beginning ~12 s after the wake's transport reset
+   and ~3 s after the first rebase — the previous episode was also a
+   PBX-hold call. iOS killed the process; the app relaunched. The busy
+   watchdog almost certainly fired (49 s ≫ its 5 s) and its dump was
+   lost: `stall_dump`/`wd_say` write to `stderr`, and nothing routed
+   `stderr` into the uploaded log — the one artefact that names the
+   spinning handler went to a descriptor nobody read. Two changes, both
+   principled, neither a bandaid: (1) `FileLog` now `dup2`s its file onto
+   `stderr` on every open, so watchdog dumps, libre warnings and Swift
+   runtime output land in `data/diag/`; (2) libre patch level 4 —
+   `fd_poll()` dispatched an event only `if (fhs && fhs->fh)` and
+   otherwise *ignored* it while the registration stayed, and kqueue is
+   level-triggered, so `kevent()` returned that descriptor at once on
+   every call: exactly "readiness nobody drains". A registered descriptor
+   with no handler is a leak by definition (`fd_close` clears both
+   together); the patch drops it from the kqueue where seen and warns
+   with its number. A self-heal (cancel the loop after N s of saturation
+   and rebuild the stack) was considered and rejected as masking the
+   cause. *Next time:* the `LOOP THREAD BUSY` backtrace and any
+   `fd_poll: fd N ready … with no handler` line are in the app log.
 9. **CLOSED — "app silent after a wake, then launches that hang and cannot
    be killed" (2026-09-13 06:13 SAST; same shape as the 00:37 episode and
    the 2026-09-12 "restart needed a reboot"): the app was running under
@@ -1505,6 +1540,93 @@ it is neither linked nor redistributed.
     `make harness-pbx-hold` has the docker desk phone hold and resume
     and asserts the app still hears it (docker Asterisk keeps the
     timeline continuous, so that guards the outcome, not the rebase).
+12. **FIXED 2026-09-19 — outbound trunk calls stall on a silently dead
+    pooled connection after a network blip (13:09).** The server keeps
+    its TCP/TLS connection to the PBX pooled and reuses it for every
+    outbound INVITE. After the Mac had been unreachable for ~2 min, that
+    socket was still open here but delivering nothing: two app→101 calls
+    sat on it to Timer B (32 s), and Asterisk's `100/180/486` for both
+    arrived in one burst 60 s later — the INVITEs had finally got through
+    and rang the desk phone after the callers had gone. Inbound calls
+    were unaffected (the PBX opens its own connections). A failed call
+    does not clear it: sipgo's transaction timeout only drops a
+    reference, the pooled connection stays, and every outbound call
+    reuses it until TCP itself gives up — retransmit backoff (~60 s on
+    macOS, up to 120 s on Linux) or keepalive (~2½ min on a silent peer).
+    Not a laptop artefact: any silent path loss on either side (switch
+    blip, PBX power loss, firewall state) does it in production too.
+    *Fix (server only, `bridge`):* for a trunk callee over TCP/TLS, no
+    response at all — not even 100 Trying, which a live PBX sends within
+    milliseconds — within `trunkResponseTimeout` (3 s) proves the
+    connection defunct: the INVITE is dropped (forced cancel; a CANCEL
+    would go down the same dead socket), the pooled connection is closed
+    (`dropTrunkConnection`, which also discards the unsent INVITE — no
+    late ghost ring), and `serveDialog` redials once on a fresh
+    connection; a second failure answers the caller 480. UDP is left to
+    its own retransmissions and Timer B. Transfers dial the trunk through
+    their own path and are not watched (a dead connection evicted by any
+    call helps them too). That watchdog alone still costs the first call
+    after a blip its 3 s, so the second half is the OPTIONS qualify every
+    PBX runs against its peers (`qualify.go`, `-trunk-qualify`, default
+    10 s, 0 = off): an OPTIONS every interval over the pooled connection
+    itself (sipgo pools by destination; sent out of the trunk transport
+    via a vendored `Diago.Client(id)`), and one unanswered for the same
+    3 s drops the connection — so it is gone before anyone dials and the
+    next call dials fresh and rings at once. A silent death can only be
+    found by probing or by trying, so the interval is the window in which
+    a call can still fall to the watchdog (≤ 13 s after the socket died);
+    during an outage every probe fails and evicts, so when the path comes
+    back nothing stale is left. Nothing is needed on the PBX: Asterisk and
+    CUCM answer inbound OPTIONS for a known peer. *Test:*
+    `make harness-trunk-stall` — TLS trunk; phase A with the qualify off:
+    warm call, then a `tc` filter in the server's namespace black-holes
+    its packets to the PBX, and the next call must be answered within
+    seconds with the dead connection logged, dropped and redialled, then
+    bridge afresh once the hole is lifted; phase B with the qualify on:
+    with nobody dialling, the qualify alone must log and drop the dead
+    connection within one interval, and the call placed right after the
+    hole is lifted must bridge within seconds with no watchdog line.
+    Unit: `qualify_test.go` (drops on timeout and on a send error, on
+    every probe while dead, never while answering).
+13. **OPEN — inbound audio to the app dies after the PBX phone's own
+    hold/resume on an app-originated call (2026-09-20 10:22, call
+    `968c465d`, app 201 → 101 over the TLS+SDES trunk).** What the
+    server relay saw on the trunk leg (`callee→caller`, Asterisk → us),
+    two-second counters: 100/2 s until 10:22:19; at 10:22:20 101 held —
+    60 in that window, then **0**: Asterisk sent nothing during the hold
+    (no MOH on that PBX) and no SIP at all (a desk phone's hold is not
+    propagated to the trunk, as item "Focus/DND rings through" §6 notes
+    for the other direction); at 10:22:38–40, 101 resumed — Asterisk sent
+    **74 packets (≈1.5 s)** — then **0 again until the hangup** at
+    10:22:49. Our audio *to* Asterisk flowed throughout
+    (`caller→callee written_2s=100, write_errs=0`); the app decoded
+    exactly what arrived (its `rx` counter rises with those 74 packets
+    and stops with them). Also in that window, twice, the app held and
+    resumed from its own side (10:21:54, 10:22:33) — the server plays
+    music to 101 for that without signalling the trunk, so Asterisk did
+    not see those either. Ruled out on our side: diago's RTP source lock
+    (off — any source is read), SRTP decrypt failures (they return an
+    error that ends the pump with `RELAY STOPPED`; the reader stayed
+    alive and simply received nothing), the timeline re-base (item 11;
+    it never fired here). *Not reproduced:* `TRUNK_TLS=1 TRUNK_SRTP=sdes
+    DIALLER_SIP_TRACE=true make harness-pbx-hold` — docker Asterisk keeps
+    RTP flowing straight through the desk phone's hold/resume and audio
+    after the resume passes. So it is specific to the LAN PBX or the 101
+    phone's unhold: Asterisk stopped sending to us 1.5 s after the resume
+    (or sent elsewhere), which our logs cannot see. Two artefacts of the
+    same call worth noting: `RTP session RTCP writer stopped with error:
+    write udp … i/o timeout` on the *app* leg exactly 5 s after each app
+    resume (diago's RTCP writer, a fixed deadline; RTP unaffected), and
+    the CPU spin of item 8 in the *next* call. *Next time, on one
+    repro (app → 101, 101 holds ~10 s, resumes):* on the Pi
+    `asterisk -rvvv` with `rtp set debug on` and `pjsip set logger on`;
+    on the Mac `tcpdump -i en0 host 10.18.0.5 and udp`; server with
+    `DEV_SERVER_FLAGS="-log-level debug -sip-trace"`. Together those show
+    whether Asterisk emits RTP after the resume, to which port and SSRC,
+    with what crypto, and whether the phone's own stream stopped. The fix
+    is then either a PBX setting on the trunk endpoint (`moh_passthrough`,
+    `rtp_symmetric`, MOH class) or a specific re-INVITE/SSRC handling in
+    diago — different work, so nothing is changed until that is seen.
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

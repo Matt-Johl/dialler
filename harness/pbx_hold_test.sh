@@ -23,6 +23,22 @@ NOPORTS=""
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
 NET=dialler-harness_default
 KEEP="${KEEP:-0}"
+# TRUNK_SRTP=sdes and TRUNK_TLS=1: the same knobs as trunk_test.sh, so the
+# desk phone's hold/resume runs against the trunk the LAN PBX uses (TLS,
+# SDES), where Asterisk's own hold handling may differ from plain RTP.
+if [ -n "${TRUNK_SRTP:-}" ]; then
+  export ASTERISK_SRTP=yes
+  export DIALLER_TRUNK_SRTP="$TRUNK_SRTP"
+fi
+if [ "${TRUNK_TLS:-0}" = 1 ]; then
+  sh harness/tls/gen_certs.sh
+  export ASTERISK_TLS=yes
+  export DIALLER_TRUNK="sip:172.30.0.20:5061;transport=tls"
+  export DIALLER_TRUNK_ADDR=":5062"
+  export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
+  export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
+  export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
+fi
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT

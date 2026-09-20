@@ -195,7 +195,8 @@ profile sets 184 and 96 (plan Phase E, SPEC §4.4 rule 5a).
 ## apply-re.sh — patch level
 
 `re_dialler_patchlevel()` is appended to libre's `main.c` and returns
-`RE_PATCH_LEVEL` from apply-re.sh (1: EBADF guard; 2: + the QoS marks).
+`RE_PATCH_LEVEL` from apply-re.sh (1: EBADF guard; 2: + the QoS marks;
+3: + close-before-flush; 4: + the kqueue no-handler descriptor guard).
 `cb_version()` prints it in the engine's "started baresip …" log line, so a
 field report says which XCFramework the build carried — an app built from
 between an XCFramework rebuild and a source fix has cost an afternoon
@@ -246,3 +247,20 @@ failed (-60)`, `-60` being `ETIMEDOUT` from the shim's own wait). The
 shim (`ios/DiallerEngine/Sources/CBaresip/cbaresip.c`) now creates, runs
 and tears down the stack on its loop thread; found and verified by
 `RESTART_SERVER=1 make sim-call`.
+
+## apply-re.sh — a ready kqueue descriptor with no handler is dropped (level 4)
+
+libre's `fd_poll()` dispatches an event only `if (fhs && fhs->fh)` and
+otherwise ignores it — but the registration stays in the kqueue, and
+kqueue is level-triggered: `kevent()` returns that descriptor at once on
+every call, so the loop never blocks again. The engine thread then sits at
+100 % CPU while still serving every other event (audio kept flowing on
+2026-09-18 and 2026-09-20) until iOS kills the app for CPU
+(`cpu_resource_fatal`: 48 s of CPU in a 49 s window, 14 of 16 samples in
+`kevent` under `re_main` — SPEC §9 item 8, four occurrences). `fd_close()`
+clears the handler and deletes the events together, so a registered
+descriptor without a handler is a leak by definition. The patch drops such
+a descriptor from the kqueue where it is seen and warns with its number,
+so the next occurrence names whoever left it. Paired with the app change
+that routes `stderr` into the uploaded log (`FileLog`), which is where the
+engine watchdog's `LOOP THREAD BUSY` dump had been going unseen.

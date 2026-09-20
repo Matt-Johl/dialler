@@ -183,7 +183,9 @@
       "Bash(HARNESS_NOPORTS=1 TRUNK_SRTP=sdes DIRECTION=xfer-echo sh harness/trunk_test.sh)",
       "Bash(awk '{print \"5061 in use by \"$1\" pid \"$2\" → harness runs with HARNESS_NOPORTS=1\"}')",
       "Bash(HARNESS_NOPORTS=1 KEEP=1 sh harness/ringing_callee_dies_test.sh)",
-      "Bash(grep -n 'IMPAIR\\\\|netem\\\\|MODE=\\\\|DECLINE\\\\|args\\\\[13\\\\]\\\\|$MODE' harness/sim_call.sh)"
+      "Bash(grep -n 'IMPAIR\\\\|netem\\\\|MODE=\\\\|DECLINE\\\\|args\\\\[13\\\\]\\\\|$MODE' harness/sim_call.sh)",
+      "Bash(awk '$1 >= \"2026-09-19T11:08:00\" && $1 <= \"2026-09-19T11:09:50\"' data/diag/dev-a/20260919T110950.389Z-app-log-launch.log)",
+      "Bash(grep -n \"ipv4_address\\\\|subnet\\\\|asterisk:$\\\\|172.30\" harness/docker-compose.yml)"
     ],
     "additionalDirectories": [
       "/private/tmp/claude-501/-Users-matt-Code-Cursor-Dialler/a0dcea92-cec8-4661-83c4-a2deaca5d36a/tasks"

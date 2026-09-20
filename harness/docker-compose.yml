@@ -45,6 +45,9 @@ services:
       # :5062 for a TLS trunk, not the conventional 5061 — that is the app
       # leg's port and the two cannot share a socket.
       - -trunk-addr=${DIALLER_TRUNK_ADDR:-:5060}
+      # OPTIONS keep-alive on a TCP/TLS trunk connection (b2bua/qualify.go);
+      # 0 turns it off so a test can exercise the per-call watchdog alone.
+      - -trunk-qualify=${DIALLER_TRUNK_QUALIFY:-10s}
       # What the PBX is offered: G.722 wideband first, G.711 fallback; a
       # narrowband-only PBX gets "pcmu,pcma".
       - -trunk-codecs=${DIALLER_TRUNK_CODECS:-g722,pcmu,pcma}

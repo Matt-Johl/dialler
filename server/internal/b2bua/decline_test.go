@@ -25,6 +25,14 @@ import (
 // PBX and the calling phone render as "no response". A device that was only
 // woken (app killed) refuses through wake_ack{decline}; that must end the
 // caller's ringing at once with 486 rather than at the 30 s ring timeout.
+//
+// A wake_ack{busy} is different: it means the device filtered the call
+// itself (Focus / Sleep / DND), not that the user declined. That is treated
+// as an unanswered ring — the caller keeps ringing to the ring timeout then
+// 480 — so a phone in DND rings through as it would on any PBX, rather than
+// fast-failing the caller with a busy. The wake_ack contract for both is
+// asserted below; the caller-facing 480-vs-486 split needs a live caller
+// dialog (sipgo), so it is verified on device rather than here.
 
 type fakeWaker struct {
 	delivered int
@@ -74,9 +82,11 @@ func TestCallerStatusRelaysRefusalsOnly(t *testing.T) {
 	}
 }
 
-// Wake path: a decline (or busy) wake_ack ends the wait for a registration
-// immediately with that cause — wakeAndWaitFrom then answers the caller 486
-// — and sends no wake_cancel, because the device already stopped ringing.
+// Wake path: a decline or busy wake_ack ends the wait for a registration
+// immediately with that cause, and sends no wake_cancel (the device already
+// stopped ringing). With no caller leg (in == nil, a transfer) both return
+// at once; wakeAndWaitFrom answers a real caller 486 for a decline and rings
+// through to 480 for a system busy — covered end to end by the harness.
 func TestRefusalAckEndsTheWakeWaitImmediately(t *testing.T) {
 	for _, tc := range []struct {
 		action wire.WakeAction

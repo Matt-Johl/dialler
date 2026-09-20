@@ -41,34 +41,35 @@ import (
 
 func main() {
 	var (
-		signalAddr  = flag.String("signal-addr", ":7443", "wire-protocol TLS listen address")
-		sipAddr     = flag.String("sip-addr", ":5061", "app-leg SIP/TLS listen address")
-		httpAddr    = flag.String("http-addr", "127.0.0.1:8080", "directory + admin HTTP listen address")
-		certFile    = flag.String("tls-cert", "", "TLS certificate PEM (empty → self-signed dev cert)")
-		keyFile     = flag.String("tls-key", "", "TLS private key PEM")
-		publicHost  = flag.String("public-host", "", "hostname/IP advertised to apps in wakes and certs (default: first non-loopback IPv4)")
-		localDomain = flag.String("local-domain", "", "SIP domain this server owns (default: public-host)")
-		dataDir     = flag.String("data-dir", "./data", "directory for devices.json and directory.json")
-		adminToken  = flag.String("admin-token", "", "bearer token for admin APIs (empty → generated and printed)")
-		ringTimeout = flag.Duration("ring-timeout", 30*time.Second, "how long a callee may ring (and a woken app may take to register)")
-		rtpMin      = flag.Int("rtp-min", 20000, "first UDP port for relayed media (0 = ephemeral)")
-		rtpMax      = flag.Int("rtp-max", 20100, "last UDP port for relayed media")
-		rewrite     = flag.Bool("rewrite-contact", true, "route to a registration's source address over its own TLS connection (required for phones behind NAT); false only for harness negative tests")
-		logJSON     = flag.Bool("log-json", false, "log as JSON")
-		sipTrace    = flag.Bool("sip-trace", false, "log every SIP message sent and received (harness debugging)")
-		logLevel    = flag.String("log-level", "info", "debug|info|warn|error (debug includes the media relay's RTP source learning)")
-		rtpSym      = flag.Bool("rtp-symmetric", true, "re-target a phone's media at the source of its first RTP packet (needed behind NAT); false where that source is not a deliverable reply address (Docker Desktop harness)")
-		pubSIPPort  = flag.Int("public-sip-port", 0, "SIP port advertised to apps (welcome, wakes) when it differs from -sip-addr, e.g. a container published on another host port; 0 = same as -sip-addr")
-		trunk       = flag.String("trunk", "", "PBX SIP peer for non-local destinations, e.g. sip:asterisk:5060;transport=tcp (empty: standalone, app↔app only)")
-		trunkAddr   = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5062 for a TLS trunk — not 5061, which is the app leg's); transport follows -trunk")
-		trunkExt    = flag.String("trunk-external-host", "", "address the PBX reaches this server at, used in trunk-leg Contact and SDP (default: this host's first address)")
-		trunkSRTP   = flag.String("trunk-srtp", "off", "SDES (RFC 4568) on the PBX leg: off (plain RTP) or sdes (offer RTP/SAVP, mirror the PBX's, and refuse a leg that did not end up encrypted). Default off: a PBX without encryption refuses an SAVP offer with 488. Use a TLS trunk with it — SDES keys travel in the SDP")
-		trunkCodecs = flag.String("trunk-codecs", "g722,pcmu,pcma", "codecs offered to the PBX in order of preference (g722, pcmu, pcma, opus); the app leg is answered with whichever the PBX takes, never transcoded")
-		trunkCert   = flag.String("trunk-tls-cert", "", "certificate PEM presented on the PBX leg, in both directions (CUCM's secure trunks do mutual TLS); needed when -trunk uses transport=tls")
-		trunkKey    = flag.String("trunk-tls-key", "", "private key PEM for -trunk-tls-cert")
-		trunkCA     = flag.String("trunk-tls-ca", "", "CA PEM the PBX's certificate is verified against (empty: the system roots, which reject the private CA most PBX deployments use)")
-		trunkNoVer  = flag.Bool("trunk-tls-insecure", false, "accept any certificate from the PBX: a dev convenience against a self-signed PBX, and an open door to anyone who can intercept the trunk")
-		trunkTLSMin = flag.String("trunk-tls-min-version", "1.2", "lowest TLS version accepted on the PBX leg: 1.2 or 1.3. The app leg always pins 1.3; CUCM's secure trunks generally speak 1.2, so raising this may leave the exchange unreachable")
+		signalAddr   = flag.String("signal-addr", ":7443", "wire-protocol TLS listen address")
+		sipAddr      = flag.String("sip-addr", ":5061", "app-leg SIP/TLS listen address")
+		httpAddr     = flag.String("http-addr", "127.0.0.1:8080", "directory + admin HTTP listen address")
+		certFile     = flag.String("tls-cert", "", "TLS certificate PEM (empty → self-signed dev cert)")
+		keyFile      = flag.String("tls-key", "", "TLS private key PEM")
+		publicHost   = flag.String("public-host", "", "hostname/IP advertised to apps in wakes and certs (default: first non-loopback IPv4)")
+		localDomain  = flag.String("local-domain", "", "SIP domain this server owns (default: public-host)")
+		dataDir      = flag.String("data-dir", "./data", "directory for devices.json and directory.json")
+		adminToken   = flag.String("admin-token", "", "bearer token for admin APIs (empty → generated and printed)")
+		ringTimeout  = flag.Duration("ring-timeout", 30*time.Second, "how long a callee may ring (and a woken app may take to register)")
+		trunkQualify = flag.Duration("trunk-qualify", 10*time.Second, "how often the trunk's TCP/TLS connection is probed with OPTIONS so one that has gone silently dead (a network blip on either side) is dropped before a call needs it; 0 = off; no effect over UDP")
+		rtpMin       = flag.Int("rtp-min", 20000, "first UDP port for relayed media (0 = ephemeral)")
+		rtpMax       = flag.Int("rtp-max", 20100, "last UDP port for relayed media")
+		rewrite      = flag.Bool("rewrite-contact", true, "route to a registration's source address over its own TLS connection (required for phones behind NAT); false only for harness negative tests")
+		logJSON      = flag.Bool("log-json", false, "log as JSON")
+		sipTrace     = flag.Bool("sip-trace", false, "log every SIP message sent and received (harness debugging)")
+		logLevel     = flag.String("log-level", "info", "debug|info|warn|error (debug includes the media relay's RTP source learning)")
+		rtpSym       = flag.Bool("rtp-symmetric", true, "re-target a phone's media at the source of its first RTP packet (needed behind NAT); false where that source is not a deliverable reply address (Docker Desktop harness)")
+		pubSIPPort   = flag.Int("public-sip-port", 0, "SIP port advertised to apps (welcome, wakes) when it differs from -sip-addr, e.g. a container published on another host port; 0 = same as -sip-addr")
+		trunk        = flag.String("trunk", "", "PBX SIP peer for non-local destinations, e.g. sip:asterisk:5060;transport=tcp (empty: standalone, app↔app only)")
+		trunkAddr    = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5062 for a TLS trunk — not 5061, which is the app leg's); transport follows -trunk")
+		trunkExt     = flag.String("trunk-external-host", "", "address the PBX reaches this server at, used in trunk-leg Contact and SDP (default: this host's first address)")
+		trunkSRTP    = flag.String("trunk-srtp", "off", "SDES (RFC 4568) on the PBX leg: off (plain RTP) or sdes (offer RTP/SAVP, mirror the PBX's, and refuse a leg that did not end up encrypted). Default off: a PBX without encryption refuses an SAVP offer with 488. Use a TLS trunk with it — SDES keys travel in the SDP")
+		trunkCodecs  = flag.String("trunk-codecs", "g722,pcmu,pcma", "codecs offered to the PBX in order of preference (g722, pcmu, pcma, opus); the app leg is answered with whichever the PBX takes, never transcoded")
+		trunkCert    = flag.String("trunk-tls-cert", "", "certificate PEM presented on the PBX leg, in both directions (CUCM's secure trunks do mutual TLS); needed when -trunk uses transport=tls")
+		trunkKey     = flag.String("trunk-tls-key", "", "private key PEM for -trunk-tls-cert")
+		trunkCA      = flag.String("trunk-tls-ca", "", "CA PEM the PBX's certificate is verified against (empty: the system roots, which reject the private CA most PBX deployments use)")
+		trunkNoVer   = flag.Bool("trunk-tls-insecure", false, "accept any certificate from the PBX: a dev convenience against a self-signed PBX, and an open door to anyone who can intercept the trunk")
+		trunkTLSMin  = flag.String("trunk-tls-min-version", "1.2", "lowest TLS version accepted on the PBX leg: 1.2 or 1.3. The app leg always pins 1.3; CUCM's secure trunks generally speak 1.2, so raising this may leave the exchange unreachable")
 	)
 	flag.Parse()
 	trunkTLSMinVer, err := tlsutil.MinTLSVersion(*trunkTLSMin)
@@ -116,6 +117,7 @@ func main() {
 		trunkExternalHost:     *trunkExt,
 		trunkCodecs:           trunkCodecList,
 		trunkSRTP:             trunkSRTPMode,
+		trunkQualify:          *trunkQualify,
 		trunkCert:             *trunkCert,
 		trunkKey:              *trunkKey,
 		trunkCA:               *trunkCA,
@@ -141,6 +143,7 @@ type options struct {
 	trunkExternalHost             string
 	trunkCodecs                   []media.Codec
 	trunkSRTP                     b2bua.TrunkSRTPMode
+	trunkQualify                  time.Duration
 	trunkCert, trunkKey, trunkCA  string
 	trunkTLSInsecure              bool
 	trunkTLSMin                   uint16
@@ -274,6 +277,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		TrunkExternalHost:     o.trunkExternalHost,
 		TrunkCodecs:           o.trunkCodecs,
 		TrunkSRTP:             o.trunkSRTP,
+		TrunkQualify:          o.trunkQualify,
 		TrunkTLS:              trunkTLS,
 		RingTimeout:           o.ringTimeout,
 		Auth:                  sipauth.New(o.localDomain, devices),

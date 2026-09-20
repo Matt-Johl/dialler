@@ -8,8 +8,10 @@ example/
 
 # swift
 .build/
-*.xcodeproj/xcuserdata/
-*.xcworkspace/xcuserdata/
+# leading ** matters: the project lives at ios/Dialler/, and a pattern
+# containing a slash is anchored to the repo root without it.
+**/*.xcodeproj/xcuserdata/
+**/*.xcworkspace/xcuserdata/
 .swiftpm/
 
 # harness artefacts

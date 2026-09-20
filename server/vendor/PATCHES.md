@@ -133,3 +133,14 @@ upstream release named in `modules.txt`; re-apply when bumping.
   OPTIONS keep-alive, `internal/b2bua/qualify.go`) with that transport's
   Via, Contact and bind address. Upstream exposes the clients only through
   `NewDialog`/`Invite`/`Register`.
+- `media/rtp_session.go` (`RTPSession.close`) — `SetReadDeadline(now)`
+  instead of `SetDeadline(now)` on the RTCP socket. The deadline exists to
+  unblock the RTCP reader so `MonitorClose` can wait for it; the socket is
+  kept open "for a replacement fork" (a re-INVITE forks a new session on
+  the same sockets, `mediaUpdateUnsafe`). Stamping the *write* side too
+  poisons the fork: its RTCP writer's first tick, 5 s later, fails with
+  `i/o timeout` and the writer exits for the rest of the call (`RTP session
+  RTCP writer stopped with error`, 5.000 s after every app-leg resume,
+  2026-09-20). The reader clears its own read deadline on start; nothing
+  ever cleared the write one. UDP writes never block, so the read deadline
+  is the whole of what was needed.

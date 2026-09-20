@@ -207,7 +207,13 @@ func (s *RTPSession) close(wait bool) error {
 	rtcpConn := s.Sess.rtcpConn
 	s.rtcpMU.Unlock()
 
-	err := rtcpConn.SetDeadline(time.Now())
+	// Read side only (Dialler vendor patch): the deadline is here to unblock
+	// the RTCP reader so the wait below returns. The socket stays open for
+	// a replacement fork (a re-INVITE), and a write deadline stamped on it
+	// outlived this session: the fork's RTCP writer failed at its first
+	// tick with "i/o timeout" and stopped for the rest of the call. UDP
+	// writes never block, so nothing needed the write side.
+	err := rtcpConn.SetReadDeadline(time.Now())
 	if wait {
 		s.monitorWG.Wait()
 	}

@@ -1616,8 +1616,12 @@ it is neither linked nor redistributed.
     (or sent elsewhere), which our logs cannot see. Two artefacts of the
     same call worth noting: `RTP session RTCP writer stopped with error:
     write udp … i/o timeout` on the *app* leg exactly 5 s after each app
-    resume (diago's RTCP writer, a fixed deadline; RTP unaffected), and
-    the CPU spin of item 8 in the *next* call. *Next time, on one
+    resume — *fixed the same day*: diago's `RTPSession.close` stamped a
+    past deadline on both sides of the RTCP socket to unblock its reader,
+    but a re-INVITE keeps that socket for the replacement fork, whose
+    writer then failed at its first 5 s tick and stopped for the call;
+    now read side only (`server/vendor/PATCHES.md`); RTP was never
+    affected — and the CPU spin of item 8 in the *next* call. *Next time, on one
     repro (app → 101, 101 holds ~10 s, resumes):* on the Pi
     `asterisk -rvvv` with `rtp set debug on` and `pjsip set logger on`;
     on the Mac `tcpdump -i en0 host 10.18.0.5 and udp`; server with

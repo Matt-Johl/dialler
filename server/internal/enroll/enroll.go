@@ -40,6 +40,26 @@ type Device struct {
 	CodePending bool `json:"code_pending,omitempty"`
 	// Config is the device's server-managed settings; nil until set.
 	Config *DeviceConfig `json:"config,omitempty"`
+	// PBX is the extension's identity on the PBX in register mode, without
+	// its password; nil until set (SPEC §6 item 3).
+	PBX *PBXIdentity `json:"pbx,omitempty"`
+}
+
+// PBXIdentity is what the admin sees of a device's PBX registration.
+type PBXIdentity struct {
+	User       string `json:"user"`
+	DeviceName string `json:"device_name,omitempty"`
+}
+
+// PBXCredentials is what the server registers with, in register mode:
+// the digest username and password the PBX assigned to this extension as
+// a third-party SIP device, and the device name where the PBX wants one.
+// The password is kept in clear — SIP Digest needs it — in devices.json,
+// mode 0600.
+type PBXCredentials struct {
+	User       string `json:"user"`
+	Password   string `json:"password"`
+	DeviceName string `json:"device_name,omitempty"`
 }
 
 type record struct {
@@ -63,6 +83,8 @@ type record struct {
 	// administrator has set anything, and the app then keeps its own.
 	SSIDs         []string `json:"ssids,omitempty"`
 	ConfigVersion int64    `json:"config_version,omitempty"`
+	// PBX registration credentials in register mode (SPEC §6 item 3).
+	PBX *PBXCredentials `json:"pbx,omitempty"`
 }
 
 // DeviceConfig is the device's server-managed settings as the admin API
@@ -271,6 +293,55 @@ func (s *Store) Claim(code string) (Claimed, error) {
 	return Claimed{DeviceID: id, User: rec.User, Token: tok}, nil
 }
 
+// SetPBX stores the extension's PBX credentials. An empty password keeps
+// the one already stored (an admin editing the username alone); a
+// password is required the first time.
+func (s *Store) SetPBX(deviceID string, c PBXCredentials) error {
+	c.User = strings.TrimSpace(c.User)
+	c.DeviceName = strings.TrimSpace(c.DeviceName)
+	if c.User == "" {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.devices[deviceID]
+	if !ok {
+		return ErrInvalid
+	}
+	if c.Password == "" {
+		if rec.PBX == nil || rec.PBX.Password == "" {
+			return ErrInvalid
+		}
+		c.Password = rec.PBX.Password
+	}
+	rec.PBX = &c
+	return s.saveLocked()
+}
+
+// ClearPBX removes the extension's PBX credentials.
+func (s *Store) ClearPBX(deviceID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.devices[deviceID]
+	if !ok || rec.PBX == nil {
+		return false, nil
+	}
+	rec.PBX = nil
+	return true, s.saveLocked()
+}
+
+// PBX returns the credentials the server would register with, or nil.
+func (s *Store) PBX(deviceID string) *PBXCredentials {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.devices[deviceID]
+	if !ok || rec.PBX == nil {
+		return nil
+	}
+	cp := *rec.PBX
+	return &cp
+}
+
 // Config returns deviceID's server-managed settings, or nil when none
 // have been set (the app then keeps its own).
 func (s *Store) Config(deviceID string) *DeviceConfig {
@@ -424,6 +495,9 @@ func (s *Store) Devices() []Device {
 		}
 		if r.ConfigVersion > 0 {
 			d.Config = &DeviceConfig{Version: r.ConfigVersion, SSIDs: append([]string{}, r.SSIDs...)}
+		}
+		if r.PBX != nil {
+			d.PBX = &PBXIdentity{User: r.PBX.User, DeviceName: r.PBX.DeviceName}
 		}
 		out = append(out, d)
 	}

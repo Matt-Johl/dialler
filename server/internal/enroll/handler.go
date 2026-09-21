@@ -28,6 +28,9 @@ type Hooks struct {
 	// OnPurge: the admin deleted a device for good; its directory,
 	// registration and sessions go with it.
 	OnPurge func(deviceID string)
+	// OnPBX: a device's PBX credentials were set or cleared; a registration
+	// manager (SPEC §6 item 3) reconciles that one device's registration.
+	OnPBX func(deviceID string)
 }
 
 // Link is what a phone needs to find the server, folded into the QR URL
@@ -69,6 +72,8 @@ type codeResponse struct {
 //	POST   /v1/admin/devices/{id}/enrol-code  → {"code","expires_at","url"}
 //	GET    /v1/admin/devices/{id}/config      → {"version","ssids"} (404 until set)
 //	PUT    /v1/admin/devices/{id}/config      {"ssids":[…]} → {"version","ssids"}   (POST accepted too)
+//	PUT    /v1/admin/devices/{id}/pbx         {"user","password","device_name"} → {"user","device_name"}
+//	DELETE /v1/admin/devices/{id}/pbx         → 204
 //
 // Adding a device mints its enrolment code; a "token" in the request (the
 // harness's fixed fixtures) also issues that credential at once.
@@ -244,6 +249,44 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 	mux.HandleFunc("PUT /v1/admin/devices/{id}/config", setConfig)
 	// busybox wget (the harness's in-network helper) has no PUT.
 	mux.HandleFunc("POST /v1/admin/devices/{id}/config", setConfig)
+
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/pbx", guard(func(w http.ResponseWriter, r *http.Request) {
+		var in PBXCredentials
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		id := r.PathValue("id")
+		if !store.exists(id) {
+			http.NotFound(w, r)
+			return
+		}
+		if err := store.SetPBX(id, in); err != nil {
+			http.Error(w, "a username is required, and a password the first time", http.StatusBadRequest)
+			return
+		}
+		if hooks.OnPBX != nil {
+			hooks.OnPBX(id)
+		}
+		c := store.PBX(id)
+		writeJSON(w, http.StatusOK, PBXIdentity{User: c.User, DeviceName: c.DeviceName})
+	}))
+	mux.HandleFunc("DELETE /v1/admin/devices/{id}/pbx", guard(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		ok, err := store.ClearPBX(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if hooks.OnPBX != nil {
+			hooks.OnPBX(id)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	return mux
 }
 

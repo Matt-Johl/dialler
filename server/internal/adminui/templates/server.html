@@ -2,20 +2,94 @@
 <header class="page">
   <div>
     <h1>Server</h1>
-    <p class="sub">The call server this console manages.</p>
+    <p class="sub">The call server this console manages, and the PBX it works with.</p>
   </div>
 </header>
 
 <section class="card">
+  <div class="card-head"><div><h2>This server</h2></div></div>
   <dl class="facts">
     <dt>Address</dt><dd class="mono">{{.Server.PublicHost}}</dd>
     <dt>SIP domain</dt><dd class="mono">{{.Server.SIPDomain}}</dd>
     <dt>Ports</dt><dd class="mono">signal {{.Server.SignalPort}} · SIP {{.Server.SIPPort}} · HTTPS {{.Server.HTTPSPort}}</dd>
-    <dt>PBX trunk</dt><dd>{{if .Server.Trunk}}<span class="mono">{{.Server.Trunk}}</span>{{else}}<span class="dim">None — app-to-app only</span>{{end}}</dd>
     <dt>Running since</dt><dd>{{when .Server.StartedAt}} <span class="dim">({{since .Server.StartedAt}})</span></dd>
     <dt>Devices</dt><dd>{{.Devices}} <span class="dim">· {{.Online}} connected</span></dd>
     <dt>Certificate</dt><dd class="mono small break">{{.Server.CertSHA256}}</dd>
   </dl>
   <p class="help">The certificate fingerprint is what every enrolled phone pins. It travels in each enrolment QR.</p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>PBX</h2>
+      <p class="help">
+        {{if .Running}}Running now against <span class="mono">{{.Running}}</span>.{{else}}Running with no PBX: app-to-app calls only.{{end}}
+        {{if .Restart}}<strong>The saved settings below differ; they take effect when the call server next starts.</strong>{{else if .PBXSaved}}Saved settings apply at the call server's next start.{{end}}
+      </p>
+    </div>
+  </div>
+  <form method="post" action="/server/pbx" class="stack">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <fieldset class="field">
+      <legend>How the PBX knows this server</legend>
+      <label class="choice"><input type="radio" name="mode" value="peer" {{if ne .PBX.Mode "register"}}checked{{end}}> <span><strong>Trunk peer</strong> <span class="help-inline">the PBX trusts this server by address and routes extensions to it (Asterisk)</span></span></label>
+      <label class="choice"><input type="radio" name="mode" value="register" {{if eq .PBX.Mode "register"}}checked{{end}}> <span><strong>Registered devices</strong> <span class="help-inline">this server registers each extension as a third-party SIP device with its own credentials (Cisco CUCM)</span></span></label>
+      <p class="help">In registered-devices mode each device's credentials are entered on its Edit page. Registration itself is not yet performed by the call server; the settings are stored for it.</p>
+    </fieldset>
+    <div class="grid-3">
+      <div class="field">
+        <label for="host">PBX host</label>
+        <input id="host" name="host" value="{{.PBX.Host}}" placeholder="cucm.example.com" required>
+      </div>
+      <div class="field">
+        <label for="port">Port</label>
+        <input id="port" name="port" value="{{.PBX.Port}}" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="transport">Transport</label>
+        <select id="transport" name="transport">
+          <option value="udp" {{if eq .PBX.Transport "udp"}}selected{{end}}>UDP</option>
+          <option value="tcp" {{if eq .PBX.Transport "tcp"}}selected{{end}}>TCP</option>
+          <option value="tls" {{if eq .PBX.Transport "tls"}}selected{{end}}>TLS</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="field">
+        <label for="expiry_seconds">Registration expiry <span class="optional">seconds</span></label>
+        <input id="expiry_seconds" name="expiry_seconds" value="{{.PBX.ExpirySeconds}}" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="codecs">Codecs <span class="optional">in preference order</span></label>
+        <input id="codecs" name="codecs" value="{{.PBX.Codecs}}" class="mono" placeholder="g722,pcmu,pcma">
+      </div>
+      <div class="field">
+        <label for="srtp">Media encryption</label>
+        <select id="srtp" name="srtp">
+          <option value="off" {{if ne .PBX.SRTP "sdes"}}selected{{end}}>Off (plain RTP)</option>
+          <option value="sdes" {{if eq .PBX.SRTP "sdes"}}selected{{end}}>SRTP (SDES)</option>
+        </select>
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="field">
+        <label for="qualify_seconds">Keep-alive interval <span class="optional">seconds, 0 = off</span></label>
+        <input id="qualify_seconds" name="qualify_seconds" value="{{.PBX.QualifySeconds}}" inputmode="numeric">
+      </div>
+    </div>
+    <details class="tls" {{if eq .PBX.Transport "tls"}}open{{end}}>
+      <summary>TLS trunk certificates</summary>
+      <div class="grid-3">
+        <div class="field"><label for="tls_cert">Certificate <span class="optional">path on the server</span></label><input id="tls_cert" name="tls_cert" value="{{.PBX.TLSCert}}" class="mono"></div>
+        <div class="field"><label for="tls_key">Private key</label><input id="tls_key" name="tls_key" value="{{.PBX.TLSKey}}" class="mono"></div>
+        <div class="field"><label for="tls_ca">CA to verify the PBX</label><input id="tls_ca" name="tls_ca" value="{{.PBX.TLSCA}}" class="mono"></div>
+      </div>
+      <label class="choice"><input type="checkbox" name="tls_insecure" {{if .PBX.TLSInsecure}}checked{{end}}> Do not verify the PBX's certificate <span class="help-inline">development only</span></label>
+    </details>
+    <div class="form-actions">
+      <button type="submit" class="primary">Save PBX settings</button>
+    </div>
+  </form>
 </section>
 {{end}}

@@ -19,6 +19,7 @@ import (
 	"dialler/server/internal/csvdir"
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
+	"dialler/server/internal/pbxconfig"
 	"dialler/server/internal/qr"
 	"dialler/server/internal/status"
 )
@@ -115,6 +116,9 @@ func (a *App) routes() {
 	m.HandleFunc("POST /devices/{id}/directory/apply", a.signedIn(a.applyCSV))
 	m.HandleFunc("POST /devices/{id}/directory/copy", a.signedIn(a.copyDirectory))
 	m.HandleFunc("GET /server", a.signedIn(a.server))
+	m.HandleFunc("POST /server/pbx", a.signedIn(a.savePBX))
+	m.HandleFunc("POST /devices/{id}/pbx", a.signedIn(a.saveDevicePBX))
+	m.HandleFunc("POST /devices/{id}/pbx/clear", a.signedIn(a.clearDevicePBX))
 }
 
 // MARK: sessions
@@ -466,16 +470,21 @@ func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
 type editDeviceView struct {
 	base
 	Device deviceRow
+	// RegisterMode is whether the saved PBX settings use register mode,
+	// in which case the credentials section is the one that matters.
+	RegisterMode bool
 }
 
 func (a *App) editDevicePage(w http.ResponseWriter, r *http.Request, sess *session) {
 	id := r.PathValue("id")
-	row, _, err := a.find(r.Context(), id)
+	row, st, err := a.find(r.Context(), id)
 	if err != nil {
 		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
 		return
 	}
-	a.render(w, r, sess, "device-edit.html", editDeviceView{base: a.base(sess, "Edit "+deviceName(row), r.URL.Path), Device: row})
+	v := editDeviceView{base: a.base(sess, "Edit "+deviceName(row), r.URL.Path), Device: row}
+	v.RegisterMode = st.PBX != nil && st.PBX.Mode == pbxconfig.ModeRegister
+	a.render(w, r, sess, "device-edit.html", v)
 }
 
 func (a *App) updateDevice(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -884,13 +893,26 @@ type serverView struct {
 	Devices int
 	Online  int
 	Now     time.Time
+	// PBX is what the administrator saved; the form shows it, or defaults.
+	PBX      pbxconfig.Settings
+	PBXSaved bool
+	// Running is the trunk the server is using now, "" when none.
+	Running string
+	// Restart says the saved settings and the running trunk differ.
+	Restart bool
 }
 
 func (a *App) server(w http.ResponseWriter, r *http.Request, sess *session) {
 	st, err := a.cfg.Client.Status(r.Context())
-	v := serverView{base: a.base(sess, "Server", "/server"), Server: st.Server, Devices: len(st.Devices), Now: st.Now}
+	v := serverView{base: a.base(sess, "Server", "/server"), Server: st.Server, Devices: len(st.Devices), Now: st.Now, Running: st.Server.Trunk}
 	if err != nil {
 		v.Error = err.Error()
+	}
+	v.PBX = pbxconfig.Settings{Mode: pbxconfig.ModePeer, Port: 5060, Transport: "udp", ExpirySeconds: 300, Codecs: "g722,pcmu,pcma", SRTP: "off", QualifySeconds: 10}
+	if st.PBX != nil {
+		v.PBX, v.PBXSaved = *st.PBX, true
+		want := fmt.Sprintf("sip:%s:%d;transport=%s", st.PBX.Host, st.PBX.Port, st.PBX.Transport)
+		v.Restart = want != st.Server.Trunk
 	}
 	for _, d := range st.Devices {
 		if len(d.Online) > 0 {
@@ -898,4 +920,75 @@ func (a *App) server(w http.ResponseWriter, r *http.Request, sess *session) {
 		}
 	}
 	a.render(w, r, sess, "server.html", v)
+}
+
+func (a *App) savePBX(w http.ResponseWriter, r *http.Request, sess *session) {
+	st := pbxconfig.Settings{
+		Mode:        pbxconfig.Mode(r.FormValue("mode")),
+		Host:        r.FormValue("host"),
+		Port:        atoi(r.FormValue("port")),
+		Transport:   r.FormValue("transport"),
+		Codecs:      r.FormValue("codecs"),
+		SRTP:        r.FormValue("srtp"),
+		TLSCert:     strings.TrimSpace(r.FormValue("tls_cert")),
+		TLSKey:      strings.TrimSpace(r.FormValue("tls_key")),
+		TLSCA:       strings.TrimSpace(r.FormValue("tls_ca")),
+		TLSInsecure: r.FormValue("tls_insecure") != "",
+	}
+	st.ExpirySeconds = atoi(r.FormValue("expiry_seconds"))
+	st.QualifySeconds = atoi(r.FormValue("qualify_seconds"))
+	if err := st.Validate(); err != nil {
+		a.sessions.setFlash(sess, "error", err.Error())
+		http.Redirect(w, r, "/server", http.StatusSeeOther)
+		return
+	}
+	if _, err := a.cfg.Client.SetPBX(r.Context(), st); err != nil {
+		a.apiFailed(w, r, sess, "/server", err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", "PBX settings saved. They take effect when the call server next starts.")
+	http.Redirect(w, r, "/server", http.StatusSeeOther)
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, c := range strings.TrimSpace(s) {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+		if n > 1<<30 {
+			return 0
+		}
+	}
+	return n
+}
+
+// MARK: per-device PBX credentials
+
+func (a *App) saveDevicePBX(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	back := "/devices/" + url.PathEscape(id) + "/edit"
+	creds := enroll.PBXCredentials{User: r.FormValue("pbx_user"), Password: r.FormValue("pbx_password"), DeviceName: r.FormValue("pbx_device_name")}
+	if strings.TrimSpace(creds.User) == "" {
+		a.sessions.setFlash(sess, "error", "The PBX username is required.")
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	if err := a.cfg.Client.SetDevicePBX(r.Context(), id, creds); err != nil {
+		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", "PBX registration saved for this extension.")
+	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
+}
+
+func (a *App) clearDevicePBX(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	if err := a.cfg.Client.ClearDevicePBX(r.Context(), id); err != nil && !IsNotFound(err) {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id)+"/edit", err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", "PBX registration removed for this extension.")
+	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
 }

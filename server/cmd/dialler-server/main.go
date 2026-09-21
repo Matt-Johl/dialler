@@ -30,6 +30,7 @@ import (
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/gateway"
 	"dialler/server/internal/pbx"
+	"dialler/server/internal/pbxconfig"
 	"dialler/server/internal/qos"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
@@ -224,6 +225,30 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		log.Info("migrated the global directory into per-device directories", "contacts", n, "devices", m)
 	}
 
+	// PBX settings saved from the admin UI (SPEC §6 item 3) stand in for
+	// the -trunk flags when those are absent. Register mode is stored and
+	// shown but not yet acted on: the registration manager is separate
+	// work, so the server runs the trunk in peer mode either way for now.
+	pbxStore, err := pbxconfig.Open(filepath.Join(o.dataDir, "pbx.json"))
+	if err != nil {
+		return err
+	}
+	if saved := pbxStore.Get(); saved != nil {
+		if o.trunk != "" {
+			log.Warn("PBX settings are saved in the admin UI but -trunk was given; the flag wins this run", "saved_host", saved.Host)
+		} else {
+			o.trunk = fmt.Sprintf("sip:%s:%d;transport=%s", saved.Host, saved.Port, saved.Transport)
+			o.trunkCodecs, _ = b2bua.ParseCodecs(saved.Codecs) // validated on save
+			o.trunkSRTP, _ = b2bua.ParseTrunkSRTP(saved.SRTP)  // validated on save
+			o.trunkQualify = time.Duration(saved.QualifySeconds) * time.Second
+			o.trunkCert, o.trunkKey, o.trunkCA, o.trunkTLSInsecure = saved.TLSCert, saved.TLSKey, saved.TLSCA, saved.TLSInsecure
+			log.Info("PBX settings from the admin UI", "mode", saved.Mode, "trunk", o.trunk, "version", saved.Version)
+			if saved.Mode == pbxconfig.ModeRegister {
+				log.Warn("PBX register mode is saved but not yet implemented; running the trunk as a peer")
+			}
+		}
+	}
+
 	// Core.
 	reg := registry.New(nil)
 	for _, d := range devices.Devices() {
@@ -391,6 +416,12 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 				log.Warn("purging the device's directory", "device", deviceID, "err", err)
 			}
 		},
+		// PBX credentials set or cleared: the registration manager will
+		// reconcile that one extension's registration (SPEC §6 item 3);
+		// until it exists this is recorded and nothing else.
+		OnPBX: func(deviceID string) {
+			log.Info("PBX credentials changed; registration not yet implemented", "device", deviceID)
+		},
 		// Settings changed: that device's live sessions get them now; a
 		// device not connected gets them in its next welcome.
 		OnConfig: func(deviceID string, cfg enroll.DeviceConfig) {
@@ -407,7 +438,11 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		PublicHost: o.publicHost, SIPDomain: o.localDomain,
 		SignalPort: signalPort, SIPPort: publicSIPPort, HTTPSPort: httpPort,
 		CertSHA256: certSHA256, StartedAt: time.Now(), Trunk: o.trunk,
-	}, o.adminToken, status.Sources{Devices: devices.Devices, Sessions: gw.Sessions, Lookup: reg.Lookup}))
+	}, o.adminToken, status.Sources{Devices: devices.Devices, Sessions: gw.Sessions, Lookup: reg.Lookup, PBX: pbxStore.Get}))
+	// PBX settings (SPEC §6 item 3): saved here, read at the next start.
+	mux.Handle("/v1/admin/pbx", pbxconfig.Handler(pbxStore, o.adminToken, func(st pbxconfig.Settings) {
+		log.Info("PBX settings saved; they apply at the next start", "mode", st.Mode, "host", st.Host, "version", st.Version)
+	}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintln(w, "ok") })
 
 	// Listeners.

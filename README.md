@@ -93,7 +93,13 @@ with add and edit pages, CSV download, CSV upload (previewed, then applied
 as one change) and copy-to-other-devices, and a danger zone with revoke
 (the directory is kept; a new code brings the phone back) and delete
 (`DELETE /v1/admin/devices/<id>?purge=1`: record, directory and settings
-gone, the extension free again).
+gone, the extension free again). The Server page holds the PBX settings
+(`/v1/admin/pbx`): trunk-peer mode for Asterisk, or registered-devices
+mode for CUCM, where each device's Edit page takes the extension's digest
+credentials (`/v1/admin/devices/<id>/pbx`). Saved PBX settings are read at
+the call server's next start in place of the `-trunk` flags; the
+per-extension registration itself is the next piece of the call element
+(SPEC §6 item 3) and the UI says so until it lands.
 
 ```sh
 make admin

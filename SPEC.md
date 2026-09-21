@@ -690,6 +690,30 @@ on by config — see §7.4.
      2026-09-14, inbound calls land on PCMU because the PBX's INVITE
      lists PCMU first — the phone's own offer order — while outbound
      calls get G.722; the server follows the caller's order by design).
+     *Decided 2026-09-21, with Matt:* CUCM's model is **register mode**,
+     per extension with digest credentials — the server REGISTERs each
+     extension as a third-party SIP device — and **peer mode** stays for
+     Asterisk. *Built the same day, the administrator's side (branch
+     `feature/admin-ui`):* the PBX settings live on the server and in
+     the admin UI's Server page (mode, host, port, transport, expiry,
+     codecs, SRTP, keep-alive, TLS; `/v1/admin/pbx`, §4.8), read at the
+     call server's next start in place of the `-trunk` flags; each
+     device's Edit page takes the extension's digest username, password
+     and device name (`/v1/admin/devices/{id}/pbx`), shown on the device
+     page as "PBX as <user> (registration pending)". **Placeholders
+     until the call element follows:** register mode is stored and
+     shown but the server still runs the trunk as a peer, the per-device
+     state stays "pending", and the pages say so. *Next, in the call
+     element:* a registration manager that holds a Digest-authenticated
+     REGISTER on the trunk leg for every extension with credentials —
+     refreshed before expiry, retried with backoff, reconciled live per
+     device on any credential change, revoke or purge, its state in
+     `/v1/admin/status` — routing inbound INVITEs from the registered
+     contact to the app as today and sending outbound calls with the
+     registered identity. Its harness: the docker Asterisk with
+     endpoints 201/202 that demand registration, the server in register
+     mode, a desk phone reaching 201 through the registered contact, and
+     revoking 202 dropping only its registration.
 
      **Two CUCM trunk settings to get right before blaming the code**
      (2026-09-17, from reading our own SDP handling — neither is yet
@@ -1433,6 +1457,19 @@ handlers; nothing that exists changes shape:
   settings, `{"ssids": […]}` today (§6 item 8b): versioned on the device
   record, 404 until set, and pushed to that device's live sessions as a
   `config` message on every write (the same body rides in its welcome).
+- `PUT /v1/admin/devices/{id}` `{"user","label"}` — rename or re-number a
+  device; credential, code and settings stay; the registry re-binds.
+- `GET` / `PUT /v1/admin/pbx` — the PBX as the administrator describes it
+  (§6 item 3): `mode` (`peer`: the PBX trusts the server by address;
+  `register`: the server registers each extension as a third-party SIP
+  device, CUCM's model), host, port, transport, registration expiry,
+  codecs, SRTP, keep-alive, TLS material. Validated, versioned, kept in
+  `<data-dir>/pbx.json`, and read at the call server's next start in
+  place of the `-trunk` flags (a given flag still wins, with a warning).
+- `PUT` / `DELETE /v1/admin/devices/{id}/pbx` — the extension's digest
+  username, password and device name for register mode; the password is
+  kept in clear in `devices.json` (0600) because Digest needs it, and
+  never returned. An empty password on `PUT` keeps the stored one.
 
 CSV lives in `dialler-admin`, not in the call server:
 `display_name,uri,mode,favourite` with a header row, UTF-8, RFC 4180

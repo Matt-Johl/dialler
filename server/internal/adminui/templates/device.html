@@ -8,6 +8,7 @@
       <span class="sep">·</span> <span class="pill {{.Device.StateKey}}">{{.Device.State}}</span>
       <span class="sep">·</span> {{if eq .Device.Presence "offline"}}Offline{{else}}<span class="dot on"></span>{{.Device.Presence}}{{end}}
       <span class="sep">·</span> {{if .Device.Registered}}Registered{{else}}Not registered{{end}}
+      {{if .Device.PBX}}<span class="sep">·</span> PBX as <span class="mono">{{.Device.PBX.User}}</span> <span class="dim">({{if eq .Device.PBXState "pending"}}registration pending{{else}}{{.Device.PBXState}}{{end}})</span>{{end}}
     </p>
   </div>
   <div class="page-actions">

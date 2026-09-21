@@ -3,11 +3,12 @@
 <header class="page">
   <div>
     <h1>Edit device</h1>
-    <p class="sub">The name and extension. The phone's credential, code and settings are untouched.</p>
+    <p class="sub">The phone's credential, code and settings are untouched by anything here.</p>
   </div>
 </header>
 
 <section class="card narrow">
+  <div class="card-head"><div><h2>Name and extension</h2></div></div>
   <form method="post" action="/devices/{{.Device.DeviceID}}/edit" class="stack">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
     <div class="field">
@@ -29,5 +30,44 @@
       <a class="button ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
     </div>
   </form>
+</section>
+
+<section class="card narrow">
+  <div class="card-head">
+    <div>
+      <h2>PBX registration</h2>
+      <p class="help">
+        {{if .RegisterMode}}The PBX is in registered-devices mode: this extension is registered with these credentials, as a third-party SIP device.{{else}}The PBX is a trunk peer, so these are not used until the PBX is switched to registered-devices mode on the Server page.{{end}}
+        Registration is not yet performed by the call server; the credentials are stored for it.
+      </p>
+    </div>
+  </div>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/pbx" class="stack">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="pbx_user">Digest username</label>
+      <input id="pbx_user" name="pbx_user" value="{{if .Device.PBX}}{{.Device.PBX.User}}{{end}}" autocomplete="off" placeholder="{{.Device.User}}">
+      <p class="help">The username the PBX assigned to this extension's third-party SIP device.</p>
+    </div>
+    <div class="field">
+      <label for="pbx_password">Digest password{{if .Device.PBX}} <span class="optional">leave blank to keep the current one</span>{{end}}</label>
+      <input id="pbx_password" type="password" name="pbx_password" autocomplete="new-password">
+    </div>
+    <div class="field">
+      <label for="pbx_device_name">Device name <span class="optional">optional</span></label>
+      <input id="pbx_device_name" name="pbx_device_name" value="{{if .Device.PBX}}{{.Device.PBX.DeviceName}}{{end}}" class="mono" placeholder="SEP…">
+      <p class="help">Where the PBX identifies the device by name as well (CUCM's device name).</p>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="primary">Save PBX registration</button>
+      <a class="button ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
+    </div>
+  </form>
+  {{if .Device.PBX}}
+  <form method="post" action="/devices/{{.Device.DeviceID}}/pbx/clear" class="form-actions delete-contact">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="danger ghost">Remove PBX registration</button>
+  </form>
+  {{end}}
 </section>
 {{end}}

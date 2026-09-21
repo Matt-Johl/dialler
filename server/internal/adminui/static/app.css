@@ -165,6 +165,14 @@ input::placeholder, textarea::placeholder { color: var(--ink-3); }
 .file input { font-size: 13px; max-width: 220px; color: var(--ink-2); }
 .upload { display: inline-flex; align-items: center; gap: 8px; }
 
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-3 .field input, .grid-3 .field select { max-width: none; }
+@media (max-width: 700px) { .grid-3 { grid-template-columns: 1fr; } }
+details.tls { border: 1px solid var(--line); border-radius: var(--radius-s); padding: 12px 14px; }
+details.tls summary { cursor: pointer; font-size: 13px; font-weight: 550; color: var(--ink-2); }
+details.tls .grid-3 { margin: 14px 0 8px; }
+.choice > span > strong { font-weight: 550; }
+
 /* Buttons */
 button, .button {
   font: inherit; font-size: 14px; font-weight: 550; line-height: 1.2; padding: 9px 14px; border-radius: var(--radius-s);

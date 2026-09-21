@@ -16,6 +16,7 @@ import (
 
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
+	"dialler/server/internal/pbxconfig"
 	"dialler/server/internal/status"
 	"dialler/server/internal/wire"
 )
@@ -32,6 +33,8 @@ type fakeAPI struct {
 	replaced map[string]int // ReplaceDirectory calls per device
 	revoked  []string
 	purged   []string
+	pbx      *pbxconfig.Settings
+	pbxCreds map[string]enroll.PBXCredentials
 	minted   int
 }
 
@@ -50,6 +53,7 @@ func newFakeAPI() *fakeAPI {
 		},
 		configs:  map[string]enroll.DeviceConfig{},
 		replaced: map[string]int{},
+		pbxCreds: map[string]enroll.PBXCredentials{},
 	}
 }
 
@@ -65,7 +69,47 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(p, "/")
 	switch {
 	case r.Method == "GET" && p == "status":
-		write(status.Response{Server: status.Server{PublicHost: "10.0.0.1", SIPDomain: "dialler", SignalPort: 7443, SIPPort: 5061, HTTPSPort: 8080, CertSHA256: "fp"}, Devices: f.devices, Now: time.Now()})
+		devs := make([]status.Device, len(f.devices))
+		copy(devs, f.devices)
+		for i := range devs {
+			if c, ok := f.pbxCreds[devs[i].DeviceID]; ok {
+				devs[i].PBX = &enroll.PBXIdentity{User: c.User, DeviceName: c.DeviceName}
+				devs[i].PBXState = "pending"
+			}
+		}
+		write(status.Response{Server: status.Server{PublicHost: "10.0.0.1", SIPDomain: "dialler", SignalPort: 7443, SIPPort: 5061, HTTPSPort: 8080, CertSHA256: "fp", Trunk: "sip:asterisk:5060;transport=udp"}, PBX: f.pbx, Devices: devs, Now: time.Now()})
+	case r.Method == "GET" && p == "pbx":
+		if f.pbx == nil {
+			http.Error(w, "none", 404)
+			return
+		}
+		write(f.pbx)
+	case r.Method == "PUT" && p == "pbx":
+		var in pbxconfig.Settings
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if err := in.Validate(); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		in.Version = 1
+		f.pbx = &in
+		write(in)
+	case len(parts) == 3 && parts[2] == "pbx" && r.Method == "PUT":
+		var in enroll.PBXCredentials
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		if in.Password == "" {
+			if old, ok := f.pbxCreds[parts[1]]; ok {
+				in.Password = old.Password
+			} else {
+				http.Error(w, "password required", 400)
+				return
+			}
+		}
+		f.pbxCreds[parts[1]] = in
+		write(enroll.PBXIdentity{User: in.User, DeviceName: in.DeviceName})
+	case len(parts) == 3 && parts[2] == "pbx" && r.Method == "DELETE":
+		delete(f.pbxCreds, parts[1])
+		w.WriteHeader(204)
 	case r.Method == "POST" && p == "devices":
 		var in struct{ User, Label string }
 		_ = json.NewDecoder(r.Body).Decode(&in)
@@ -526,13 +570,66 @@ func TestContactsSettingsAndCSV(t *testing.T) {
 	}
 }
 
-func TestServerPage(t *testing.T) {
-	_, _, b := setup(t)
+func TestServerPageAndPBXSettings(t *testing.T) {
+	_, api, b := setup(t)
 	signIn(t, b)
 	body := b.get("/server").Body.String()
-	for _, want := range []string{"10.0.0.1", "dialler", "signal 7443", "app-to-app only", "1 connected"} {
+	for _, want := range []string{"10.0.0.1", "dialler", "signal 7443", "sip:asterisk:5060;transport=udp", "1 connected", `name="mode" value="register"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("server page lacks %q", want)
 		}
+	}
+	// Invalid settings never reach the server.
+	if rec := b.post("/server/pbx", url.Values{"mode": {"register"}, "host": {""}}); rec.Code != 303 || api.pbx != nil {
+		t.Fatal("empty host must be refused")
+	}
+	if page := b.get("/server").Body.String(); !strings.Contains(page, "host is required") {
+		t.Fatal("the validation error is not shown")
+	}
+	rec := b.post("/server/pbx", url.Values{"mode": {"register"}, "host": {"cucm.example"}, "port": {"5061"}, "transport": {"tls"},
+		"expiry_seconds": {"600"}, "codecs": {"g722,pcmu"}, "srtp": {"sdes"}, "qualify_seconds": {"30"}, "tls_ca": {"/etc/dialler/cucm-ca.pem"}})
+	if rec.Code != 303 || api.pbx == nil || api.pbx.Mode != pbxconfig.ModeRegister || api.pbx.Port != 5061 || api.pbx.TLSCA != "/etc/dialler/cucm-ca.pem" || api.pbx.ExpirySeconds != 600 {
+		t.Fatalf("save: %d %+v", rec.Code, api.pbx)
+	}
+	page := b.get("/server").Body.String()
+	if !strings.Contains(page, "next starts") || !strings.Contains(page, `value="cucm.example"`) || !strings.Contains(page, `value="register" checked`) {
+		t.Fatal("saved settings not shown, or no restart notice")
+	}
+	if !strings.Contains(page, "differ") {
+		t.Fatal("running trunk differs from the saved one: the page must say so")
+	}
+}
+
+func TestDevicePBXCredentials(t *testing.T) {
+	_, api, b := setup(t)
+	signIn(t, b)
+	if page := b.get("/devices/dev-a/edit").Body.String(); !strings.Contains(page, "PBX registration") || strings.Contains(page, "Remove PBX registration") {
+		t.Fatal("edit page must offer PBX credentials, with nothing to remove yet")
+	}
+	if rec := b.post("/devices/dev-a/pbx", url.Values{"pbx_user": {""}, "pbx_password": {"x"}}); rec.Code != 303 || len(api.pbxCreds) != 0 {
+		t.Fatal("an empty username must be refused before reaching the server")
+	}
+	rec := b.post("/devices/dev-a/pbx", url.Values{"pbx_user": {"201"}, "pbx_password": {"s3cret"}, "pbx_device_name": {"SEP201"}})
+	if rec.Code != 303 || api.pbxCreds["dev-a"].Password != "s3cret" || api.pbxCreds["dev-a"].DeviceName != "SEP201" {
+		t.Fatalf("save: %d %+v", rec.Code, api.pbxCreds)
+	}
+	page := b.get("/devices/dev-a").Body.String()
+	if !strings.Contains(page, "PBX as <span class=\"mono\">201</span>") || !strings.Contains(page, "registration pending") {
+		t.Fatal("device page must show the PBX identity and the pending state")
+	}
+	if strings.Contains(page, "s3cret") {
+		t.Fatal("the password must never appear in a page")
+	}
+	// Editing without retyping the password keeps it; the edit page never echoes it.
+	edit := b.get("/devices/dev-a/edit").Body.String()
+	if strings.Contains(edit, "s3cret") || !strings.Contains(edit, `value="201"`) || !strings.Contains(edit, "leave blank to keep") || !strings.Contains(edit, "Remove PBX registration") {
+		t.Fatal("edit page after save")
+	}
+	b.post("/devices/dev-a/pbx", url.Values{"pbx_user": {"cucm-201"}, "pbx_password": {""}})
+	if c := api.pbxCreds["dev-a"]; c.User != "cucm-201" || c.Password != "s3cret" {
+		t.Fatalf("username edit: %+v", c)
+	}
+	if rec := b.post("/devices/dev-a/pbx/clear", url.Values{}); rec.Code != 303 || len(api.pbxCreds) != 0 {
+		t.Fatal("clear")
 	}
 }

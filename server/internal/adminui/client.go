@@ -20,6 +20,7 @@ import (
 
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
+	"dialler/server/internal/pbxconfig"
 	"dialler/server/internal/status"
 )
 
@@ -192,6 +193,38 @@ func (c *Client) Config(ctx context.Context, deviceID string) (*enroll.DeviceCon
 		return nil, err
 	}
 	return &out, nil
+}
+
+// PBX is the saved PBX settings, or nil when none have been saved.
+func (c *Client) PBX(ctx context.Context) (*pbxconfig.Settings, error) {
+	var out pbxconfig.Settings
+	err := c.do(ctx, http.MethodGet, "/v1/admin/pbx", nil, &out)
+	if IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetPBX saves the PBX settings; the call server reads them at its next
+// start.
+func (c *Client) SetPBX(ctx context.Context, st pbxconfig.Settings) (pbxconfig.Settings, error) {
+	var out pbxconfig.Settings
+	err := c.do(ctx, http.MethodPut, "/v1/admin/pbx", st, &out)
+	return out, err
+}
+
+// SetDevicePBX stores an extension's PBX registration credentials; an
+// empty password keeps the stored one.
+func (c *Client) SetDevicePBX(ctx context.Context, deviceID string, creds enroll.PBXCredentials) error {
+	return c.do(ctx, http.MethodPut, "/v1/admin/devices/"+url.PathEscape(deviceID)+"/pbx", creds, nil)
+}
+
+// ClearDevicePBX removes them.
+func (c *Client) ClearDevicePBX(ctx context.Context, deviceID string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/admin/devices/"+url.PathEscape(deviceID)+"/pbx", nil, nil)
 }
 
 // SetConfig replaces a device's SSID list; the server pushes it.

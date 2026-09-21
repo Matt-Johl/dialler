@@ -217,6 +217,55 @@ func TestEnrolHandler(t *testing.T) {
 	}
 }
 
+// PBX credentials for register mode: set, kept, edited without retyping
+// the password, and never shown back.
+func TestPBXCredentials(t *testing.T) {
+	s, _ := Open("")
+	s.Create("dev-a", "201", "")
+	var touched []string
+	h := NewAdminHandler(s, "admin", Link{}, Hooks{OnPBX: func(d string) { touched = append(touched, d) }})
+	do := func(method, path, body string) (int, string) {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer admin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	if code, _ := do("PUT", "/v1/admin/devices/dev-a/pbx", `{"user":"201"}`); code != 400 {
+		t.Fatalf("no password the first time: %d", code)
+	}
+	code, body := do("PUT", "/v1/admin/devices/dev-a/pbx", `{"user":"201","password":"s3cret","device_name":"SEP201"}`)
+	if code != 200 || strings.Contains(body, "s3cret") || !strings.Contains(body, `"device_name":"SEP201"`) {
+		t.Fatalf("set: %d %s", code, body)
+	}
+	if c := s.PBX("dev-a"); c == nil || c.Password != "s3cret" {
+		t.Fatal("stored")
+	}
+	// Editing the username alone keeps the password.
+	if code, _ := do("PUT", "/v1/admin/devices/dev-a/pbx", `{"user":"cucm-201"}`); code != 200 {
+		t.Fatalf("edit: %d", code)
+	}
+	if c := s.PBX("dev-a"); c.User != "cucm-201" || c.Password != "s3cret" {
+		t.Fatalf("after edit: %+v", c)
+	}
+	// The device view carries the identity, not the secret.
+	if d := s.Devices()[0]; d.PBX == nil || d.PBX.User != "cucm-201" {
+		t.Fatalf("device view: %+v", d.PBX)
+	}
+	if code, _ := do("PUT", "/v1/admin/devices/nope/pbx", `{"user":"x","password":"yyyyyyyy"}`); code != 404 {
+		t.Fatalf("unknown device: %d", code)
+	}
+	if code, _ := do("DELETE", "/v1/admin/devices/dev-a/pbx", ""); code != 204 || s.PBX("dev-a") != nil {
+		t.Fatalf("clear: %d", code)
+	}
+	if code, _ := do("DELETE", "/v1/admin/devices/dev-a/pbx", ""); code != 404 {
+		t.Fatalf("clear again: %d", code)
+	}
+	if len(touched) != 3 {
+		t.Fatalf("OnPBX: %v", touched)
+	}
+}
+
 // Renaming a device keeps everything else about it.
 func TestUpdateKeepsTheCredential(t *testing.T) {
 	s, _ := Open("")

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"dialler/server/internal/enroll"
+	"dialler/server/internal/pbxconfig"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/wire"
 )
@@ -36,13 +37,20 @@ type Device struct {
 	Registered bool `json:"registered"`
 	// RegistrationExpires is when that registration lapses; omitted otherwise.
 	RegistrationExpires *time.Time `json:"registration_expires,omitempty"`
+	// PBXState is the extension's registration with the PBX in register
+	// mode: "" without credentials; "pending" until the registration
+	// manager exists (SPEC §6 item 3), then registered / failed.
+	PBXState string `json:"pbx_state,omitempty"`
 }
 
 // Response is the body of GET /v1/admin/status.
 type Response struct {
-	Server  Server    `json:"server"`
-	Devices []Device  `json:"devices"`
-	Now     time.Time `json:"now"`
+	Server Server `json:"server"`
+	// PBX is what the administrator saved (nil until set); Server.Trunk
+	// is what the server is running with now.
+	PBX     *pbxconfig.Settings `json:"pbx,omitempty"`
+	Devices []Device            `json:"devices"`
+	Now     time.Time           `json:"now"`
 }
 
 // Sources are the live tables the status is read from.
@@ -50,6 +58,7 @@ type Sources struct {
 	Devices  func() []enroll.Device
 	Sessions func(deviceID string) []wire.ClientKind
 	Lookup   func(user string) (registry.Endpoint, bool)
+	PBX      func() *pbxconfig.Settings
 	Now      func() time.Time
 }
 
@@ -66,10 +75,16 @@ func Handler(server Server, adminToken string, src Sources) http.Handler {
 		}
 		now := src.Now()
 		resp := Response{Server: server, Now: now, Devices: []Device{}}
+		if src.PBX != nil {
+			resp.PBX = src.PBX()
+		}
 		for _, d := range src.Devices() {
 			dev := Device{Device: d, Online: src.Sessions(d.DeviceID)}
 			if dev.Online == nil {
 				dev.Online = []wire.ClientKind{}
+			}
+			if d.PBX != nil {
+				dev.PBXState = "pending"
 			}
 			if ep, ok := src.Lookup(d.User); ok && !ep.Expires.IsZero() && ep.Expires.After(now) && ep.DeviceID == d.DeviceID {
 				dev.Registered = true

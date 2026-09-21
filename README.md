@@ -34,15 +34,24 @@ them on a normal machine to exercise real forwarding.
 make run           # self-signed TLS on :7443 (signal), :5061 (SIP) and 127.0.0.1:8080 (directory/admin)
 ```
 
-Enrol a device and fetch the directory (`-k`: the dev certificate is
-self-signed). The token doubles as the SIP Digest password on the app leg,
-with the device id as the username:
+Enrol a device, give it a contact, and fetch its directory (`-k`: the dev
+certificate is self-signed). The token doubles as the SIP Digest password on
+the app leg, with the device id as the username. Directories are **per
+device** (SPEC §6 item 7): the admin writes `/v1/admin/devices/<id>/directory`
+(`PUT` with `{"contacts":[…]}` replaces the whole list, as a CSV upload
+does), and the device reads and writes its own at `/v1/directory`:
 
 ```sh
 curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' \
      -d '{"device_id":"dev-a","user":"201"}' https://127.0.0.1:8080/v1/admin/devices
+curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' \
+     -d '{"display_name":"Desk","uri":"sip:100@asterisk","mode":"trunk"}' https://127.0.0.1:8080/v1/admin/devices/dev-a/directory
 curl -sk -H 'X-Device-ID: dev-a' -H "Authorization: Bearer $TOKEN" 'https://127.0.0.1:8080/v1/directory?since=0'
 ```
+
+A server that still has the old global `data/directory.json` folds it into
+every enrolled device's directory at start-up, once, and renames it
+`directory.json.migrated`.
 
 ### The SIP domain
 
@@ -76,7 +85,7 @@ internal/enroll        device credentials + admin API + device-auth middleware
 internal/registry      user ↔ device ↔ SIP contact location table (+ WaitRegistered for the wake path)
 internal/routing       local | trunk | unknown decision
 internal/b2bua         app-leg SIP element on sipgo + diago: TLS registrar, wake-then-bridge, media proxy
-internal/directory     address book with delta sync + REST
+internal/directory     one address book per device (data/directories/<id>.json) with delta sync, favourites, replace-all + REST (device and admin)
 internal/pbx           PBXAdapter seam (None only so far)
 internal/tlsutil       cert loading / self-signed dev cert
 internal/sip           hand-written SIP parser/registrar — fallback and reference, not on the call path

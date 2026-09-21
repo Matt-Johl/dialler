@@ -996,6 +996,27 @@ on by config — see §7.4.
      delete; the Directory tab gains add (name, number, mode defaulting
      by the routing rule of §4 "Standalone mode", favourite), edit and
      swipe-to-delete.
+     *Built 2026-09-21 (branch `feature/per-device-directory`, awaiting
+     approval):* as above, in two commits, server then app. Decided in
+     the building: the migration keeps a star a device had already given
+     a number (the global list never had one, so preferring the device's
+     loses nothing); an identical replace-all is a no-op — no version
+     bump, no notification — so re-uploading an unchanged CSV disturbs
+     nobody; the admin's routes are 404 for an unknown device, so a typo
+     cannot create a directory nobody reads. `harness/provision.sh`
+     seeds each dev device by POST (the in-network helper is busybox,
+     which has no PUT). Server tests cover the migration against a
+     fixture of the old file, per-device isolation of files, versions
+     and notifications, and replace-all as one delta; DiallerCore tests
+     cover the persisted book, the search and the client's writes.
+     *Same day, on the device:* saves, adds and deletes all reached the
+     server and none showed in the app. The app's cursor was the old
+     global directory's 702; the migrated per-device directory counts
+     from 1 (it was at 24), so "everything newer than 702" was always
+     empty. Persisting the book made a latent rule visible: a server
+     version behind the cursor means the server was reset, and the
+     client must clear the book and sync from zero
+     (`DirectoryClient.sync`, `testSyncResetsWhenTheServerIsBehindTheCursor`).
 
   8. **First-run enrolment, and Status hidden behind a gesture (app, plus
      the enrolment-code routes of §4.8).** *Gate:* while

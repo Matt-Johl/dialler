@@ -304,35 +304,170 @@ private struct RecentRow: View {
 
 struct DirectoryView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var query = ""
+    /// The contact being edited, or a blank one for "add".
+    @State private var editing: ContactEditor.Target?
+
+    private var shown: [DirectoryContact] { DirectorySearch.filter(model.contacts, query: query) }
+    private var favourites: [DirectoryContact] { shown.filter(\.isFavourite) }
 
     var body: some View {
         NavigationStack {
-            List(model.contacts) { c in
-                Button {
-                    model.dial(c.uri)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(c.displayName).foregroundStyle(.primary)
-                            Text(c.uri).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "phone.fill").foregroundStyle(.green)
-                    }
+            list
+                .searchable(text: $query, prompt: "Name or extension")
+                .overlay { if shown.isEmpty { empty } }
+                .navigationTitle("Directory")
+                .toolbar { toolbar }
+                .sheet(item: $editing) { (target: ContactEditor.Target) in ContactEditor(target: target) }
+                .alert("Directory", isPresented: Binding(get: { model.directoryError != nil }, set: { if !$0 { model.directoryError = nil } })) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(model.directoryError ?? "")
                 }
-                .badge(c.mode)
-                .disabled(model.activeCall != nil)
+        }
+    }
+
+    private var list: some View {
+        List {
+            if !favourites.isEmpty {
+                Section("Favourites") { rows(favourites) }
             }
-            .overlay {
-                if model.contacts.isEmpty {
-                    ContentUnavailableView("No contacts yet", systemImage: "person.2", description: Text("Connect, then refresh."))
+            Section(favourites.isEmpty ? "" : "All") { rows(shown) }
+        }
+    }
+
+    private func rows(_ contacts: [DirectoryContact]) -> some View {
+        ForEach(contacts) { c in
+            Button {
+                model.dial(c.uri)
+            } label: {
+                ContactRow(contact: c)
+            }
+            .disabled(model.activeCall != nil)
+            .swipeActions(edge: .leading) {
+                Button { Task { await model.toggleFavourite(c) } } label: {
+                    Label(c.isFavourite ? "Unstar" : "Star", systemImage: c.isFavourite ? "star.slash" : "star")
                 }
+                .tint(.yellow)
             }
-            .navigationTitle("Directory")
-            .toolbar {
-                Button { Task { await model.syncDirectory() } } label: { Image(systemName: "arrow.clockwise") }
+            .swipeActions(edge: .trailing) {
+                Button(role: .destructive) { Task { await model.deleteContact(id: c.id) } } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                Button { editing = .edit(c) } label: { Label("Edit", systemImage: "pencil") }
+                    .tint(.blue)
             }
         }
+    }
+
+    private var empty: some View {
+        ContentUnavailableView(query.isEmpty ? "No contacts yet" : "No matches", systemImage: "person.2",
+                               description: Text(query.isEmpty ? "Add one, or connect and refresh." : "Try another name or extension."))
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button { Task { await model.syncDirectory() } } label: { Image(systemName: "arrow.clockwise") }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { editing = .add } label: { Image(systemName: "plus") }
+        }
+    }
+}
+
+private struct ContactRow: View {
+    let contact: DirectoryContact
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading) {
+                HStack(spacing: 4) {
+                    if contact.isFavourite { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow) }
+                    Text(contact.displayName).foregroundStyle(.primary)
+                }
+                Text(CallController.numberPart(of: contact.uri)).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(contact.mode).font(.caption2).foregroundStyle(.secondary)
+            Image(systemName: "phone.fill").foregroundStyle(.green)
+        }
+    }
+}
+
+/// Add or edit one contact. The server is the source of truth: Save writes
+/// there and the list follows by sync; nothing changes locally on failure.
+struct ContactEditor: View {
+    enum Target: Identifiable {
+        case add
+        case edit(DirectoryContact)
+        var id: String {
+            if case .edit(let c) = self { return c.id }
+            return "add"
+        }
+    }
+
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    let target: Target
+    @State private var name = ""
+    @State private var number = ""
+    @State private var mode = "local"
+    @State private var favourite = false
+    @State private var saving = false
+
+    private var isNew: Bool { if case .add = target { return true } else { return false } }
+    private var valid: Bool { !name.trimmingCharacters(in: .whitespaces).isEmpty && !number.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Name", text: $name)
+                    TextField("Number or SIP address", text: $number)
+                        .keyboardType(.numbersAndPunctuation)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: number) { _, n in if isNew { mode = model.defaultMode(for: n) } }
+                }
+                Section {
+                    Picker("Reached", selection: $mode) {
+                        Text("On this server (local)").tag("local")
+                        Text("Through the PBX (trunk)").tag("trunk")
+                    }
+                    Toggle("Favourite", isOn: $favourite)
+                }
+            }
+            .navigationTitle(isNew ? "New Contact" : "Edit Contact")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") { Task { await save() } }.disabled(!valid || saving)
+                }
+            }
+            .onAppear {
+                if case .edit(let c) = target {
+                    name = c.displayName
+                    number = c.uri
+                    mode = c.mode
+                    favourite = c.isFavourite
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        let draft = ContactDraft(displayName: name.trimmingCharacters(in: .whitespaces),
+                                 uri: number.trimmingCharacters(in: .whitespaces), mode: mode, favourite: favourite)
+        let ok: Bool
+        switch target {
+        case .add: ok = await model.addContact(draft)
+        case .edit(let c): ok = await model.updateContact(id: c.id, draft)
+        }
+        if ok { dismiss() }
     }
 }
 

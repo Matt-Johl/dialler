@@ -32,7 +32,9 @@ type Config struct {
 	WriteTimeout     time.Duration    // per-frame write deadline; default 5s
 	Now              func() time.Time // clock; default time.Now
 	Logger           *slog.Logger     // default slog.Default()
-	DirectoryVersion func() int64     // reported in Welcome; nil → 0
+	// DirectoryVersion is the version of the connecting device's own
+	// directory, reported in Welcome; nil → 0.
+	DirectoryVersion func(deviceID string) int64
 	// SIPAccountFor returns the SIP account a device should register, or
 	// nil when it has none. nil func → never included.
 	SIPAccountFor func(deviceID string) *wire.SIPAccount
@@ -55,7 +57,7 @@ func (c Config) withDefaults() Config {
 		c.Logger = slog.Default()
 	}
 	if c.DirectoryVersion == nil {
-		c.DirectoryVersion = func() int64 { return 0 }
+		c.DirectoryVersion = func(string) int64 { return 0 }
 	}
 	return c
 }
@@ -243,15 +245,12 @@ func (g *Gateway) ForgetWake(deviceID, callID string) {
 	g.mu.Unlock()
 }
 
-// NotifyDirectory broadcasts a directory_changed to every live connection.
-func (g *Gateway) NotifyDirectory(version int64) {
+// NotifyDirectory sends a directory_changed to every live connection of
+// deviceID — and to no other device: directories are per device (SPEC §6
+// item 7), so nobody else has anything to sync.
+func (g *Gateway) NotifyDirectory(deviceID string, version int64) {
 	g.mu.Lock()
-	var all []*session
-	for _, kinds := range g.sessions {
-		for _, s := range kinds {
-			all = append(all, s)
-		}
-	}
+	all := g.snapshotLocked(deviceID)
 	g.mu.Unlock()
 	for _, s := range all {
 		_ = s.send(wire.TypeDirectoryChanged, wire.DirectoryChanged{Version: version})
@@ -450,7 +449,7 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 		SessionID:        s.id,
 		HeartbeatSeconds: int((g.cfg.Heartbeat + time.Second - 1) / time.Second),
 		ServerTime:       g.now(),
-		DirectoryVersion: g.cfg.DirectoryVersion(),
+		DirectoryVersion: g.cfg.DirectoryVersion(s.deviceID),
 	}
 	if g.cfg.SIPAccountFor != nil {
 		welcome.SIP = g.cfg.SIPAccountFor(s.deviceID)

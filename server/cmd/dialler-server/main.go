@@ -187,9 +187,23 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// Credentials issued from now on also carry their SIP Digest form for
 	// this realm (the app leg's registrar verifies against it).
 	devices.Realm = o.localDomain
-	dir, err := directory.Open(filepath.Join(o.dataDir, "directory.json"))
+	// One directory per device (SPEC §6 item 7): <data-dir>/directories/
+	// <device>.json. A pre-item-7 global directory.json is folded into
+	// every enrolled device's directory once, then renamed.
+	dir, err := directory.Open(filepath.Join(o.dataDir, "directories"))
 	if err != nil {
 		return err
+	}
+	var enrolled []string
+	for _, d := range devices.Devices() {
+		if !d.Revoked {
+			enrolled = append(enrolled, d.DeviceID)
+		}
+	}
+	if n, m, err := dir.Migrate(filepath.Join(o.dataDir, "directory.json"), enrolled); err != nil {
+		return fmt.Errorf("directory migration: %w", err)
+	} else if m > 0 {
+		log.Info("migrated the global directory into per-device directories", "contacts", n, "devices", m)
 	}
 
 	// Core.
@@ -295,8 +309,15 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 
 	// HTTP: directory + admin.
 	mux := http.NewServeMux()
-	mux.Handle("/v1/directory", directory.NewHandler(dir, devices.DeviceAuth, o.adminToken))
-	mux.Handle("/v1/directory/", directory.NewHandler(dir, devices.DeviceAuth, o.adminToken))
+	dirH := directory.NewHandler(dir, devices.DeviceAuth)
+	mux.Handle("/v1/directory", dirH)
+	mux.Handle("/v1/directory/", dirH)
+	// The operator's per-device directory routes sit under /v1/admin/ but
+	// are more specific than the enrolment handler's prefix, so they win.
+	knownDevice := func(id string) bool { _, ok := devices.UserFor(id); return ok }
+	dirAdmin := directory.NewAdminHandler(dir, o.adminToken, knownDevice)
+	mux.Handle("/v1/admin/devices/{id}/directory", dirAdmin)
+	mux.Handle("/v1/admin/devices/{id}/directory/{cid}", dirAdmin)
 	// Device diagnostics land in <data-dir>/diag/<device>/ (app + extension
 	// logs, MetricKit crash/CPU reports): readable on this machine without
 	// touching the phone. See ios/README.md "When the app dies or freezes".

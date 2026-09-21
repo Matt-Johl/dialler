@@ -55,11 +55,21 @@ post /v1/admin/devices "{\"device_id\":\"dev-hb\",\"user\":\"212\",\"token\":\"$
 # The simulator harness (sim_call.sh) and the Mac engine probe: 203 → dev-s.
 post /v1/admin/devices "{\"device_id\":\"dev-s\",\"user\":\"203\",\"token\":\"${DEV_S_TOKEN:-tok_dev_s_harness_fixed}\"}"
 
-echo "# directory"
-post /v1/directory '{"display_name":"Matt (201)","uri":"sip:201@dialler","mode":"local"}'
-post /v1/directory '{"display_name":"Harness phone A (211)","uri":"sip:211@dialler","mode":"local"}'
-post /v1/directory '{"display_name":"Harness phone B (212)","uri":"sip:212@dialler","mode":"local"}'
-post /v1/directory '{"display_name":"Desk phone (100)","uri":"sip:100@asterisk","mode":"trunk"}'
-post /v1/directory '{"display_name":"SIP phone (101)","uri":"sip:101@asterisk","mode":"trunk"}'
-post /v1/directory '{"display_name":"Echo test (server)","uri":"sip:echo@dialler","mode":"local"}'
-post /v1/directory '{"display_name":"Echo test (PBX, 600)","uri":"sip:600@asterisk","mode":"trunk"}'
+echo "# directories (one per device, SPEC §6 item 7; the same seed for each)"
+# POST per contact rather than the replace-all PUT: this also runs under
+# busybox wget (innet.sh), which has no PUT. Upsert-by-URI keeps a re-seed
+# from duplicating anything.
+for dev in dev-a dev-ha dev-hb dev-s; do
+  for c in \
+    '{"display_name":"Matt (201)","uri":"sip:201@dialler","mode":"local","favourite":true}' \
+    '{"display_name":"Harness phone A (211)","uri":"sip:211@dialler","mode":"local"}' \
+    '{"display_name":"Harness phone B (212)","uri":"sip:212@dialler","mode":"local"}' \
+    '{"display_name":"Desk phone (100)","uri":"sip:100@asterisk","mode":"trunk"}' \
+    '{"display_name":"SIP phone (101)","uri":"sip:101@asterisk","mode":"trunk","favourite":true}' \
+    '{"display_name":"Echo test (server)","uri":"sip:echo@dialler","mode":"local"}' \
+    '{"display_name":"Echo test (PBX, 600)","uri":"sip:600@asterisk","mode":"trunk"}'
+  do
+    post "/v1/admin/devices/$dev/directory" "$c" >/dev/null
+  done
+  echo "$dev: seeded"
+done

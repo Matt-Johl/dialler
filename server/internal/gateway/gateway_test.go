@@ -16,11 +16,12 @@ import (
 // in any sandbox. Serve() is a thin accept loop over HandleConn and is
 // exercised by the harness.
 
-// staticAuth accepts a fixed device/token pair.
+// staticAuth accepts a fixed device/token pair, plus "dev2"/"tok2" for the
+// tests that need a second device.
 type staticAuth struct{ device, token string }
 
 func (a staticAuth) Authenticate(_ context.Context, d, t string) (bool, error) {
-	return d == a.device && t == a.token, nil
+	return (d == a.device && t == a.token) || (d == "dev2" && t == "tok2"), nil
 }
 
 type harness struct {
@@ -172,7 +173,12 @@ func (c *client) expectSilence() {
 
 func (c *client) hello(kind wire.ClientKind) wire.Welcome {
 	c.t.Helper()
-	c.send(wire.TypeHello, wire.Hello{DeviceID: "dev1", Token: "tok1", Client: kind})
+	return c.helloAs("dev1", "tok1", kind)
+}
+
+func (c *client) helloAs(deviceID, token string, kind wire.ClientKind) wire.Welcome {
+	c.t.Helper()
+	c.send(wire.TypeHello, wire.Hello{DeviceID: deviceID, Token: token, Client: kind})
 	e := c.expect(wire.TypeWelcome)
 	var w wire.Welcome
 	if err := e.DecodeBody(&w); err != nil {
@@ -183,7 +189,7 @@ func (c *client) hello(kind wire.ClientKind) wire.Welcome {
 
 func TestHandshakeAndPing(t *testing.T) {
 	h := start(t, Config{
-		DirectoryVersion: func() int64 { return 7 },
+		DirectoryVersion: func(d string) int64 { return 7 },
 		SIPAccountFor: func(d string) *wire.SIPAccount {
 			return &wire.SIPAccount{User: "201", Domain: "dialler", Host: "10.0.0.1", Port: 5061, Transport: "tls"}
 		},
@@ -466,13 +472,17 @@ func TestDetachEmitsOffline(t *testing.T) {
 	}
 }
 
-func TestDirectoryBroadcast(t *testing.T) {
+// A directory change reaches every session of the device it belongs to
+// and no session of any other device (SPEC §6 item 7, §4.8 isolation).
+func TestDirectoryChangeReachesOnlyItsDevice(t *testing.T) {
 	h := start(t, Config{})
 	a := h.dial(t)
 	a.hello(wire.ClientApp)
 	b := h.dial(t)
 	b.hello(wire.ClientExtension)
-	h.g.NotifyDirectory(99)
+	other := h.dial(t)
+	other.helloAs("dev2", "tok2", wire.ClientApp)
+	h.g.NotifyDirectory("dev1", 99)
 	for _, c := range []*client{a, b} {
 		e := c.expect(wire.TypeDirectoryChanged)
 		var d wire.DirectoryChanged
@@ -481,6 +491,8 @@ func TestDirectoryBroadcast(t *testing.T) {
 			t.Fatalf("bad version %d", d.Version)
 		}
 	}
+	// The other device hears nothing.
+	other.expectSilence()
 }
 
 func TestOversizedFrameIsFatal(t *testing.T) {

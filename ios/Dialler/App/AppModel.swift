@@ -152,7 +152,14 @@ final class AppModel: ObservableObject {
     /// Every loaded manager instance, kept alive so their delegates stay set.
     private var pushManagers: [NEAppPushManager] = []
     private lazy var localPushDelegate = LocalPushDelegate(model: self)
+    /// The address book, persisted (SPEC §6 item 7) so the sync cursor
+    /// survives a launch and the list is on screen before the first sync.
     private var book = AddressBook()
+    private let bookStore = AddressBookStore()
+    /// The SIP domain the welcome named, for guessing a new contact's mode.
+    private var sipDomain = ""
+    /// A failed directory write, for the Directory tab's alert.
+    @Published var directoryError: String?
     /// Thread-safe caller-name lookup for incoming calls (the controller
     /// resolves names off the main actor). Kept in step with `contacts`.
     private nonisolated let nameIndex = DirectoryNameIndex()
@@ -189,6 +196,10 @@ final class AppModel: ObservableObject {
             acceptAnyCertificate = cfg.gateway.acceptAnyCertificate
         }
         fileLog?.write("---- launch \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") ----")
+        if let saved = bookStore?.load() {
+            book = saved
+            publishBook()
+        }
         // MetricKit hands the app its own crash / hang / CPU-kill reports on
         // the launch after they happened; they are queued and uploaded with
         // the logs, so a termination on the phone is readable on the Mac.
@@ -597,6 +608,7 @@ final class AppModel: ObservableObject {
             if let sip = w.sip {
                 // Foreground path (SPEC §2): stay registered while running so
                 // calls reach us directly; wakes are for the background.
+                sipDomain = sip.domain
                 controller.setAccount(user: "\(sip.user)@\(sip.domain)",
                                       sip: SIPTarget(host: sip.host, port: sip.port, transport: sip.transport))
             }
@@ -660,18 +672,90 @@ final class AppModel: ObservableObject {
 
     // MARK: Directory
 
-    func syncDirectory() async {
+    private var directoryClient: DirectoryClient {
         let cfg = currentConfig
-        let client = DirectoryClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
-                                     session: DirectoryClient.session(acceptAnyCertificate: cfg.gateway.acceptAnyCertificate))
+        return DirectoryClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
+                               session: DirectoryClient.session(acceptAnyCertificate: cfg.gateway.acceptAnyCertificate))
+    }
+
+    /// `contacts` and the name index follow the book; the book follows disk.
+    private func publishBook() {
+        contacts = book.sorted
+        nameIndex.update(contacts)
+        bookStore?.save(book)
+    }
+
+    var favourites: [DirectoryContact] { contacts.filter(\.isFavourite) }
+
+    func syncDirectory() async {
         do {
-            let delta = try await client.changes(since: book.version)
-            book.apply(delta)
-            contacts = book.sorted
-            nameIndex.update(contacts)
-            append("directory synced: v\(book.version), \(contacts.count) contacts")
+            let had = book.version
+            // A local copy: an actor-isolated property cannot be passed
+            // inout across an await.
+            var synced = book
+            let reset = try await directoryClient.sync(&synced)
+            book = synced
+            publishBook()
+            append(reset
+                ? "directory: server is behind our cursor v\(had) (reset or re-provisioned); re-synced in full to v\(book.version), \(contacts.count) contacts"
+                : "directory synced: v\(book.version), \(contacts.count) contacts")
         } catch {
             append("directory sync failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// The mode a new contact most likely has (SPEC §4 "Standalone mode"):
+    /// a bare number or one in our own domain is an app on this server;
+    /// anything elsewhere goes through the trunk. The user can change it.
+    func defaultMode(for number: String) -> String {
+        let user = CallController.userPart(of: number)
+        guard let at = user.firstIndex(of: "@") else { return "local" }
+        let host = user[user.index(after: at)...]
+        return host.caseInsensitiveCompare(sipDomain) == .orderedSame ? "local" : "trunk"
+    }
+
+    /// Writes go to the server first — it is the source of truth — and the
+    /// list follows by the sync the server's own directory_changed triggers
+    /// (and one requested here, so the change shows even if that push is
+    /// slow). A failure is shown and nothing local changes.
+    private func write(_ what: String, _ op: @escaping (DirectoryClient) async throws -> Void) async -> Bool {
+        do {
+            try await op(directoryClient)
+            await syncDirectory()
+            return true
+        } catch {
+            append("directory \(what) failed: \(error.localizedDescription)")
+            directoryError = "Could not \(what): \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func addContact(_ draft: ContactDraft) async -> Bool {
+        await write("add the contact") { _ = try await $0.create(draft) }
+    }
+
+    @discardableResult
+    func updateContact(id: String, _ draft: ContactDraft) async -> Bool {
+        await write("save the contact") { _ = try await $0.update(id: id, draft) }
+    }
+
+    @discardableResult
+    func deleteContact(id: String) async -> Bool {
+        await write("delete the contact") { try await $0.delete(id: id) }
+    }
+
+    /// The star is optimistic: it flips at once and the sync after the
+    /// write confirms it, or a failed write's sync puts it back.
+    func toggleFavourite(_ c: DirectoryContact) async {
+        let on = !c.isFavourite
+        book.setFavourite(id: c.id, on)
+        publishBook()
+        var draft = ContactDraft(c)
+        draft.favourite = on
+        if !(await updateContact(id: c.id, draft)) {
+            book.setFavourite(id: c.id, !on)
+            publishBook()
         }
     }
 

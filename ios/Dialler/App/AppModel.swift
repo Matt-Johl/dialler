@@ -56,8 +56,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var backgroundCalls = "unknown"
     /// The SSIDs of the saved Local Push configuration, as loaded from
     /// the framework's preferences (the source of truth; the app persists
-    /// nothing of its own). Settings prefills its field from this.
+    /// nothing of its own).
     @Published private(set) var localPushSSIDs: [String] = []
+    /// The SSIDs the server manages for this device (SPEC §6 item 8b), as
+    /// last received; nil until an administrator has set any. Settings
+    /// shows them read-only.
+    @Published private(set) var serverSSIDs: [String]?
 
     /// The call in progress, for the in-call screen. Nil while idle or
     /// merely ringing (ringing is CallKit's UI alone).
@@ -161,6 +165,8 @@ final class AppModel: ObservableObject {
     private var pushManager: NEAppPushManager?
     /// Every loaded manager instance, kept alive so their delegates stay set.
     private var pushManagers: [NEAppPushManager] = []
+    /// Live observation of the adopted manager's `isActive`.
+    private var pushObservation: NSKeyValueObservation?
     private lazy var localPushDelegate = LocalPushDelegate(model: self)
     /// The address book, persisted (SPEC §6 item 7) so the sync cursor
     /// survives a launch and the list is on screen before the first sync.
@@ -604,7 +610,24 @@ final class AppModel: ObservableObject {
         // (on a matching SSID). false here explains "callee offline, wake
         // undeliverable" on the server: nothing holds the wake connection.
         append("Local Push: delegate attached (enabled=\(manager.isEnabled), active=\(manager.isActive), ssids=\(manager.matchSSIDs))")
-        backgroundCalls = Self.backgroundCallState(enabled: manager.isEnabled, active: manager.isActive)
+        refreshBackgroundCalls()
+        // The provider starts (and stops) a moment after a save, not
+        // during it, so a value read at save time went stale until the
+        // next launch. Apple's sample observes `isActive` (SimplePush
+        // `PushConfigurationManager`); so do we, for the life of the
+        // loaded instance.
+        pushObservation = manager.observe(\.isActive, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.refreshBackgroundCalls() }
+        }
+    }
+
+    /// The Settings line, from the loaded manager as it stands now.
+    private func refreshBackgroundCalls() {
+        guard let m = pushManager else {
+            backgroundCalls = Self.backgroundCallState(enabled: false, active: false)
+            return
+        }
+        backgroundCalls = Self.backgroundCallState(enabled: m.isEnabled, active: m.isActive)
     }
 
     func connect() {
@@ -644,6 +667,7 @@ final class AppModel: ObservableObject {
     /// user disconnected) nothing happens.
     private func appBecameActive() {
         session?.setActive(true)
+        refreshBackgroundCalls() // the provider may have started or stopped while we were away
         // Calls the extension reported while we were away.
         if let store = recentsStore {
             recents = store.foldPending()
@@ -698,12 +722,16 @@ final class AppModel: ObservableObject {
                 controller.setAccount(user: "\(sip.user)@\(sip.domain)",
                                       sip: SIPTarget(host: sip.host, port: sip.port, transport: sip.transport))
             }
+            if let cfg = w.config { apply(deviceConfig: cfg) }
             if w.directoryVersion != book.version { await syncDirectory() }
         case .wake, .wakeCancel:
             controller.handle(ev)
         case .directoryChanged(let v):
             append("directory changed → v\(v)")
             await syncDirectory()
+        case .config(let cfg):
+            append("settings changed → v\(cfg.version)")
+            apply(deviceConfig: cfg)
         case .protocolError(let e):
             append("gateway error \(e.code.rawValue): \(e.message ?? "")")
             if e.fatal { status = "rejected: \(e.code.rawValue)" }
@@ -847,6 +875,35 @@ final class AppModel: ObservableObject {
 
     // MARK: Local Push Connectivity (device only; SPEC §2)
 
+    /// The server's settings for this device arrived (in the welcome, or
+    /// pushed on change): bring the Local Push configuration into line.
+    /// `LocalPushPolicy` decides — and leaves an identical configuration
+    /// alone, since re-saving one can restart the provider (SPEC §6 item 8b).
+    private func apply(deviceConfig cfg: DeviceConfig) {
+        serverSSIDs = cfg.ssids
+        NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.append("settings v\(cfg.version): Local Push load failed: \(error.localizedDescription)")
+                    return
+                }
+                let current = managers?.first
+                let action = LocalPushPolicy.plan(received: cfg, current: current?.matchSSIDs, enabled: current?.isEnabled ?? false)
+                switch action {
+                case .leave:
+                    self.append("settings v\(cfg.version): Local Push already matches \(cfg.ssids)")
+                case .save(let list):
+                    self.append("settings v\(cfg.version): applying SSIDs \(list) to Local Push")
+                    self.configureLocalPush(ssids: list)
+                case .remove:
+                    self.append("settings v\(cfg.version): no SSIDs; removing the Local Push configuration")
+                    self.removeLocalPush()
+                }
+            }
+        }
+    }
+
     /// Saves the provider configuration for `ssids` (already parsed, see
     /// `SSIDList`): iOS runs the extension whenever the phone is joined to
     /// any one of them.
@@ -896,7 +953,15 @@ final class AppModel: ObservableObject {
                     m.removeFromPreferences { err in
                         Task { @MainActor in
                             self.localPushStatus = err.map { "remove failed: \($0.localizedDescription)" } ?? "removed; re-enable to save afresh"
-                            if err == nil { self.localPushSSIDs = [] }
+                            if err == nil {
+                                // Nothing is saved any more: say so now, not at
+                                // the next launch (it read "running" until then).
+                                self.localPushSSIDs = []
+                                self.pushObservation = nil
+                                self.pushManager = nil
+                                self.pushManagers = []
+                                self.refreshBackgroundCalls()
+                            }
                         }
                     }
                 }

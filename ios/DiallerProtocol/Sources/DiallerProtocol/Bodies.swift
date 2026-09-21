@@ -47,24 +47,40 @@ public struct SIPAccount: Codable, Equatable, Sendable {
     }
 }
 
+/// The device's server-managed settings (SPEC §6 item 8b): the Wi-Fi SSIDs
+/// its Local Push provider runs on. In `welcome.config` and in a `config`
+/// message on change. Absent from a welcome until an administrator has set
+/// anything, in which case the phone keeps what it has.
+public struct DeviceConfig: Codable, Equatable, Sendable {
+    public var version: Int64
+    public var ssids: [String]
+
+    public init(version: Int64, ssids: [String]) {
+        self.version = version
+        self.ssids = ssids
+    }
+}
+
 public struct Welcome: Codable, Equatable, Sendable {
     public var sessionID: String
     public var heartbeatSeconds: Int
     public var serverTime: Date
     public var directoryVersion: Int64
     public var sip: SIPAccount?
+    public var config: DeviceConfig?
 
-    public init(sessionID: String, heartbeatSeconds: Int, serverTime: Date, directoryVersion: Int64, sip: SIPAccount? = nil) {
+    public init(sessionID: String, heartbeatSeconds: Int, serverTime: Date, directoryVersion: Int64, sip: SIPAccount? = nil, config: DeviceConfig? = nil) {
         self.sessionID = sessionID
         self.heartbeatSeconds = heartbeatSeconds
         self.serverTime = serverTime
         self.directoryVersion = directoryVersion
         self.sip = sip
+        self.config = config
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id", heartbeatSeconds = "heartbeat_seconds"
-        case serverTime = "server_time", directoryVersion = "directory_version", sip
+        case serverTime = "server_time", directoryVersion = "directory_version", sip, config
     }
 }
 

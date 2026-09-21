@@ -23,6 +23,8 @@ type Hooks struct {
 	// OnClaim: a device claimed its enrolment code and holds a NEW
 	// credential; whatever was connected with the old one must go.
 	OnClaim func(deviceID, user string)
+	// OnConfig: the admin changed a device's settings; push them to it.
+	OnConfig func(deviceID string, cfg DeviceConfig)
 }
 
 // Link is what a phone needs to find the server, folded into the QR URL
@@ -61,6 +63,8 @@ type codeResponse struct {
 //	GET    /v1/admin/devices                  → [Device]
 //	DELETE /v1/admin/devices/{id}             → 204 (revoke)
 //	POST   /v1/admin/devices/{id}/enrol-code  → {"code","expires_at","url"}
+//	GET    /v1/admin/devices/{id}/config      → {"version","ssids"} (404 until set)
+//	PUT    /v1/admin/devices/{id}/config      {"ssids":[…]} → {"version","ssids"}   (POST accepted too)
 //
 // Adding a device mints its enrolment code; a "token" in the request (the
 // harness's fixed fixtures) also issues that credential at once.
@@ -156,6 +160,46 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 		}
 		writeJSON(w, http.StatusOK, codeResponse{Code: code, ExpiresAt: expires, URL: link.URL(code)})
 	}))
+
+	mux.HandleFunc("GET /v1/admin/devices/{id}/config", guard(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, ok := store.UserFor(id); !ok {
+			http.NotFound(w, r)
+			return
+		}
+		cfg := store.Config(id)
+		if cfg == nil {
+			http.Error(w, "no settings set for this device", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, cfg)
+	}))
+	setConfig := guard(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			SSIDs []string `json:"ssids"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil || in.SSIDs == nil {
+			http.Error(w, "bad json: want {\"ssids\":[…]}", http.StatusBadRequest)
+			return
+		}
+		id := r.PathValue("id")
+		cfg, err := store.SetConfig(id, in.SSIDs)
+		if errors.Is(err, ErrInvalid) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if hooks.OnConfig != nil {
+			hooks.OnConfig(id, cfg)
+		}
+		writeJSON(w, http.StatusOK, cfg)
+	})
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/config", setConfig)
+	// busybox wget (the harness's in-network helper) has no PUT.
+	mux.HandleFunc("POST /v1/admin/devices/{id}/config", setConfig)
 	return mux
 }
 

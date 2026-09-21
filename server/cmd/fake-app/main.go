@@ -67,7 +67,11 @@ func main() {
 	}
 	var w wire.Welcome
 	_ = e.DecodeBody(&w)
-	log.Info("connected", "session", w.SessionID, "heartbeat_s", w.HeartbeatSeconds)
+	if w.Config != nil {
+		log.Info("connected", "session", w.SessionID, "heartbeat_s", w.HeartbeatSeconds, "config_version", w.Config.Version, "ssids", w.Config.SSIDs)
+	} else {
+		log.Info("connected", "session", w.SessionID, "heartbeat_s", w.HeartbeatSeconds, "config", "none")
+	}
 
 	// Heartbeat.
 	stop := make(chan struct{})
@@ -113,6 +117,8 @@ func main() {
 			return
 		case wire.TypeWakeCancel:
 			log.Warn("wake cancelled before we could act", "body", string(e.Body))
+		case wire.TypeConfig:
+			log.Info("config received", "body", string(e.Body)) // the harness asserts on this
 		case wire.TypeError:
 			log.Error("gateway error", "body", string(e.Body))
 			os.Exit(1)

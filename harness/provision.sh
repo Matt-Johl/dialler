@@ -55,12 +55,40 @@ echo "# devices (fixed dev tokens)"
 # its Settings). No harness phone uses it: a real phone pointed at this
 # server (the app with the native server stopped) would otherwise take the
 # harness's calls to 201 — it rang the user's phone during the trunk tests.
-post /v1/admin/devices "{\"device_id\":\"dev-a\",\"user\":\"201\",\"token\":\"$DEV_A_TOKEN\"}"
+#
+# A phone enrolled by code holds a ROTATED token, and re-issuing the fixed
+# one here on every `make dev-server` start threw that phone off the
+# server until it re-enrolled (2026-09-21). So dev-a's credential is only
+# issued when dev-a is not enrolled yet (a fresh harness volume); an
+# enrolled dev-a is left as it is and merely gets a fresh code.
+get() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -sSk -H "Authorization: Bearer $TOKEN" "$API$1"
+  else
+    wget -q -O- --no-check-certificate --header="Authorization: Bearer $TOKEN" "$API$1"
+  fi
+}
+if get /v1/admin/devices | tr '}' '\n' | grep '"device_id":"dev-a"' | grep -q '"enrolled":true'; then
+  echo "dev-a is enrolled already; keeping its credential"
+  post /v1/admin/devices '{"device_id":"dev-a","user":"201"}'
+else
+  post /v1/admin/devices "{\"device_id\":\"dev-a\",\"user\":\"201\",\"token\":\"$DEV_A_TOKEN\"}"
+fi
 # The docker phones (baresip-a / baresip-b in docker-compose.yml).
 post /v1/admin/devices "{\"device_id\":\"dev-ha\",\"user\":\"211\",\"token\":\"$DEV_HA_TOKEN\"}"
 post /v1/admin/devices "{\"device_id\":\"dev-hb\",\"user\":\"212\",\"token\":\"$DEV_HB_TOKEN\"}"
 # The simulator harness (sim_call.sh) and the Mac engine probe: 203 → dev-s.
 post /v1/admin/devices "{\"device_id\":\"dev-s\",\"user\":\"203\",\"token\":\"${DEV_S_TOKEN:-tok_dev_s_harness_fixed}\"}"
+
+# Server-managed settings (SPEC §6 item 8b): DEV_A_SSIDS="Office,Office-5G"
+# gives the real app's device its office Wi-Fi list, which the app applies
+# to Local Push on its next welcome. Unset, dev-a is left as the phone has
+# it; the harness phones need none.
+if [ -n "${DEV_A_SSIDS:-}" ]; then
+  echo "# settings"
+  list="$(printf '%s' "$DEV_A_SSIDS" | awk -F, '{for (i=1;i<=NF;i++) {gsub(/^ +| +$/,"",$i); printf "%s\"%s\"", (i>1?",":""), $i}}')"
+  post /v1/admin/devices/dev-a/config "{\"ssids\":[$list]}"
+fi
 
 echo "# directories (one per device, SPEC §6 item 7; the same seed for each)"
 # POST per contact rather than the replace-all PUT: this also runs under

@@ -56,10 +56,11 @@ requires bumping `v`.
 
 | Type | Body | Purpose |
 |---|---|---|
-| `welcome` | `session_id`, `heartbeat_seconds`, `server_time`, `directory_version`, `sip{user,domain,host,port,transport}` (optional) | Successful `hello`. Connection is now live. If `sip` is present the app SHOULD register that user agent immediately so calls reach it directly while it runs (SPEC §2 foreground path). |
+| `welcome` | `session_id`, `heartbeat_seconds`, `server_time`, `directory_version`, `sip{user,domain,host,port,transport}` (optional), `config{version,ssids[]}` (optional, see `config`) | Successful `hello`. Connection is now live. If `sip` is present the app SHOULD register that user agent immediately so calls reach it directly while it runs (SPEC §2 foreground path). |
 | `pong` | — | Answer to `ping`. |
 | `wake` | `call_id`, `from{display_name,uri}`, `to{display_name,uri}`, `sip{host,port,transport}`, `expires_at` | Incoming call. Client MUST report to CallKit immediately and then register SIP to `sip`. |
 | `wake_cancel` | `call_id`, `reason` (`"caller_hangup"` \| `"answered_elsewhere"` \| `"timeout"`) | Stop ringing. |
+| `config` | `version`, `ssids[]` | The device's server-managed settings changed (SPEC §6 item 8b); the app applies them. Sent only to the device they belong to. The same body rides in `welcome.config`, so every connection starts current; absent there until an administrator has set anything, in which case the phone keeps whatever it has. Additive, no bump. |
 | `directory_changed` | `version` | Address book changed on the server; client should sync. From SPEC §6 item 7 the directory is per device: `version` (here and in `welcome`) is the receiving device's own directory version, and a device is never told about another device's changes. Semantic note only — same body, no bump. |
 | `error` | `code`, `message`, `fatal` (bool) | Protocol or auth error. If `fatal`, the server closes after sending. |
 

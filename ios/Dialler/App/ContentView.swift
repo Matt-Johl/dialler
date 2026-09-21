@@ -498,6 +498,8 @@ struct ContactEditor: View {
 /// a five-second press on its title, popped by Back or any tab-bar tap.
 struct StatusView: View {
     @EnvironmentObject private var model: AppModel
+    /// Comma-separated, as typed; parsed by `SSIDList` on save.
+    @State private var ssids = ""
 
     var body: some View {
         List {
@@ -525,6 +527,17 @@ struct StatusView: View {
                 }
                 Button("Save & connect") { model.connect() }
             }
+            // Local Push by hand, for a server that has no settings for this
+            // device (the harness) and for clearing a stale configuration.
+            Section("Local Push (dev)") {
+                TextField("Office Wi-Fi SSIDs (comma-separated)", text: $ssids)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                Button("Enable background wakeups on these SSIDs") { model.configureLocalPush(ssids: SSIDList.parse(ssids)) }
+                    .disabled(SSIDList.parse(ssids).isEmpty)
+                Button("Remove saved configuration", role: .destructive) { model.removeLocalPush() }
+                LabeledContent("State", value: model.localPushStatus)
+            }
+            .onAppear { if ssids.isEmpty { ssids = SSIDList.format(model.localPushSSIDs) } }
             Section("Log") {
                 Button("Send diagnostics to the server") { Task { await model.sendDiagnostics(reason: "manual") } }
                 if !model.diagnosticsStatus.isEmpty {
@@ -546,9 +559,6 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     /// Owned by `ContentView`, so a tab-bar tap can pop the hidden page.
     @Binding var path: NavigationPath
-    /// Comma-separated, as typed; parsed by `SSIDList` on save. Prefilled
-    /// from the saved configuration, which loads asynchronously.
-    @State private var ssids = ""
     @State private var confirmReEnrol = false
 
     enum Route: Hashable { case status }
@@ -576,22 +586,22 @@ struct SettingsView: View {
                     Text("On: a second caller rings while you are on a call (Hold & Accept, End & Accept or Decline). Off: a second caller hears busy.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Local Push Connectivity (device only)") {
-                    TextField("Office Wi-Fi SSIDs (comma-separated)", text: $ssids)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Text("The provider runs, and calls reach the locked phone, whenever the phone is joined to any of these networks.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Button("Enable background wakeups on these SSIDs") { model.configureLocalPush(ssids: SSIDList.parse(ssids)) }
-                        .disabled(SSIDList.parse(ssids).isEmpty)
-                    Button("Remove saved configuration", role: .destructive) { model.removeLocalPush() }
-                    LabeledContent("State", value: model.localPushStatus)
+                Section("Background calls (office Wi-Fi)") {
+                    // Server-managed (SPEC §6 item 8b): the list comes from
+                    // the administrator and the app applies it; nothing to
+                    // type here.
+                    if let managed = model.serverSSIDs {
+                        LabeledContent("Networks", value: managed.isEmpty ? "none (background calls off)" : SSIDList.format(managed))
+                        Text("Set by your administrator. Calls reach this phone while it is on one of these networks, even when the app is closed.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("Networks", value: model.localPushSSIDs.isEmpty ? "not set" : SSIDList.format(model.localPushSSIDs))
+                        Text("Your administrator has not set this phone's networks yet; whatever is saved on the phone applies.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     LabeledContent("Background calls", value: model.backgroundCalls)
                     Text("\"Background calls\" is whether iOS is running the provider right now. While it says no, a call to this phone cannot arrive unless the app is open — the server has nowhere to send the wake.")
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                .onAppear { if ssids.isEmpty { ssids = SSIDList.format(model.localPushSSIDs) } }
-                .onChange(of: model.localPushSSIDs) { _, saved in
-                    if ssids.isEmpty { ssids = SSIDList.format(saved) }
                 }
                 Section("About") {
                     LabeledContent("Version", value: Self.version)

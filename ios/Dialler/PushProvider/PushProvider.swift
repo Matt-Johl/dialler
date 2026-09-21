@@ -142,6 +142,10 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
             recents?.notePending(cancel: c)
         case .directoryChanged:
             break // the app syncs; the extension does not hold the address book
+        case .config(let c):
+            // Only the app can save the Local Push configuration; it gets
+            // the same settings in its next welcome (SPEC §6 item 8b).
+            note("config v\(c.version) received (ssids \(c.ssids)); the app applies it")
         case .protocolError(let e):
             note("gateway error \(e.code.rawValue) fatal=\(e.fatal)")
             // A fatal error is followed by the drop (`.disconnected`) and

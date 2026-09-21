@@ -12,7 +12,7 @@ final class GoldenTests: XCTestCase {
     }()
 
     static let knownTypes: Set<String> = [
-        "hello", "welcome", "ping", "pong", "wake", "wake_ack", "wake_cancel", "directory_changed", "error",
+        "hello", "welcome", "ping", "pong", "wake", "wake_ack", "wake_cancel", "directory_changed", "config", "error",
     ]
 
     func testEveryFixtureRoundTrips() throws {

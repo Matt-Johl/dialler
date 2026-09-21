@@ -13,6 +13,9 @@ public enum SignalEvent: Equatable, Sendable {
     case wake(Wake)
     case wakeCancel(WakeCancel)
     case directoryChanged(Int64)
+    /// The device's server-managed settings changed (SPEC §6 item 8b); the
+    /// same body also arrives in `.connected`'s welcome.
+    case config(DeviceConfig)
     case protocolError(ProtocolError)
     case disconnected(reason: String)
 }

@@ -286,6 +286,14 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			}
 			return &wire.SIPAccount{User: ep.User, Domain: o.localDomain, Host: o.publicHost, Port: publicSIPPort, Transport: "tls"}
 		},
+		// Server-managed settings (SPEC §6 item 8b), absent until set.
+		DeviceConfigFor: func(deviceID string) *wire.DeviceConfig {
+			c := devices.Config(deviceID)
+			if c == nil {
+				return nil
+			}
+			return &wire.DeviceConfig{Version: c.Version, SSIDs: c.SSIDs}
+		},
 	}, devices)
 	dir.OnChange(gw.NotifyDirectory)
 	gw.OnPresence(func(ev gateway.PresenceEvent) {
@@ -369,6 +377,12 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			log.Info("enrolment code claimed", "device", deviceID, "user", user)
 			reg.Provision(user, deviceID)
 			gw.Disconnect(deviceID)
+		},
+		// Settings changed: that device's live sessions get them now; a
+		// device not connected gets them in its next welcome.
+		OnConfig: func(deviceID string, cfg enroll.DeviceConfig) {
+			log.Info("device settings changed", "device", deviceID, "version", cfg.Version, "ssids", cfg.SSIDs)
+			gw.NotifyConfig(deviceID, wire.DeviceConfig{Version: cfg.Version, SSIDs: cfg.SSIDs})
 		},
 	}
 	mux.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,

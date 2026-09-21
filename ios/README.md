@@ -301,11 +301,16 @@ resolve; today it is `dialler`, which only matters once the engine exists.
 
 ## Local Push Connectivity (device only)
 
-Settings → "Enable background wakeups on these SSIDs" (comma-separated;
-the provider runs on any of them) configures
-`NEAppPushManager` for the extension. Requires the
-`app-push-provider` Network Extension entitlement on the provisioning profile
-(SPEC §9 risk 1). Not available in the simulator.
+The office SSIDs the provider runs on are **set by the administrator per
+device** (SPEC §6 item 8b): they arrive in the welcome (and as a `config`
+push on change) and the app configures `NEAppPushManager` itself
+(`LocalPushPolicy` decides; an identical list is never re-saved, because
+that can restart the provider). Settings shows the list read-only. A server
+that has no settings for the device leaves the phone's own configuration
+alone; for that case, and for clearing a stale one, the Status page has
+"Local Push (dev)" with the old typed field. Requires the `app-push-provider`
+Network Extension entitlement on the provisioning profile (SPEC §9 risk 1).
+Not available in the simulator.
 
 ## Building from a restricted sandbox
 

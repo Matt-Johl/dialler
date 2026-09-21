@@ -375,7 +375,7 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 		t.Fatalf("device page: %d", page.Code)
 	}
 	body = page.Body.String()
-	for _, want := range []string{"sip:100@asterisk", "Matt</td>", "★", "Download CSV", "Danger zone", "Nothing set yet: the phone keeps", "/contacts/ct_1/edit"} {
+	for _, want := range []string{"sip:100@asterisk", "Matt</td>", "★", "Download CSV", "Danger zone", "Nothing set yet: the phone keeps", "/contacts/ct_1/edit", `data-confirm="Revoke`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("device page lacks %q", want)
 		}
@@ -433,24 +433,96 @@ func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 	}
 }
 
-func TestEditDevice(t *testing.T) {
+// The device page is one form: only what changed reaches the server.
+func TestDevicePageSavesInPlace(t *testing.T) {
 	_, api, b := setup(t)
 	signIn(t, b)
-	if page := b.get("/devices/dev-a/edit").Body.String(); !strings.Contains(page, `value="Matt&#39;s iPhone"`) || !strings.Contains(page, `value="201"`) {
-		t.Fatal("edit page must show the current name and extension")
+	page := b.get("/devices/dev-a").Body.String()
+	for _, want := range []string{`value="Matt&#39;s iPhone"`, `value="201"`, `name="ssids"`, `name="pbx_user"`, "data-dirty-form", "data-directory", "<dialog"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("device page lacks %q", want)
+		}
 	}
-	rec := b.post("/devices/dev-a/edit", url.Values{"label": {"Reception iPhone"}, "user": {"251"}})
-	if rec.Code != 303 || rec.Header().Get("Location") != "/devices/dev-a" {
-		t.Fatalf("update: %d → %s", rec.Code, rec.Header().Get("Location"))
+	// Nothing changed: nothing called.
+	rec := b.post("/devices/dev-a", url.Values{"label": {"Matt's iPhone"}, "user": {"201"}, "ssids": {""}, "pbx_user": {""}})
+	if rec.Code != 303 || len(api.configs) != 0 || len(api.pbxCreds) != 0 || api.devices[0].User != "201" {
+		t.Fatalf("no-op save touched something: %d %+v %+v", rec.Code, api.configs, api.pbxCreds)
+	}
+	if page := b.get("/devices/dev-a").Body.String(); !strings.Contains(page, "Nothing had changed.") {
+		t.Fatal("no-op notice")
+	}
+	// Everything at once.
+	rec = b.post("/devices/dev-a", url.Values{"label": {"Reception iPhone"}, "user": {"251"}, "ssids": {"Office\nOffice-5G"},
+		"pbx_user": {"251"}, "pbx_password": {"s3cret"}, "pbx_device_name": {"SEP251"}})
+	if rec.Code != 303 {
+		t.Fatalf("save: %d", rec.Code)
 	}
 	if api.devices[0].Label != "Reception iPhone" || api.devices[0].User != "251" {
-		t.Fatalf("not updated: %+v", api.devices[0].Device)
+		t.Fatalf("device not updated: %+v", api.devices[0].Device)
 	}
-	if page := b.get("/devices/dev-a").Body.String(); !strings.Contains(page, "Reception iPhone") || !strings.Contains(page, "Extension 251") {
-		t.Fatal("device page does not show the new name")
+	if c := api.configs["dev-a"]; strings.Join(c.SSIDs, ",") != "Office,Office-5G" {
+		t.Fatalf("networks: %+v", c)
 	}
-	if rec := b.post("/devices/dev-a/edit", url.Values{"label": {"x"}, "user": {""}}); rec.Code != 303 || api.devices[0].User != "251" {
+	if c := api.pbxCreds["dev-a"]; c.User != "251" || c.Password != "s3cret" || c.DeviceName != "SEP251" {
+		t.Fatalf("pbx: %+v", c)
+	}
+	page = b.get("/devices/dev-a").Body.String()
+	if !strings.Contains(page, "Saved: name and extension, networks, PBX registration.") || !strings.Contains(page, "registration pending") || strings.Contains(page, "s3cret") {
+		t.Fatal("after save")
+	}
+	// A blank password keeps the stored one; a blanked username removes the registration.
+	b.post("/devices/dev-a", url.Values{"label": {"Reception iPhone"}, "user": {"251"}, "ssids": {"Office\nOffice-5G"}, "pbx_user": {"cucm-251"}, "pbx_password": {""}, "pbx_device_name": {"SEP251"}})
+	if c := api.pbxCreds["dev-a"]; c.User != "cucm-251" || c.Password != "s3cret" {
+		t.Fatalf("username edit: %+v", c)
+	}
+	b.post("/devices/dev-a", url.Values{"label": {"Reception iPhone"}, "user": {"251"}, "ssids": {"Office\nOffice-5G"}, "pbx_user": {""}})
+	if len(api.pbxCreds) != 0 {
+		t.Fatal("blank username must remove the registration")
+	}
+	// First-time credentials need a password; an empty extension is refused.
+	b.post("/devices/dev-a", url.Values{"label": {"Reception iPhone"}, "user": {"251"}, "ssids": {"Office\nOffice-5G"}, "pbx_user": {"x"}, "pbx_password": {""}})
+	if len(api.pbxCreds) != 0 || !strings.Contains(b.get("/devices/dev-a").Body.String(), "password is needed") {
+		t.Fatal("first-time credentials without a password")
+	}
+	if rec := b.post("/devices/dev-a", url.Values{"label": {"x"}, "user": {""}}); rec.Code != 303 || api.devices[0].User != "251" {
 		t.Fatal("an empty extension must be refused before reaching the server")
+	}
+}
+
+// The script saves contacts with fetch and expects JSON back.
+func TestContactsAnswerJSONToFetch(t *testing.T) {
+	_, api, b := setup(t)
+	signIn(t, b)
+	form := url.Values{"_csrf": {b.csrf}, "display_name": {"Echo"}, "uri": {"echo"}, "mode": {"local"}, "favourite": {"on"}}
+	req := httptest.NewRequest("POST", "/devices/dev-a/contacts", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Requested-With", "fetch")
+	req.AddCookie(b.cookie)
+	rec := httptest.NewRecorder()
+	b.app.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"uri":"sip:echo@dialler"`) || !strings.Contains(rec.Header().Get("Content-Type"), "json") {
+		t.Fatalf("json add: %d %s", rec.Code, rec.Body.String())
+	}
+	// Validation as JSON too.
+	form.Set("display_name", "")
+	req = httptest.NewRequest("POST", "/devices/dev-a/contacts", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Requested-With", "fetch")
+	req.AddCookie(b.cookie)
+	rec = httptest.NewRecorder()
+	b.app.ServeHTTP(rec, req)
+	if rec.Code != 400 || !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("json validation: %d %s", rec.Code, rec.Body.String())
+	}
+	// Delete with fetch.
+	req = httptest.NewRequest("POST", "/devices/dev-a/contacts/ct_1/delete", strings.NewReader(url.Values{"_csrf": {b.csrf}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Requested-With", "fetch")
+	req.AddCookie(b.cookie)
+	rec = httptest.NewRecorder()
+	b.app.ServeHTTP(rec, req)
+	if rec.Code != 200 || len(api.dirs["dev-a"]) != 2 {
+		t.Fatalf("json delete: %d %s (%d left)", rec.Code, rec.Body.String(), len(api.dirs["dev-a"]))
 	}
 }
 
@@ -597,39 +669,5 @@ func TestServerPageAndPBXSettings(t *testing.T) {
 	}
 	if !strings.Contains(page, "differ") {
 		t.Fatal("running trunk differs from the saved one: the page must say so")
-	}
-}
-
-func TestDevicePBXCredentials(t *testing.T) {
-	_, api, b := setup(t)
-	signIn(t, b)
-	if page := b.get("/devices/dev-a/edit").Body.String(); !strings.Contains(page, "PBX registration") || strings.Contains(page, "Remove PBX registration") {
-		t.Fatal("edit page must offer PBX credentials, with nothing to remove yet")
-	}
-	if rec := b.post("/devices/dev-a/pbx", url.Values{"pbx_user": {""}, "pbx_password": {"x"}}); rec.Code != 303 || len(api.pbxCreds) != 0 {
-		t.Fatal("an empty username must be refused before reaching the server")
-	}
-	rec := b.post("/devices/dev-a/pbx", url.Values{"pbx_user": {"201"}, "pbx_password": {"s3cret"}, "pbx_device_name": {"SEP201"}})
-	if rec.Code != 303 || api.pbxCreds["dev-a"].Password != "s3cret" || api.pbxCreds["dev-a"].DeviceName != "SEP201" {
-		t.Fatalf("save: %d %+v", rec.Code, api.pbxCreds)
-	}
-	page := b.get("/devices/dev-a").Body.String()
-	if !strings.Contains(page, "PBX as <span class=\"mono\">201</span>") || !strings.Contains(page, "registration pending") {
-		t.Fatal("device page must show the PBX identity and the pending state")
-	}
-	if strings.Contains(page, "s3cret") {
-		t.Fatal("the password must never appear in a page")
-	}
-	// Editing without retyping the password keeps it; the edit page never echoes it.
-	edit := b.get("/devices/dev-a/edit").Body.String()
-	if strings.Contains(edit, "s3cret") || !strings.Contains(edit, `value="201"`) || !strings.Contains(edit, "leave blank to keep") || !strings.Contains(edit, "Remove PBX registration") {
-		t.Fatal("edit page after save")
-	}
-	b.post("/devices/dev-a/pbx", url.Values{"pbx_user": {"cucm-201"}, "pbx_password": {""}})
-	if c := api.pbxCreds["dev-a"]; c.User != "cucm-201" || c.Password != "s3cret" {
-		t.Fatalf("username edit: %+v", c)
-	}
-	if rec := b.post("/devices/dev-a/pbx/clear", url.Values{}); rec.Code != 303 || len(api.pbxCreds) != 0 {
-		t.Fatal("clear")
 	}
 }

@@ -1208,8 +1208,7 @@ on by config — see §7.4.
      Wi-Fi, the directory as an editable table, CSV down and up with a
      preview of added / changed / removed before anything is written,
      copy to other devices), the enrolment code page (shown once, the QR
-     inline as SVG), and server. One stylesheet, no scripting, light and
-     dark. `make dev-admin` beside the native server; `make
+     inline as SVG), and server. One stylesheet, light and dark. `make dev-admin` beside the native server; `make
      harness-admin-up` beside the docker one (`harness/admin/password`,
      "harness-admin"). Decided in the building: the code is carried to
      its page through the session, so a reload cannot show it twice; the
@@ -1231,6 +1230,20 @@ on by config — see §7.4.
      handler test for it caught a real client defect on the way — the
      query was being escaped into the path, which would have revoked
      instead.
+     *Second review, the same evening:* a device's settings must be
+     editable on the device's own page, not behind an Edit page, and the
+     interface should move. Rebuilt again: the device page is one form —
+     name, extension, networks, PBX credentials — with a save bar that
+     wakes when something changes and a Save that applies only the
+     groups that did; the directory is edited in place (click a row, it
+     becomes an editor; Save writes through `fetch` and the row settles
+     back; Add opens a new row); revoke and delete confirm in a dialog.
+     A small script (`static/app.js`) does this on top of the plain
+     forms, which all still work without it — the contact routes answer
+     JSON to a `fetch` and redirect to a form. Pages fade up, cards lift,
+     flashes slide in and leave, rows animate in and out of edit, all
+     under `prefers-reduced-motion`. The CSP allows the site's own
+     script and nothing else.
 
 ### Much later (not scheduled)
 

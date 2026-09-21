@@ -4,69 +4,100 @@
   <div>
     <h1>{{.Title}}</h1>
     <p class="sub">
-      Extension {{.Device.User}}
-      <span class="sep">·</span> <span class="pill {{.Device.StateKey}}">{{.Device.State}}</span>
-      <span class="sep">·</span> {{if eq .Device.Presence "offline"}}Offline{{else}}<span class="dot on"></span>{{.Device.Presence}}{{end}}
-      <span class="sep">·</span> {{if .Device.Registered}}Registered{{else}}Not registered{{end}}
+      <span class="pill {{.Device.StateKey}}">{{.Device.State}}</span>
+      <span class="sep">·</span> {{if eq .Device.Presence "offline"}}<span class="dot"></span>Offline{{else}}<span class="dot on"></span>{{.Device.Presence}}{{end}}
+      <span class="sep">·</span> {{if .Device.Registered}}<span class="dot on"></span>Registered{{else}}<span class="dot"></span>Not registered{{end}}
       {{if .Device.PBX}}<span class="sep">·</span> PBX as <span class="mono">{{.Device.PBX.User}}</span> <span class="dim">({{if eq .Device.PBXState "pending"}}registration pending{{else}}{{.Device.PBXState}}{{end}})</span>{{end}}
     </p>
   </div>
-  <div class="page-actions">
-    <a class="button ghost" href="/devices/{{.Device.DeviceID}}/edit">Edit</a>
-    <form method="post" action="/devices/{{.Device.DeviceID}}/code">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <button type="submit" class="primary">New enrolment code</button>
-    </form>
-  </div>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/code">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="primary">New enrolment code</button>
+  </form>
 </header>
 
-<section class="card">
-  <div class="card-head">
-    <div>
-      <h2>Background calls</h2>
-      <p class="help">The office Wi-Fi networks on which this phone takes calls with the app closed. Saving sends the list to the phone.</p>
+<form method="post" action="/devices/{{.Device.DeviceID}}" class="settings" data-dirty-form>
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+
+  <section class="card">
+    <div class="card-head"><div><h2>Device</h2><p class="help">The phone's credential is untouched by anything on this page.</p></div></div>
+    <div class="grid-2">
+      <div class="field">
+        <label for="label">Name <span class="optional">optional</span></label>
+        <input id="label" name="label" value="{{.Device.Label}}" placeholder="Matt's iPhone" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="user">Extension</label>
+        <input id="user" name="user" value="{{.Device.User}}" inputmode="numeric" autocomplete="off" required>
+        <p class="help">Takes effect at the phone's next connection. Id <span class="mono">{{.Device.DeviceID}}</span></p>
+      </div>
     </div>
-  </div>
-  <form method="post" action="/devices/{{.Device.DeviceID}}/config" class="stack">
-    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  </section>
+
+  <section class="card">
+    <div class="card-head"><div><h2>Background calls</h2><p class="help">Office Wi-Fi networks on which the phone takes calls with the app closed. Sent to the phone on save.</p></div></div>
     <div class="field">
       <label for="ssids">Networks <span class="optional">one per line</span></label>
       <textarea id="ssids" name="ssids" rows="3" placeholder="Office&#10;Office-5G">{{.SSIDs}}</textarea>
       <p class="help">{{if .Config}}Version {{.Config.Version}} is on the phone.{{else}}Nothing set yet: the phone keeps whatever it has. An empty list turns background calls off.{{end}}</p>
     </div>
-    <div class="form-actions">
-      <button type="submit">Save networks</button>
-    </div>
-  </form>
-</section>
+  </section>
 
-<section class="card">
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2>PBX registration</h2>
+        <p class="help">{{if .RegisterMode}}The PBX is in registered-devices mode: this extension registers with these credentials as a third-party SIP device.{{else}}The PBX is a trunk peer; these are used once it is switched to registered-devices mode on the Server page.{{end}} Registration itself is not yet performed by the call server.</p>
+      </div>
+    </div>
+    <div class="grid-3">
+      <div class="field">
+        <label for="pbx_user">Digest username</label>
+        <input id="pbx_user" name="pbx_user" value="{{if .Device.PBX}}{{.Device.PBX.User}}{{end}}" autocomplete="off" placeholder="{{.Device.User}}">
+      </div>
+      <div class="field">
+        <label for="pbx_password">Digest password{{if .Device.PBX}} <span class="optional">blank keeps the current one</span>{{end}}</label>
+        <input id="pbx_password" type="password" name="pbx_password" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label for="pbx_device_name">Device name <span class="optional">optional</span></label>
+        <input id="pbx_device_name" name="pbx_device_name" value="{{if .Device.PBX}}{{.Device.PBX.DeviceName}}{{end}}" class="mono" placeholder="SEP…">
+      </div>
+    </div>
+    <p class="help">Clear the username to remove the registration.</p>
+  </section>
+
+  <div class="savebar" data-savebar>
+    <span class="savebar-note" data-savebar-note>No unsaved changes</span>
+    <button type="submit" class="primary" data-savebar-button>Save</button>
+  </div>
+</form>
+
+<section class="card directory" data-directory data-device="{{.Device.DeviceID}}" data-csrf="{{.CSRF}}">
   <div class="card-head">
     <div>
-      <h2>Directory <span class="count">{{len .Contacts}}</span></h2>
-      <p class="help">What the phone shows under Directory.{{if .Favourites}} {{.Favourites}} starred.{{end}}</p>
+      <h2>Directory <span class="count" data-count>{{len .Contacts}}</span></h2>
+      <p class="help">What the phone shows under Directory. Click a row to edit it.</p>
     </div>
     <div class="card-actions">
-      <a class="button primary" href="/devices/{{.Device.DeviceID}}/contacts/new">Add contact</a>
+      <a class="button primary" href="/devices/{{.Device.DeviceID}}/contacts/new" data-add-contact>Add contact</a>
     </div>
   </div>
-  {{if .Contacts}}
-  <table class="list">
-    <thead><tr><th>Name</th><th>Number</th><th>Reached via</th><th class="right"></th></tr></thead>
-    <tbody>
+  <table class="list contacts">
+    <thead><tr><th>Name</th><th>Number</th><th>Reached via</th><th class="centre">★</th><th class="right"></th></tr></thead>
+    <tbody data-rows>
     {{range .Contacts}}
-      <tr>
-        <td>{{if .Favourite}}<span class="star" title="Favourite">★</span> {{end}}{{.DisplayName}}</td>
-        <td class="mono">{{.URI}}</td>
-        <td class="dim">{{if eq .Mode "trunk"}}PBX{{else}}This server{{end}}</td>
-        <td class="right"><a class="chevron" href="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}/edit" aria-label="Edit">Edit</a></td>
+      <tr data-contact data-id="{{.ID}}" data-name="{{.DisplayName}}" data-uri="{{.URI}}" data-mode="{{.Mode}}" data-favourite="{{if .Favourite}}1{{end}}">
+        <td data-cell="name">{{.DisplayName}}</td>
+        <td data-cell="uri" class="mono">{{.URI}}</td>
+        <td data-cell="mode" class="dim">{{if eq .Mode "trunk"}}PBX{{else}}This server{{end}}</td>
+        <td data-cell="fav" class="centre">{{if .Favourite}}<span class="star">★</span>{{end}}</td>
+        <td class="right"><a class="chevron" href="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}/edit" data-edit>Edit</a></td>
       </tr>
     {{end}}
     </tbody>
   </table>
-  {{else}}
-  <p class="empty-inline">No contacts yet.</p>
-  {{end}}
+  <p class="empty-inline" data-empty {{if .Contacts}}hidden{{end}}>No contacts yet.</p>
   <div class="card-foot">
     <a class="button ghost" href="/devices/{{.Device.DeviceID}}/directory.csv">Download CSV</a>
     <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" class="upload">
@@ -82,18 +113,24 @@
 <section class="card danger-zone">
   <div class="card-head"><div><h2>Danger zone</h2></div></div>
   <div class="danger-row">
-    <div>
-      <strong>Revoke this device</strong>
-      <p class="help">Disconnects the phone and stops it registering. Its directory is kept; a new code brings it back.</p>
-    </div>
-    <a class="button danger" href="/devices/{{.Device.DeviceID}}/revoke"{{if .Device.Revoked}} aria-disabled="true"{{end}}>Revoke</a>
+    <div><strong>Revoke this device</strong><p class="help">Disconnects the phone and stops it registering. Its directory is kept; a new code brings it back.</p></div>
+    <a class="button danger" href="/devices/{{.Device.DeviceID}}/revoke" data-confirm="Revoke {{.Title}}?" data-confirm-message="The phone is disconnected at once and can no longer register or make calls. Its directory is kept, and a new enrolment code brings it back." data-confirm-button="Revoke"{{if .Device.Revoked}} aria-disabled="true"{{end}}>Revoke</a>
   </div>
   <div class="danger-row">
-    <div>
-      <strong>Delete this device</strong>
-      <p class="help">Removes the device, its directory and its settings for good. Extension {{.Device.User}} becomes free.</p>
-    </div>
-    <a class="button danger" href="/devices/{{.Device.DeviceID}}/delete">Delete</a>
+    <div><strong>Delete this device</strong><p class="help">Removes the device, its directory and its settings for good. Extension {{.Device.User}} becomes free.</p></div>
+    <a class="button danger" href="/devices/{{.Device.DeviceID}}/delete" data-confirm="Delete {{.Title}}?" data-confirm-message="The device, its directory and its settings are removed for good, and the phone is disconnected. There is no undo." data-confirm-button="Delete device">Delete</a>
   </div>
 </section>
+
+<dialog class="modal" data-modal>
+  <form method="post" class="modal-form">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <h2 data-modal-title></h2>
+    <p class="sub" data-modal-message></p>
+    <div class="form-actions">
+      <button type="submit" class="danger solid" data-modal-button>Confirm</button>
+      <button type="button" class="ghost" data-modal-cancel>Cancel</button>
+    </div>
+  </form>
+</dialog>
 {{end}}

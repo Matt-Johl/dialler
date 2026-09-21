@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -96,8 +97,7 @@ func (a *App) routes() {
 	m.HandleFunc("GET /devices/new", a.signedIn(a.newDevicePage))
 	m.HandleFunc("POST /devices", a.signedIn(a.createDevice))
 	m.HandleFunc("GET /devices/{id}", a.signedIn(a.device))
-	m.HandleFunc("GET /devices/{id}/edit", a.signedIn(a.editDevicePage))
-	m.HandleFunc("POST /devices/{id}/edit", a.signedIn(a.updateDevice))
+	m.HandleFunc("POST /devices/{id}", a.signedIn(a.saveDevice))
 	m.HandleFunc("GET /devices/{id}/delete", a.signedIn(a.deletePage))
 	m.HandleFunc("POST /devices/{id}/delete", a.signedIn(a.purge))
 	m.HandleFunc("GET /devices/{id}/contacts/new", a.signedIn(a.contactPage))
@@ -117,7 +117,6 @@ func (a *App) routes() {
 	m.HandleFunc("POST /devices/{id}/directory/copy", a.signedIn(a.copyDirectory))
 	m.HandleFunc("GET /server", a.signedIn(a.server))
 	m.HandleFunc("POST /server/pbx", a.signedIn(a.savePBX))
-	m.HandleFunc("POST /devices/{id}/pbx", a.signedIn(a.saveDevicePBX))
 	m.HandleFunc("POST /devices/{id}/pbx/clear", a.signedIn(a.clearDevicePBX))
 }
 
@@ -186,7 +185,7 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, sess *session, page
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "same-origin")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'")
 	_, _ = buf.WriteTo(w)
 }
 
@@ -428,6 +427,8 @@ type deviceView struct {
 	SSIDs      string
 	Favourites int
 	CSVColumn  string
+	// RegisterMode is whether the saved PBX settings use register mode.
+	RegisterMode bool
 }
 
 func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -462,46 +463,97 @@ func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
 			v.Favourites++
 		}
 	}
+	v.RegisterMode = st.PBX != nil && st.PBX.Mode == pbxconfig.ModeRegister
 	a.render(w, r, sess, "device.html", v)
 }
 
-// MARK: edit
-
-type editDeviceView struct {
-	base
-	Device deviceRow
-	// RegisterMode is whether the saved PBX settings use register mode,
-	// in which case the credentials section is the one that matters.
-	RegisterMode bool
-}
-
-func (a *App) editDevicePage(w http.ResponseWriter, r *http.Request, sess *session) {
+// saveDevice applies the device page's one form: name and extension,
+// networks, and PBX credentials — each only when it changed, so an
+// untouched group costs nothing and touches nothing.
+func (a *App) saveDevice(w http.ResponseWriter, r *http.Request, sess *session) {
 	id := r.PathValue("id")
-	row, st, err := a.find(r.Context(), id)
+	back := "/devices/" + url.PathEscape(id)
+	row, _, err := a.find(r.Context(), id)
 	if err != nil {
 		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
 		return
 	}
-	v := editDeviceView{base: a.base(sess, "Edit "+deviceName(row), r.URL.Path), Device: row}
-	v.RegisterMode = st.PBX != nil && st.PBX.Mode == pbxconfig.ModeRegister
-	a.render(w, r, sess, "device-edit.html", v)
-}
-
-func (a *App) updateDevice(w http.ResponseWriter, r *http.Request, sess *session) {
-	id := r.PathValue("id")
 	user := strings.TrimSpace(r.FormValue("user"))
 	label := strings.TrimSpace(r.FormValue("label"))
 	if user == "" {
 		a.sessions.setFlash(sess, "error", "A device needs an extension: the number it answers as.")
-		http.Redirect(w, r, "/devices/"+url.PathEscape(id)+"/edit", http.StatusSeeOther)
+		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
-	if _, err := a.cfg.Client.UpdateDevice(r.Context(), id, user, label); err != nil {
-		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id)+"/edit", err)
-		return
+	var saved []string
+	if user != row.User || label != row.Label {
+		if _, err := a.cfg.Client.UpdateDevice(r.Context(), id, user, label); err != nil {
+			a.apiFailed(w, r, sess, back, err)
+			return
+		}
+		saved = append(saved, "name and extension")
 	}
-	a.sessions.setFlash(sess, "notice", "Saved.")
-	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
+	// Networks: compare with what is saved; a field the form did not
+	// carry at all is left alone.
+	if _, has := r.Form["ssids"]; has {
+		ssids := splitSSIDs(r.FormValue("ssids"))
+		current, _ := a.cfg.Client.Config(r.Context(), id)
+		changed := (current == nil && len(ssids) > 0) || (current != nil && strings.Join(current.SSIDs, "\n") != strings.Join(ssids, "\n"))
+		if changed {
+			if _, err := a.cfg.Client.SetConfig(r.Context(), id, ssids); err != nil {
+				a.apiFailed(w, r, sess, back, err)
+				return
+			}
+			saved = append(saved, "networks")
+		}
+	}
+	// PBX credentials: a username sets or updates them (a blank password
+	// keeps the stored one); a blanked username with credentials on file
+	// removes them.
+	if _, has := r.Form["pbx_user"]; has {
+		pbxUser := strings.TrimSpace(r.FormValue("pbx_user"))
+		switch {
+		case pbxUser != "":
+			creds := enroll.PBXCredentials{User: pbxUser, Password: r.FormValue("pbx_password"), DeviceName: strings.TrimSpace(r.FormValue("pbx_device_name"))}
+			if row.PBX == nil && creds.Password == "" {
+				a.sessions.setFlash(sess, "error", "A PBX password is needed the first time.")
+				http.Redirect(w, r, back, http.StatusSeeOther)
+				return
+			}
+			if row.PBX == nil || row.PBX.User != creds.User || row.PBX.DeviceName != creds.DeviceName || creds.Password != "" {
+				if err := a.cfg.Client.SetDevicePBX(r.Context(), id, creds); err != nil {
+					a.apiFailed(w, r, sess, back, err)
+					return
+				}
+				saved = append(saved, "PBX registration")
+			}
+		case row.PBX != nil:
+			if err := a.cfg.Client.ClearDevicePBX(r.Context(), id); err != nil && !IsNotFound(err) {
+				a.apiFailed(w, r, sess, back, err)
+				return
+			}
+			saved = append(saved, "PBX registration removed")
+		}
+	}
+	if len(saved) == 0 {
+		a.sessions.setFlash(sess, "notice", "Nothing had changed.")
+	} else {
+		a.sessions.setFlash(sess, "notice", "Saved: "+strings.Join(saved, ", ")+".")
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+func splitSSIDs(raw string) []string {
+	var out []string
+	for _, line := range strings.FieldsFunc(raw, func(c rune) bool { return c == '\n' || c == ',' }) {
+		if s := strings.TrimSpace(line); s != "" {
+			out = append(out, s)
+		}
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
 }
 
 // MARK: delete
@@ -619,15 +671,7 @@ func (a *App) revoke(w http.ResponseWriter, r *http.Request, sess *session) {
 
 func (a *App) setConfig(w http.ResponseWriter, r *http.Request, sess *session) {
 	id := r.PathValue("id")
-	var ssids []string
-	for _, line := range strings.FieldsFunc(r.FormValue("ssids"), func(c rune) bool { return c == '\n' || c == ',' }) {
-		if s := strings.TrimSpace(line); s != "" {
-			ssids = append(ssids, s)
-		}
-	}
-	if ssids == nil {
-		ssids = []string{}
-	}
+	ssids := splitSSIDs(r.FormValue("ssids"))
 	if _, err := a.cfg.Client.SetConfig(r.Context(), id, ssids); err != nil {
 		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
 		return
@@ -722,22 +766,54 @@ func (a *App) saveContact(w http.ResponseWriter, r *http.Request, sess *session)
 		Favourite:   r.FormValue("favourite") != "",
 	}
 	if c.DisplayName == "" || c.URI == "" {
+		if wantsJSON(r) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A contact needs a name and a number."})
+			return
+		}
 		a.sessions.setFlash(sess, "error", "A contact needs a name and a number.")
-		http.Redirect(w, r, r.URL.Path+"/new", http.StatusSeeOther)
+		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
-	if _, err := a.cfg.Client.UpsertContact(r.Context(), id, c); err != nil {
+	stored, err := a.cfg.Client.UpsertContact(r.Context(), id, c)
+	if err != nil {
+		if wantsJSON(r) {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
 		a.apiFailed(w, r, sess, back, err)
 		return
 	}
+	if wantsJSON(r) {
+		writeJSON(w, http.StatusOK, map[string]any{"contact": stored})
+		return
+	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// wantsJSON is a fetch from our own script rather than a form submit.
+func wantsJSON(r *http.Request) bool {
+	return r.Header.Get("X-Requested-With") == "fetch"
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 func (a *App) deleteContact(w http.ResponseWriter, r *http.Request, sess *session) {
 	id := r.PathValue("id")
 	back := "/devices/" + url.PathEscape(id)
 	if err := a.cfg.Client.DeleteContact(r.Context(), id, r.PathValue("cid")); err != nil && !IsNotFound(err) {
+		if wantsJSON(r) {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
 		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	if wantsJSON(r) {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 		return
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
@@ -966,27 +1042,10 @@ func atoi(s string) int {
 
 // MARK: per-device PBX credentials
 
-func (a *App) saveDevicePBX(w http.ResponseWriter, r *http.Request, sess *session) {
-	id := r.PathValue("id")
-	back := "/devices/" + url.PathEscape(id) + "/edit"
-	creds := enroll.PBXCredentials{User: r.FormValue("pbx_user"), Password: r.FormValue("pbx_password"), DeviceName: r.FormValue("pbx_device_name")}
-	if strings.TrimSpace(creds.User) == "" {
-		a.sessions.setFlash(sess, "error", "The PBX username is required.")
-		http.Redirect(w, r, back, http.StatusSeeOther)
-		return
-	}
-	if err := a.cfg.Client.SetDevicePBX(r.Context(), id, creds); err != nil {
-		a.apiFailed(w, r, sess, back, err)
-		return
-	}
-	a.sessions.setFlash(sess, "notice", "PBX registration saved for this extension.")
-	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
-}
-
 func (a *App) clearDevicePBX(w http.ResponseWriter, r *http.Request, sess *session) {
 	id := r.PathValue("id")
 	if err := a.cfg.Client.ClearDevicePBX(r.Context(), id); err != nil && !IsNotFound(err) {
-		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id)+"/edit", err)
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
 		return
 	}
 	a.sessions.setFlash(sess, "notice", "PBX registration removed for this extension.")

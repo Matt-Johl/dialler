@@ -1,9 +1,10 @@
 // Package adminui is dialler-admin: the operator's web interface to the
 // call server (SPEC §4.8, §6 item 9). It holds the admin token and a login
 // of its own, speaks only to the call server's admin API over HTTPS, and
-// renders server-side HTML with no scripting. It can be restarted or
-// redeployed with no effect on a call: the call server never knows it is
-// there.
+// renders server-side HTML, with a little script on top for editing in
+// place and for motion; every action also works as a plain form. It can be
+// restarted or redeployed with no effect on a call: the call server never
+// knows it is there.
 package adminui
 
 import (

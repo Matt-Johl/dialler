@@ -1,7 +1,8 @@
 /* dialler-admin.
    A quiet console: a fixed sidebar, one primary action per page, cards
    with real headings, hairlines instead of boxes, and a single accent.
-   No scripting anywhere; every state is a page. */
+   A small script (app.js) edits in place and adds motion; every action
+   still works as a plain form without it. */
 
 :root {
   color-scheme: light dark;
@@ -241,3 +242,67 @@ body.bare .content { min-height: 100vh; display: flex; align-items: center; just
 /* Confirm */
 .confirm { margin-top: 40px; }
 .confirm .sub { margin: 10px 0 24px; }
+
+/* ---- Motion and depth (the script adds .js to <html> and .ready to <body>) */
+@media (prefers-reduced-motion: no-preference) {
+  .js .content > * { opacity: 0; transform: translateY(8px); }
+  .js body.ready .content > * { opacity: 1; transform: none; transition: opacity .32s ease, transform .32s ease; }
+  .js body.ready .content > *:nth-child(2) { transition-delay: .04s; }
+  .js body.ready .content > *:nth-child(3) { transition-delay: .08s; }
+  .js body.ready .content > *:nth-child(4) { transition-delay: .12s; }
+  .js body.ready .content > *:nth-child(5) { transition-delay: .16s; }
+  .card, .table-card { transition: box-shadow .2s ease, transform .2s ease, border-color .2s ease; }
+  .card:hover, .table-card:hover { box-shadow: 0 6px 22px rgba(16, 20, 24, .07), 0 1px 2px rgba(16, 20, 24, .05); border-color: var(--line-strong); }
+  button, .button { transition: background .14s ease, border-color .14s ease, color .14s ease, transform .1s ease, box-shadow .14s ease; }
+  button:active, .button:active { transform: translateY(1px) scale(.99); }
+  button.primary:hover, .button.primary:hover { box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 35%, transparent); }
+  .list tbody tr { transition: background .15s ease; }
+  .side-nav a { transition: background .15s ease, color .15s ease; }
+  .pill { transition: transform .15s ease; }
+}
+.js .flash { opacity: 0; transform: translateY(-6px); transition: opacity .25s ease, transform .25s ease; }
+.js .flash.in { opacity: 1; transform: none; }
+.js .flash.out { opacity: 0; transform: translateY(-6px); }
+
+/* The save bar: quiet until something changes. */
+.savebar { position: sticky; bottom: 16px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; margin-top: 20px; padding: 12px 16px; border-radius: var(--radius); background: color-mix(in srgb, var(--surface) 88%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid var(--line); box-shadow: var(--shadow); transition: box-shadow .2s ease, border-color .2s ease, transform .2s ease; }
+.savebar.active { border-color: var(--accent); box-shadow: 0 10px 30px rgba(16, 20, 24, .12); transform: translateY(-2px); }
+.savebar-note { color: var(--ink-3); font-size: 13px; transition: color .2s ease; }
+.savebar.active .savebar-note { color: var(--ink-2); }
+.settings .card + .card { margin-top: 20px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-2 .field input { max-width: none; }
+@media (max-width: 700px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* Directory rows: click to edit, in place. */
+.contacts tbody tr[data-contact] { cursor: pointer; }
+.contacts tbody tr.editing { cursor: default; background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+.contacts tbody tr.editing td { padding-top: 10px; padding-bottom: 10px; }
+.contacts tbody tr.editing input, .contacts tbody tr.editing select { width: 100%; max-width: none; padding: 7px 9px; }
+.contacts tbody tr.editing input[type="checkbox"] { width: 16px; }
+.contacts tbody tr.busy { opacity: .6; pointer-events: none; }
+.contacts tbody tr.saved td { animation: saved 1.2s ease; }
+@keyframes saved { 0% { background: var(--ok-soft); } 100% { background: transparent; } }
+.contacts tbody tr.entering { opacity: 0; transform: translateY(-4px); }
+.contacts tbody tr { transition: opacity .18s ease, transform .18s ease; }
+.contacts tbody tr.leaving { opacity: 0; transform: translateX(8px); }
+.contacts tbody tr.shake { animation: shake .45s ease; }
+@keyframes shake { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
+.row-error { margin-top: 6px; font-size: 12.5px; color: var(--danger); }
+.contacts .centre { text-align: center; }
+.contacts td.nowrap { white-space: nowrap; }
+
+/* Dialog */
+.modal { border: 1px solid var(--line); border-radius: var(--radius); padding: 0; background: var(--surface); color: var(--ink); box-shadow: 0 24px 60px rgba(0, 0, 0, .25); max-width: 440px; width: calc(100% - 32px); }
+.modal::backdrop { background: rgba(10, 12, 14, .45); backdrop-filter: blur(3px); }
+.modal-form { padding: 26px 28px; }
+.modal-form h2 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.modal-form .sub { margin: 10px 0 22px; }
+@media (prefers-reduced-motion: no-preference) {
+  .modal[open] { animation: pop .18s ease-out; }
+  @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+}
+
+/* Focus, always visible for keyboard users. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, .button:focus-visible { outline-offset: 2px; }

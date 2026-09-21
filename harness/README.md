@@ -32,7 +32,7 @@ audio. Passing on 2026-09-05 (callee RMS ≈ 6500 against a threshold of 200).
 | `tls/` | `gen_certs.sh` — a private CA and a certificate each for the server and the PBX, for the TLS trunk (`make harness-trunk-tls`, SPEC §6 item 3b). Generated on demand and gitignored; only the script is committed. The default set is for the compose addresses; `OUT=lan DIALLER_IP=… ASTERISK_IP=…` makes a second set for the Ubuntu PBX (see `asterisk-native/README.md`), because a certificate's SANs must be the addresses each side is really dialled by |
 | `sipp/` | App-leg conformance: REGISTER over TLS succeeds, plain TCP is refused, INVITE returns 501 until the B2BUA exists |
 | `baresip/` | Two headless phones (`211`, `212`) registering over TLS with WAV audio in/out; SRTP mandatory on that leg (`mediaenc=srtp-mand`, set by `entrypoint.sh` for TLS), plain RTP for the desk phone on UDP |
-| `provision.sh` | Enrols the two phones and seeds the directory via the admin API |
+| `provision.sh` | Enrols the two phones (and dev-a, dev-s) and seeds each device's directory via the admin API |
 | `call_test.sh` | End-to-end call 211 → server → 212 with media asserted (`make harness-call`) |
 | `wake_test.sh` | Callee starts with no SIP UA; `fake-app` on the gateway receives the wake, creates the UA via `uanew`, bridge completes, media asserted (`make harness-wake`) |
 | `innet.sh` | Runs a repo script inside the compose network, for hosts that cannot reach published localhost ports |

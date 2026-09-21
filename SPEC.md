@@ -1244,6 +1244,17 @@ on by config — see §7.4.
      flashes slide in and leave, rows animate in and out of edit, all
      under `prefers-reduced-motion`. The CSP allows the site's own
      script and nothing else.
+     *Third review, later that night:* the look was judged generic; the
+     reference chosen was Linear / Vercel, theme following the system.
+     Restyled to that standard: 13 px type on a near-monochrome palette
+     with one accent used only for the primary action and focus; a slim
+     top bar instead of the sidebar; hairlines instead of cards; a
+     label-left property list for every settings group; dense tables
+     with row hover, a filter box on the device list and a chevron
+     through to the device; small inline SVG icons (`icons.go`); the
+     Save affordance in the page header, hidden until something changes;
+     light and dark palettes both tuned. Behaviour (in-place editing,
+     dialogs, motion, plain-form fallback) unchanged.
 
 ### Much later (not scheduled)
 

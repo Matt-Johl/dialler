@@ -1,124 +1,114 @@
 {{define "content"}}
-<p class="crumb"><a href="/">Devices</a></p>
+<a class="crumb" href="/">{{icon "back"}}Devices</a>
+<form method="post" action="/devices/{{.Device.DeviceID}}" data-dirty-form>
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
 <header class="page">
   <div>
-    <h1>{{.Title}}</h1>
-    <p class="sub">
-      <span class="pill {{.Device.StateKey}}">{{.Device.State}}</span>
-      <span class="sep">·</span> {{if eq .Device.Presence "offline"}}<span class="dot"></span>Offline{{else}}<span class="dot on"></span>{{.Device.Presence}}{{end}}
-      <span class="sep">·</span> {{if .Device.Registered}}<span class="dot on"></span>Registered{{else}}<span class="dot"></span>Not registered{{end}}
-      {{if .Device.PBX}}<span class="sep">·</span> PBX as <span class="mono">{{.Device.PBX.User}}</span> <span class="dim">({{if eq .Device.PBXState "pending"}}registration pending{{else}}{{.Device.PBXState}}{{end}})</span>{{end}}
-    </p>
+    <h1>{{.Title}} <span class="mono">{{.Device.User}}</span></h1>
+    <div class="meta">
+      <span class="status"><span class="dot {{if eq .Device.StateKey "enrolled"}}ok{{else if eq .Device.StateKey "revoked"}}danger{{else}}warn{{end}}"></span>{{.Device.State}}</span>
+      <span class="status">{{if eq .Device.Presence "offline"}}<span class="dot"></span>Offline{{else}}<span class="dot ok"></span>{{.Device.Presence}}{{end}}</span>
+      <span class="status">{{if .Device.Registered}}<span class="dot ok"></span>Registered{{else}}<span class="dot"></span>Not registered{{end}}</span>
+      {{if .Device.PBX}}<span class="status"><span class="dot warn"></span>PBX <span class="mono">&nbsp;{{.Device.PBX.User}}</span>&nbsp;· {{if eq .Device.PBXState "pending"}}registration pending{{else}}{{.Device.PBXState}}{{end}}</span>{{end}}
+    </div>
   </div>
-  <form method="post" action="/devices/{{.Device.DeviceID}}/code">
-    <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <button type="submit" class="primary">New enrolment code</button>
-  </form>
+  <div class="actions">
+    <span class="savebar" data-savebar><span class="savebar-note" data-savebar-note></span><button type="submit" class="btn primary" data-savebar-button>Save</button></span>
+    <button type="submit" class="btn" formaction="/devices/{{.Device.DeviceID}}/code" formnovalidate>{{icon "qr"}}Enrolment code</button>
+  </div>
 </header>
 
-<form method="post" action="/devices/{{.Device.DeviceID}}" class="settings" data-dirty-form>
-  <input type="hidden" name="_csrf" value="{{.CSRF}}">
-
-  <section class="card">
-    <div class="card-head"><div><h2>Device</h2><p class="help">The phone's credential is untouched by anything on this page.</p></div></div>
-    <div class="grid-2">
-      <div class="field">
-        <label for="label">Name <span class="optional">optional</span></label>
-        <input id="label" name="label" value="{{.Device.Label}}" placeholder="Matt's iPhone" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="user">Extension</label>
-        <input id="user" name="user" value="{{.Device.User}}" inputmode="numeric" autocomplete="off" required>
-        <p class="help">Takes effect at the phone's next connection. Id <span class="mono">{{.Device.DeviceID}}</span></p>
-      </div>
+<section class="section">
+  <div class="section-head"><h2>Device</h2></div>
+  <dl class="props">
+    <div class="prop">
+      <dt><label for="label">Name</label></dt>
+      <dd><input id="label" name="label" value="{{.Device.Label}}" placeholder="Matt's iPhone" autocomplete="off"></dd>
     </div>
-  </section>
-
-  <section class="card">
-    <div class="card-head"><div><h2>Background calls</h2><p class="help">Office Wi-Fi networks on which the phone takes calls with the app closed. Sent to the phone on save.</p></div></div>
-    <div class="field">
-      <label for="ssids">Networks <span class="optional">one per line</span></label>
-      <textarea id="ssids" name="ssids" rows="3" placeholder="Office&#10;Office-5G">{{.SSIDs}}</textarea>
-      <p class="help">{{if .Config}}Version {{.Config.Version}} is on the phone.{{else}}Nothing set yet: the phone keeps whatever it has. An empty list turns background calls off.{{end}}</p>
+    <div class="prop">
+      <dt><label for="user">Extension</label></dt>
+      <dd><input id="user" name="user" value="{{.Device.User}}" inputmode="numeric" autocomplete="off" required class="narrow"><span class="hint">Applies at the phone's next connection</span></dd>
     </div>
-  </section>
-
-  <section class="card">
-    <div class="card-head">
-      <div>
-        <h2>PBX registration</h2>
-        <p class="help">{{if .RegisterMode}}The PBX is in registered-devices mode: this extension registers with these credentials as a third-party SIP device.{{else}}The PBX is a trunk peer; these are used once it is switched to registered-devices mode on the Server page.{{end}} Registration itself is not yet performed by the call server.</p>
-      </div>
+    <div class="prop last">
+      <dt>Device id</dt>
+      <dd><span class="mono muted">{{.Device.DeviceID}}</span></dd>
     </div>
-    <div class="grid-3">
-      <div class="field">
-        <label for="pbx_user">Digest username</label>
-        <input id="pbx_user" name="pbx_user" value="{{if .Device.PBX}}{{.Device.PBX.User}}{{end}}" autocomplete="off" placeholder="{{.Device.User}}">
-      </div>
-      <div class="field">
-        <label for="pbx_password">Digest password{{if .Device.PBX}} <span class="optional">blank keeps the current one</span>{{end}}</label>
-        <input id="pbx_password" type="password" name="pbx_password" autocomplete="new-password">
-      </div>
-      <div class="field">
-        <label for="pbx_device_name">Device name <span class="optional">optional</span></label>
-        <input id="pbx_device_name" name="pbx_device_name" value="{{if .Device.PBX}}{{.Device.PBX.DeviceName}}{{end}}" class="mono" placeholder="SEP…">
-      </div>
-    </div>
-    <p class="help">Clear the username to remove the registration.</p>
-  </section>
+  </dl>
+</section>
 
-  <div class="savebar" data-savebar>
-    <span class="savebar-note" data-savebar-note>No unsaved changes</span>
-    <button type="submit" class="primary" data-savebar-button>Save</button>
-  </div>
+<section class="section">
+  <div class="section-head"><h2>Background calls</h2></div>
+  <dl class="props">
+    <div class="prop last">
+      <dt><label for="ssids">Office Wi-Fi</label></dt>
+      <dd>
+        <textarea id="ssids" name="ssids" rows="3" placeholder="One network per line">{{.SSIDs}}</textarea>
+        <span class="hint">{{if .Config}}Version {{.Config.Version}} on the phone. Sent on save.{{else}}Nothing set yet: the phone keeps whatever it has. Sent on save.{{end}}</span>
+      </dd>
+    </div>
+  </dl>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>PBX registration</h2><span class="hint">{{if .RegisterMode}}Registered-devices mode{{else}}Used once the PBX is in registered-devices mode{{end}} · registration not yet performed by the call server</span></div>
+  <dl class="props">
+    <div class="prop">
+      <dt><label for="pbx_user">Digest username</label></dt>
+      <dd><input id="pbx_user" name="pbx_user" value="{{if .Device.PBX}}{{.Device.PBX.User}}{{end}}" autocomplete="off" placeholder="{{.Device.User}}"><span class="hint">Clear to remove the registration</span></dd>
+    </div>
+    <div class="prop">
+      <dt><label for="pbx_password">Digest password</label></dt>
+      <dd><input id="pbx_password" type="password" name="pbx_password" autocomplete="new-password"{{if .Device.PBX}} placeholder="Unchanged"{{end}}></dd>
+    </div>
+    <div class="prop last">
+      <dt><label for="pbx_device_name">Device name</label></dt>
+      <dd><input id="pbx_device_name" name="pbx_device_name" value="{{if .Device.PBX}}{{.Device.PBX.DeviceName}}{{end}}" class="mono" placeholder="SEP…"><span class="hint">Optional</span></dd>
+    </div>
+  </dl>
+</section>
 </form>
 
-<section class="card directory" data-directory data-device="{{.Device.DeviceID}}" data-csrf="{{.CSRF}}">
-  <div class="card-head">
-    <div>
-      <h2>Directory <span class="count" data-count>{{len .Contacts}}</span></h2>
-      <p class="help">What the phone shows under Directory. Click a row to edit it.</p>
-    </div>
-    <div class="card-actions">
-      <a class="button primary" href="/devices/{{.Device.DeviceID}}/contacts/new" data-add-contact>Add contact</a>
+<section class="section" data-directory data-device="{{.Device.DeviceID}}" data-csrf="{{.CSRF}}">
+  <div class="section-head">
+    <h2>Directory <span class="count" data-count>{{len .Contacts}}</span></h2>
+    <div class="toolbar">
+      <a class="btn ghost sm" href="/devices/{{.Device.DeviceID}}/contacts/new" data-add-contact>{{icon "plus"}}Add</a>
+      <a class="btn ghost sm" href="/devices/{{.Device.DeviceID}}/directory.csv">{{icon "download"}}Download CSV</a>
+      <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" data-upload>
+        <input type="hidden" name="_csrf" value="{{.CSRF}}">
+        <label class="btn ghost sm" data-upload-label>{{icon "upload"}}Upload CSV<input type="file" name="file" accept=".csv,text/csv" required data-upload-file hidden></label>
+        <button type="submit" class="btn ghost sm" data-upload-submit>Preview upload</button>
+      </form>
+      <a class="btn ghost sm" href="/devices/{{.Device.DeviceID}}/directory/copy">{{icon "copy"}}Copy to…</a>
     </div>
   </div>
-  <table class="list contacts">
-    <thead><tr><th>Name</th><th>Number</th><th>Reached via</th><th class="centre">★</th><th class="right"></th></tr></thead>
+  <table class="table contacts">
+    <thead><tr><th>Name</th><th>Number</th><th>Via</th><th class="c">★</th><th class="r"></th></tr></thead>
     <tbody data-rows>
     {{range .Contacts}}
       <tr data-contact data-id="{{.ID}}" data-name="{{.DisplayName}}" data-uri="{{.URI}}" data-mode="{{.Mode}}" data-favourite="{{if .Favourite}}1{{end}}">
         <td data-cell="name">{{.DisplayName}}</td>
         <td data-cell="uri" class="mono">{{.URI}}</td>
-        <td data-cell="mode" class="dim">{{if eq .Mode "trunk"}}PBX{{else}}This server{{end}}</td>
-        <td data-cell="fav" class="centre">{{if .Favourite}}<span class="star">★</span>{{end}}</td>
-        <td class="right"><a class="chevron" href="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}/edit" data-edit>Edit</a></td>
+        <td data-cell="mode" class="muted">{{if eq .Mode "trunk"}}PBX{{else}}This server{{end}}</td>
+        <td data-cell="fav" class="c">{{if .Favourite}}<span class="star">★</span>{{end}}</td>
+        <td class="r"><a class="edit-link" href="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}/edit" data-edit aria-label="Edit">{{icon "pencil"}}</a></td>
       </tr>
     {{end}}
     </tbody>
   </table>
-  <p class="empty-inline" data-empty {{if .Contacts}}hidden{{end}}>No contacts yet.</p>
-  <div class="card-foot">
-    <a class="button ghost" href="/devices/{{.Device.DeviceID}}/directory.csv">Download CSV</a>
-    <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" class="upload">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <label class="file"><input type="file" name="file" accept=".csv,text/csv" required><span>Choose CSV…</span></label>
-      <button type="submit" class="ghost">Preview upload</button>
-    </form>
-    <a class="button ghost" href="/devices/{{.Device.DeviceID}}/directory/copy">Copy to other devices</a>
-    <span class="help">Columns <span class="mono">{{.CSVColumn}}</span>. Uploading replaces the list, after a preview.</span>
-  </div>
+  <p class="section-note" data-empty {{if .Contacts}}hidden{{end}}>No contacts yet.</p>
+  <p class="section-note">Click a row to edit. CSV columns <span class="mono">{{.CSVColumn}}</span>; an upload replaces the list after a preview.</p>
 </section>
 
-<section class="card danger-zone">
-  <div class="card-head"><div><h2>Danger zone</h2></div></div>
+<section class="section danger-zone">
+  <div class="section-head"><h2>Danger zone</h2></div>
   <div class="danger-row">
-    <div><strong>Revoke this device</strong><p class="help">Disconnects the phone and stops it registering. Its directory is kept; a new code brings it back.</p></div>
-    <a class="button danger" href="/devices/{{.Device.DeviceID}}/revoke" data-confirm="Revoke {{.Title}}?" data-confirm-message="The phone is disconnected at once and can no longer register or make calls. Its directory is kept, and a new enrolment code brings it back." data-confirm-button="Revoke"{{if .Device.Revoked}} aria-disabled="true"{{end}}>Revoke</a>
+    <div><strong>Revoke</strong><span class="hint">Disconnects the phone and stops it registering. The directory is kept; a new code brings it back.</span></div>
+    <a class="btn danger" href="/devices/{{.Device.DeviceID}}/revoke" data-confirm="Revoke {{.Title}}?" data-confirm-message="The phone is disconnected at once and can no longer register or make calls. Its directory is kept, and a new enrolment code brings it back." data-confirm-button="Revoke"{{if .Device.Revoked}} aria-disabled="true"{{end}}>Revoke</a>
   </div>
   <div class="danger-row">
-    <div><strong>Delete this device</strong><p class="help">Removes the device, its directory and its settings for good. Extension {{.Device.User}} becomes free.</p></div>
-    <a class="button danger" href="/devices/{{.Device.DeviceID}}/delete" data-confirm="Delete {{.Title}}?" data-confirm-message="The device, its directory and its settings are removed for good, and the phone is disconnected. There is no undo." data-confirm-button="Delete device">Delete</a>
+    <div><strong>Delete</strong><span class="hint">Removes the device, its directory and its settings. Extension {{.Device.User}} becomes free.</span></div>
+    <a class="btn danger" href="/devices/{{.Device.DeviceID}}/delete" data-confirm="Delete {{.Title}}?" data-confirm-message="The device, its directory and its settings are removed for good, and the phone is disconnected. There is no undo." data-confirm-button="Delete device">Delete</a>
   </div>
 </section>
 
@@ -128,8 +118,8 @@
     <h2 data-modal-title></h2>
     <p class="sub" data-modal-message></p>
     <div class="form-actions">
-      <button type="submit" class="danger solid" data-modal-button>Confirm</button>
-      <button type="button" class="ghost" data-modal-cancel>Cancel</button>
+      <button type="submit" class="btn danger solid" data-modal-button>Confirm</button>
+      <button type="button" class="btn ghost" data-modal-cancel>Cancel</button>
     </div>
   </form>
 </dialog>

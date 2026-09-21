@@ -33,12 +33,35 @@
       dirty = snapshot(new FormData(form)) !== base;
       bar.classList.toggle("active", dirty);
       button.disabled = !dirty;
-      note.textContent = dirty ? "Unsaved changes" : "No unsaved changes";
+      button.hidden = !dirty;
+      note.textContent = dirty ? "Unsaved changes" : "";
     };
+    update();
     form.addEventListener("input", update);
     form.addEventListener("change", update);
-    form.addEventListener("submit", () => { dirty = false; button.disabled = true; note.textContent = "Saving…"; });
+    form.addEventListener("submit", (e) => {
+      // Only the Save button's submit is the settings form; other submit
+      // buttons in the header carry their own formaction.
+      if (e.submitter && e.submitter !== button && e.submitter.hasAttribute("formaction")) return;
+      dirty = false; button.disabled = true; note.textContent = "Saving…";
+    });
     window.addEventListener("beforeunload", (e) => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+  });
+
+  // ---- A filter box narrows a list as you type.
+  document.querySelectorAll("[data-filter]").forEach((input) => {
+    const rows = document.querySelectorAll(input.dataset.filter);
+    input.addEventListener("input", () => {
+      const q = input.value.trim().toLowerCase();
+      rows.forEach((r) => { r.hidden = q !== "" && !(r.dataset.text || r.textContent).toLowerCase().includes(q); });
+    });
+  });
+
+  // ---- The CSV picker submits as soon as a file is chosen.
+  document.querySelectorAll("[data-upload]").forEach((form) => {
+    const file = form.querySelector("[data-upload-file]");
+    form.querySelector("[data-upload-submit]").hidden = true;
+    file.addEventListener("change", () => { if (file.files.length) form.submit(); });
   });
 
   // ---- Destructive links open a dialog instead of a page.
@@ -69,6 +92,7 @@
   const empty = dir.querySelector("[data-empty]");
   const count = dir.querySelector("[data-count]");
 
+  const pencil = (rows.querySelector("[data-edit]") || {}).innerHTML || "Edit";
   const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const viaLabel = (mode) => (mode === "trunk" ? "PBX" : "This server");
   const refresh = () => {
@@ -84,9 +108,9 @@
     tr.innerHTML =
       `<td data-cell="name">${escape(c.display_name)}</td>` +
       `<td data-cell="uri" class="mono">${escape(c.uri)}</td>` +
-      `<td data-cell="mode" class="dim">${viaLabel(c.mode)}</td>` +
-      `<td data-cell="fav" class="centre">${c.favourite ? '<span class="star">★</span>' : ""}</td>` +
-      `<td class="right"><a class="chevron" href="/devices/${encodeURIComponent(device)}/contacts/${encodeURIComponent(c.id)}/edit" data-edit>Edit</a></td>`;
+      `<td data-cell="mode" class="muted">${viaLabel(c.mode)}</td>` +
+      `<td data-cell="fav" class="c">${c.favourite ? '<span class="star">★</span>' : ""}</td>` +
+      `<td class="r"><a class="edit-link" href="/devices/${encodeURIComponent(device)}/contacts/${encodeURIComponent(c.id)}/edit" data-edit aria-label="Edit">${pencil}</a></td>`;
     tr.classList.remove("editing");
     wire(tr);
   };
@@ -97,11 +121,11 @@
       `<td><input name="display_name" value="${escape(c.display_name)}" placeholder="Name" required></td>` +
       `<td><input name="uri" value="${escape(c.uri)}" class="mono" placeholder="100, or sip:100@pbx" required></td>` +
       `<td><select name="mode"><option value="local"${c.mode !== "trunk" ? " selected" : ""}>This server</option><option value="trunk"${c.mode === "trunk" ? " selected" : ""}>PBX</option></select></td>` +
-      `<td class="centre"><input type="checkbox" name="favourite" aria-label="Favourite"${c.favourite ? " checked" : ""}></td>` +
-      `<td class="right nowrap">` +
-        `<button type="button" class="small primary" data-save>${isNew ? "Add" : "Save"}</button> ` +
-        `<button type="button" class="small ghost" data-cancel>Cancel</button>` +
-        (isNew ? "" : ` <button type="button" class="small danger ghost" data-delete>Delete</button>`) +
+      `<td class="c"><input type="checkbox" name="favourite" aria-label="Favourite"${c.favourite ? " checked" : ""}></td>` +
+      `<td class="r nowrap">` +
+        `<button type="button" class="btn primary sm" data-save>${isNew ? "Add" : "Save"}</button> ` +
+        `<button type="button" class="btn ghost sm" data-cancel>Cancel</button>` +
+        (isNew ? "" : ` <button type="button" class="btn danger ghost sm" data-delete>Delete</button>`) +
       `</td>`;
     const first = tr.querySelector("input[name=display_name]");
     first.focus();

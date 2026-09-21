@@ -1,45 +1,36 @@
 {{define "content"}}
 <header class="page">
-  <div>
-    <h1>Devices</h1>
-    <p class="sub">The phones enrolled on this server, and what each is doing right now.</p>
+  <div><h1>Devices <span class="mono">{{len .Devices}}</span></h1></div>
+  <div class="actions">
+    <a class="btn primary" href="/devices/new">{{icon "plus"}}Add device</a>
   </div>
-  <a class="button primary" href="/devices/new">Add device</a>
 </header>
 
 {{if .Devices}}
-<div class="table-card">
-<table class="list">
+<div class="list-head">
+  <label class="search">{{icon "search"}}<input type="search" placeholder="Filter" data-filter="[data-device-row]" aria-label="Filter devices"></label>
+</div>
+<table class="table">
   <thead>
-    <tr>
-      <th>Device</th>
-      <th>Status</th>
-      <th>Connection</th>
-      <th>Registered</th>
-      <th class="right"></th>
-    </tr>
+    <tr><th>Device</th><th>Status</th><th>Connection</th><th>Registered</th><th>PBX</th><th class="r"></th></tr>
   </thead>
   <tbody>
   {{range .Devices}}
-    <tr{{if .Revoked}} class="muted"{{end}}>
-      <td>
-        <a class="cell-title" href="/devices/{{.DeviceID}}">{{if .Label}}{{.Label}}{{else}}Extension {{.User}}{{end}}</a>
-        <div class="cell-sub">{{if .Label}}Extension {{.User}}{{end}}{{if .Config}}{{if .Label}} · {{end}}{{len .Config.SSIDs}} network{{if ne (len .Config.SSIDs) 1}}s{{end}}{{end}}</div>
-      </td>
-      <td><span class="pill {{.StateKey}}">{{.State}}</span></td>
-      <td>{{if eq .Presence "offline"}}<span class="dim">Offline</span>{{else}}<span class="dot on"></span>{{.Presence}}{{end}}</td>
-      <td>{{if .Registered}}<span class="dot on"></span>Yes{{else}}<span class="dim">No</span>{{end}}</td>
-      <td class="right"><a class="chevron" href="/devices/{{.DeviceID}}" aria-label="Open">›</a></td>
+    <tr data-device-row data-text="{{.Label}} {{.User}} {{.DeviceID}}"{{if .Revoked}} class="muted"{{end}}>
+      <td><a class="row-link" href="/devices/{{.DeviceID}}"><span class="row-title">{{if .Label}}{{.Label}}{{else}}Extension {{.User}}{{end}}</span>{{if .Label}}<span class="row-sub">Extension {{.User}}</span>{{end}}</a></td>
+      <td><span class="status"><span class="dot {{if eq .StateKey "enrolled"}}ok{{else if eq .StateKey "revoked"}}danger{{else}}warn{{end}}"></span>{{.State}}</span></td>
+      <td>{{if eq .Presence "offline"}}<span class="status muted"><span class="dot"></span>Offline</span>{{else}}<span class="status"><span class="dot ok"></span>{{.Presence}}</span>{{end}}</td>
+      <td>{{if .Registered}}<span class="status"><span class="dot ok"></span>Yes</span>{{else}}<span class="muted">No</span>{{end}}</td>
+      <td>{{if .PBX}}<span class="mono">{{.PBX.User}}</span>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td class="r"><a href="/devices/{{.DeviceID}}" class="chev" aria-label="Open">{{icon "chevron"}}</a></td>
     </tr>
   {{end}}
   </tbody>
 </table>
-</div>
 {{else}}
-<section class="empty">
-  <p class="empty-title">No devices yet</p>
-  <p>Add the first phone and you'll get its enrolment code straight away.</p>
-  <a class="button primary" href="/devices/new">Add device</a>
-</section>
+<div class="empty">
+  <div>No devices yet.</div>
+  <a class="btn primary" href="/devices/new">{{icon "plus"}}Add device</a>
+</div>
 {{end}}
 {{end}}

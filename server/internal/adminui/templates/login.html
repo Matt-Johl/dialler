@@ -2,13 +2,13 @@
 <section class="login">
   <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Dialler</a>
   <h1>Sign in</h1>
-  <form method="post" action="/login" class="stack">
+  <form method="post" action="/login">
     <input type="hidden" name="next" value="{{.Next}}">
     <div class="field">
       <label for="password">Password</label>
       <input id="password" type="password" name="password" autocomplete="current-password" autofocus required>
     </div>
-    <button type="submit" class="primary wide">Continue</button>
+    <button type="submit" class="btn primary wide-btn">Continue</button>
   </form>
 </section>
 {{end}}

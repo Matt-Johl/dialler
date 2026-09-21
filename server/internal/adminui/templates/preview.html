@@ -1,32 +1,27 @@
 {{define "content"}}
-<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a>
 <header class="page">
-  <div>
-    <h1>Replace the directory?</h1>
-    <p class="sub">{{.FileName}} holds {{.Total}} contact{{if ne .Total 1}}s{{end}}. Nothing has changed yet; this is what applying it would do.</p>
-  </div>
+  <div><h1>Replace the directory?</h1><p class="sub">{{.FileName}} holds {{.Total}} contact{{if ne .Total 1}}s{{end}}. Nothing has changed yet.</p></div>
 </header>
 
-<section class="card">
-  <div class="diff">
-    <div>
-      <h2>Added <span class="count">{{len .Added}}</span></h2>
-      {{if .Added}}<ul class="plain">{{range .Added}}<li>{{.DisplayName}} <span class="mono dim">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="dim">None</p>{{end}}
-    </div>
-    <div>
-      <h2>Changed <span class="count">{{len .Changed}}</span></h2>
-      {{if .Changed}}<ul class="plain">{{range .Changed}}<li>{{.DisplayName}} <span class="mono dim">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="dim">None</p>{{end}}
-    </div>
-    <div>
-      <h2>Removed <span class="count">{{len .Removed}}</span></h2>
-      {{if .Removed}}<ul class="plain">{{range .Removed}}<li>{{.DisplayName}} <span class="mono dim">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="dim">None</p>{{end}}
-    </div>
+<div class="diff">
+  <div>
+    <h3>Added <span class="count">{{len .Added}}</span></h3>
+    {{if .Added}}<ul>{{range .Added}}<li>{{.DisplayName}} <span class="mono muted">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="muted">None</p>{{end}}
   </div>
-  <p class="help">{{.Unchanged}} unchanged. The phone receives the whole change as one update.</p>
-  <form method="post" action="/devices/{{.Device.DeviceID}}/directory/apply" class="form-actions">
-    <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <button type="submit" class="primary">Apply changes</button>
-    <a class="button ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
-  </form>
-</section>
+  <div>
+    <h3>Changed <span class="count">{{len .Changed}}</span></h3>
+    {{if .Changed}}<ul>{{range .Changed}}<li>{{.DisplayName}} <span class="mono muted">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="muted">None</p>{{end}}
+  </div>
+  <div>
+    <h3>Removed <span class="count">{{len .Removed}}</span></h3>
+    {{if .Removed}}<ul>{{range .Removed}}<li>{{.DisplayName}} <span class="mono muted">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="muted">None</p>{{end}}
+  </div>
+</div>
+<p class="hint">{{.Unchanged}} unchanged. The phone receives the whole change as one update.</p>
+<form method="post" action="/devices/{{.Device.DeviceID}}/directory/apply" class="form-actions">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <button type="submit" class="btn primary">Apply changes</button>
+  <a class="btn ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
+</form>
 {{end}}

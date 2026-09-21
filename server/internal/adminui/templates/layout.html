@@ -9,21 +9,22 @@
 </head>
 <body class="{{if .SignedIn}}shell{{else}}bare{{end}}">
 {{if .SignedIn}}
-<aside class="side">
+<header class="topbar">
   <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Dialler</a>
-  <nav class="side-nav">
+  <nav class="topnav">
     <a href="/" {{if or (eq .Path "/") (eq .Path "/devices/new")}}aria-current="page"{{end}}>Devices</a>
     <a href="/server" {{if eq .Path "/server"}}aria-current="page"{{end}}>Server</a>
   </nav>
-  <form method="post" action="/logout" class="side-foot">
+  <span class="spacer"></span>
+  <form method="post" action="/logout">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <button type="submit" class="ghost">Sign out</button>
+    <button type="submit" class="btn ghost">Sign out</button>
   </form>
-</aside>
+</header>
 {{end}}
 <main class="content">
-  {{if .Notice}}<div class="flash notice" role="status">{{.Notice}}</div>{{end}}
-  {{if .Error}}<div class="flash error" role="alert">{{.Error}}</div>{{end}}
+  {{if .Notice}}<div class="flash notice" role="status">{{icon "check"}}{{.Notice}}</div>{{end}}
+  {{if .Error}}<div class="flash error" role="alert">{{icon "warning"}}{{.Error}}</div>{{end}}
   {{template "content" .}}
 </main>
 </body>

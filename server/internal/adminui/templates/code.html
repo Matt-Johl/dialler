@@ -1,25 +1,25 @@
 {{define "content"}}
-<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a>
 {{if .Code}}
 <section class="enrol">
   <h1>Enrol {{if .Device.Label}}{{.Device.Label}}{{else}}extension {{.Device.User}}{{end}}</h1>
-  <p class="sub">Point the phone's camera at the code, or type it into the app.</p>
+  <p class="sub">Scan with the phone's camera, or type the code into the app.</p>
   <div class="qr">{{.QR}}</div>
   <p class="code">{{grouped .Code.Code}}</p>
-  <p class="help">Works once, for the next {{minutesLeft .Code.ExpiresAt}} minutes. It won't be shown again.</p>
-  <details class="link-details">
+  <p class="hint">Works once, for {{minutesLeft .Code.ExpiresAt}} more minutes. It won't be shown again.</p>
+  <details>
     <summary>Show the link</summary>
     <p class="mono">{{.Code.URL}}</p>
   </details>
-  <a class="button primary" href="/devices/{{.Device.DeviceID}}">Done</a>
+  <a class="btn primary" href="/devices/{{.Device.DeviceID}}">Done</a>
 </section>
 {{else}}
-<section class="card narrow centred">
+<section class="centred">
   <h1>No code to show</h1>
   <p class="sub">A code is shown once, right after it is made.</p>
-  <form method="post" action="/devices/{{.Device.DeviceID}}/code">
+  <form method="post" action="/devices/{{.Device.DeviceID}}/code" class="form-actions" style="justify-content:center">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <button type="submit" class="primary">Make a new code</button>
+    <button type="submit" class="btn primary">Make a new code</button>
   </form>
 </section>
 {{end}}

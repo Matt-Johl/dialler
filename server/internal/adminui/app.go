@@ -263,6 +263,7 @@ func (a *App) funcs() template.FuncMap {
 		},
 		"join":  strings.Join,
 		"lower": strings.ToLower,
+		"icon":  icon,
 	}
 }
 

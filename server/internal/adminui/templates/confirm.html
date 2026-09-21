@@ -1,11 +1,10 @@
 {{define "content"}}
-<section class="card narrow confirm">
-  <h1>{{.Heading}}</h1>
-  <p class="sub">{{.Message}}</p>
+<section class="narrow">
+  <header class="page"><div><h1>{{.Heading}}</h1><p class="sub">{{.Message}}</p></div></header>
   <form method="post" action="{{.Action}}" class="form-actions">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <button type="submit" class="danger solid">{{.Button}}</button>
-    <a class="button ghost" href="{{.Back}}">Cancel</a>
+    <button type="submit" class="btn danger solid">{{.Button}}</button>
+    <a class="btn ghost" href="{{.Back}}">Cancel</a>
   </form>
 </section>
 {{end}}

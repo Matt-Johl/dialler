@@ -258,14 +258,16 @@ after REGISTER and INVITE and therefore after activation.
 2. Open `Dialler/Dialler.xcodeproj`, run the `Dialler` scheme on an iPhone
    simulator.
 3. Settings tab: host `127.0.0.1`, port `7443`, keep "accept self-signed",
-   device ID `dev-a`, paste the token, **Save & connect**. Status shows
-   `connected` and the directory tab fills from `/v1/directory`.
-   *Planned (SPEC §6 item 8):* a fresh install will open on an onboarding
-   screen instead — scan the QR from `dialler-admin`, or type the host and
-   the enrolment code `harness/provision.sh` prints — and the Status tab
-   goes away; its contents move to a Diagnostics sheet opened by a
-   two-second press on the keypad's number display, which also keeps this
-   direct host / device id / token entry as the dev path.
+   device ID `dev-a`, paste the token, **Save & connect**. The Status
+   page (gateway state, engine state, the log, send diagnostics) has no
+   tab: press and hold the **Settings** title for five seconds and it is
+   pushed; Back or any tab-bar tap closes it (SPEC §6 item 8). It shows
+   `connected`, and the directory tab fills from `/v1/directory`.
+   *Planned (SPEC §6 item 8, rest):* a fresh install will open on an
+   onboarding screen instead — scan the QR from `dialler-admin`, or type
+   the host and the enrolment code `harness/provision.sh` prints — and
+   this direct host / device id / token entry moves to the Status page as
+   the dev path.
 4. Ring it: `make harness-ring-sim` makes the harness phone 202 dial 201.
    Nothing else holds 201's registration, so the server wakes `dev-a`, the
    app, over its socket and the simulator shows the CallKit incoming-call

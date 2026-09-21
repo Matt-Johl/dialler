@@ -3,18 +3,25 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
+    enum Tab: Hashable { case recents, directory, keypad, settings }
+    @State private var tab: Tab = .recents
+    /// The Settings tab's navigation: the hidden Status page is pushed
+    /// onto it, and any tab-bar tap empties it (SPEC §6 item 8).
+    @State private var settingsPath = NavigationPath()
 
     var body: some View {
-        // Tab order per SPEC §6 item 6. Status stays, last, until item 8
-        // moves its contents behind the hidden gesture.
-        TabView {
+        // Tab order per SPEC §6 item 6. Status has no tab (item 8): it is
+        // reached by a five-second press on the Settings title. The
+        // selection binding's setter runs on every tab-bar tap, the
+        // current tab included, which is what hides Status again.
+        TabView(selection: Binding(get: { tab }, set: { tab = $0; settingsPath = NavigationPath() })) {
             RecentsView()
                 .tabItem { Label("Recents", systemImage: "clock") }
                 .badge(model.unseenMissed)
-            DirectoryView().tabItem { Label("Directory", systemImage: "person.2") }
-            KeypadView().tabItem { Label("Keypad", systemImage: "circle.grid.3x3") }
-            SettingsView().tabItem { Label("Settings", systemImage: "gear") }
-            StatusView().tabItem { Label("Status", systemImage: "antenna.radiowaves.left.and.right") }
+                .tag(Tab.recents)
+            DirectoryView().tabItem { Label("Directory", systemImage: "person.2") }.tag(Tab.directory)
+            KeypadView().tabItem { Label("Keypad", systemImage: "circle.grid.3x3") }.tag(Tab.keypad)
+            SettingsView(path: $settingsPath).tabItem { Label("Settings", systemImage: "gear") }.tag(Tab.settings)
         }
         // Ringing is CallKit's UI alone (banner, lock screen, Recents). While
         // a call is ACTIVE and the app is in front, iOS shows only the green
@@ -473,34 +480,35 @@ struct ContactEditor: View {
 
 // MARK: - Status
 
+/// The hidden Status page (SPEC §6 item 8): pushed onto the Settings tab by
+/// a five-second press on its title, popped by Back or any tab-bar tap.
 struct StatusView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section("Gateway") {
-                    LabeledContent("Status", value: model.status)
-                    if !model.sessionID.isEmpty { LabeledContent("Session", value: model.sessionID) }
-                    LabeledContent("Engine", value: model.engineState)
-                    HStack {
-                        Button("Connect") { model.connect() }
-                        Spacer()
-                        Button("Disconnect", role: .destructive) { model.disconnect() }
-                    }
-                }
-                Section("Log") {
-                    Button("Send diagnostics to the server") { Task { await model.sendDiagnostics(reason: "manual") } }
-                    if !model.diagnosticsStatus.isEmpty {
-                        Text(model.diagnosticsStatus).font(.caption).foregroundStyle(.secondary)
-                    }
-                    ForEach(Array(model.log.enumerated().reversed()), id: \.offset) { _, line in
-                        Text(line).font(.caption.monospaced())
-                    }
+        List {
+            Section("Gateway") {
+                LabeledContent("Status", value: model.status)
+                if !model.sessionID.isEmpty { LabeledContent("Session", value: model.sessionID) }
+                LabeledContent("Engine", value: model.engineState)
+                HStack {
+                    Button("Connect") { model.connect() }
+                    Spacer()
+                    Button("Disconnect", role: .destructive) { model.disconnect() }
                 }
             }
-            .navigationTitle("Dialler")
+            Section("Log") {
+                Button("Send diagnostics to the server") { Task { await model.sendDiagnostics(reason: "manual") } }
+                if !model.diagnosticsStatus.isEmpty {
+                    Text(model.diagnosticsStatus).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(Array(model.log.enumerated().reversed()), id: \.offset) { _, line in
+                    Text(line).font(.caption.monospaced())
+                }
+            }
         }
+        .navigationTitle("Status")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -508,12 +516,16 @@ struct StatusView: View {
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    /// Owned by `ContentView`, so a tab-bar tap can pop the hidden page.
+    @Binding var path: NavigationPath
     /// Comma-separated, as typed; parsed by `SSIDList` on save. Prefilled
     /// from the saved configuration, which loads asynchronously.
     @State private var ssids = ""
 
+    enum Route: Hashable { case status }
+
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 Section("Light server") {
                     TextField("Host", text: $model.host).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -553,6 +565,23 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            // The title is drawn by us so it can take the gesture (a large
+            // navigation title cannot). Five seconds, on purpose: nothing a
+            // user does by accident.
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("Settings")
+                        .font(.headline)
+                        .contentShape(Rectangle())
+                        .onLongPressGesture(minimumDuration: 5) { path.append(Route.status) }
+                }
+            }
+            .navigationDestination(for: Route.self) { route in
+                switch route {
+                case .status: StatusView()
+                }
+            }
         }
     }
 }

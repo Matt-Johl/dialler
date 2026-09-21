@@ -38,6 +38,20 @@ audio units: the shim's hold stops the call's audio and keeps baresip from
 re-creating its source, because iOS allows one VoiceProcessingIO input and
 the active call must have it (SPEC §4.4 rule 8).
 
+**Directory (SPEC §6 item 7).** Each device has its own directory on the
+server, and the server is the source of truth: the Directory tab's add,
+edit, delete and star all write there first (`DirectoryClient.create /
+update / delete`, device-authenticated, online only) and the list follows
+by the usual delta sync, which the server's `directory_changed` to this
+device triggers and the app also requests after each write. The star flips
+optimistically and a failed write puts it back. The book is persisted in
+`<App Group>/directory/book.json` (`AddressBookStore`), so the cursor
+survives a launch and the list is on screen before the first sync.
+Search (`DirectorySearch`) matches any substring of the name or the
+extension, case- and diacritic-insensitive, locally. A new contact's mode
+is guessed from its number (bare or in our SIP domain → local, elsewhere →
+trunk) and can be changed.
+
 **Recents (SPEC §6 item 6).** Every way a call leaves the controller's
 table emits one `CallRecord` through `CallController.onCallEnded`
 (`DiallerCore/Recents.swift`: direction, the other party, start / connect /

@@ -8,9 +8,48 @@ public struct DirectoryContact: Codable, Equatable, Identifiable, Sendable {
     public var mode: String // "local" | "trunk"
     public var version: Int64
     public var deleted: Bool?
+    /// Starred by the user (or the admin); the server omits it when false.
+    public var favourite: Bool?
+
+    public init(id: String, displayName: String, uri: String, mode: String, version: Int64, deleted: Bool? = nil, favourite: Bool? = nil) {
+        self.id = id
+        self.displayName = displayName
+        self.uri = uri
+        self.mode = mode
+        self.version = version
+        self.deleted = deleted
+        self.favourite = favourite
+    }
+
+    public var isFavourite: Bool { favourite == true }
 
     enum CodingKeys: String, CodingKey {
-        case id, uri, mode, version, deleted
+        case id, uri, mode, version, deleted, favourite
+        case displayName = "display_name"
+    }
+}
+
+/// What the app sends to create or change a contact: the fields the user
+/// owns. The server assigns id and version.
+public struct ContactDraft: Codable, Equatable, Sendable {
+    public var displayName: String
+    public var uri: String
+    public var mode: String
+    public var favourite: Bool
+
+    public init(displayName: String, uri: String, mode: String, favourite: Bool = false) {
+        self.displayName = displayName
+        self.uri = uri
+        self.mode = mode
+        self.favourite = favourite
+    }
+
+    public init(_ c: DirectoryContact) {
+        self.init(displayName: c.displayName, uri: c.uri, mode: c.mode, favourite: c.isFavourite)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case uri, mode, favourite
         case displayName = "display_name"
     }
 }
@@ -39,14 +78,49 @@ public struct DirectoryClient {
 
     /// Fetch everything newer than `since` (0 = full sync, no tombstones).
     public func changes(since: Int64) async throws -> DirectorySync {
-        var req = URLRequest(url: base.appendingPathComponent("v1/directory").appending(queryItems: [.init(name: "since", value: String(since))]))
+        let req = request("GET", path: "v1/directory", query: [.init(name: "since", value: String(since))])
+        return try JSONDecoder().decode(DirectorySync.self, from: try await perform(req))
+    }
+
+    // MARK: Writes (SPEC §6 item 7): the device's own directory, online only.
+
+    /// Adds a contact (the server matches an existing one by URI). Returns
+    /// it as stored; sync afterwards to pick up any tombstones the collapse
+    /// of duplicates produced.
+    public func create(_ draft: ContactDraft) async throws -> DirectoryContact {
+        var req = request("POST", path: "v1/directory")
+        req.httpBody = try JSONEncoder().encode(draft)
+        return try JSONDecoder().decode(DirectoryContact.self, from: try await perform(req))
+    }
+
+    public func update(id: String, _ draft: ContactDraft) async throws -> DirectoryContact {
+        var req = request("PUT", path: "v1/directory/\(id)")
+        req.httpBody = try JSONEncoder().encode(draft)
+        return try JSONDecoder().decode(DirectoryContact.self, from: try await perform(req))
+    }
+
+    public func delete(id: String) async throws {
+        _ = try await perform(request("DELETE", path: "v1/directory/\(id)"))
+    }
+
+    private func request(_ method: String, path: String, query: [URLQueryItem] = []) -> URLRequest {
+        var url = base.appendingPathComponent(path)
+        if !query.isEmpty { url = url.appending(queryItems: query) }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.timeoutInterval = 15
         req.setValue(deviceID, forHTTPHeaderField: "X-Device-ID")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if method != "GET" { req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        return req
+    }
+
+    private func perform(_ req: URLRequest) async throws -> Data {
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
-        return try JSONDecoder().decode(DirectorySync.self, from: data)
+        return data
     }
 }
 
@@ -113,8 +187,8 @@ public final class DirectoryNameIndex: @unchecked Sendable {
 }
 
 /// Local address book with reconcile: applies deltas (including tombstones)
-/// and remembers the cursor.
-public struct AddressBook: Equatable, Sendable {
+/// and remembers the cursor. Persisted by `AddressBookStore`.
+public struct AddressBook: Codable, Equatable, Sendable {
     public private(set) var version: Int64 = 0
     public private(set) var contacts: [String: DirectoryContact] = [:]
 
@@ -123,6 +197,9 @@ public struct AddressBook: Equatable, Sendable {
     public var sorted: [DirectoryContact] {
         contacts.values.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
+
+    /// The starred contacts, in the same order.
+    public var favourites: [DirectoryContact] { sorted.filter(\.isFavourite) }
 
     public mutating func apply(_ sync: DirectorySync) {
         for c in sync.contacts {
@@ -133,5 +210,17 @@ public struct AddressBook: Equatable, Sendable {
             }
         }
         version = max(version, sync.version)
+    }
+
+    /// An optimistic local change (a star toggled) shown before the server
+    /// confirms it; the next sync brings the truth either way.
+    public mutating func setFavourite(id: String, _ on: Bool) {
+        contacts[id]?.favourite = on ? true : nil
+    }
+
+    /// Forget everything: the next sync starts from version 0.
+    public mutating func reset() {
+        version = 0
+        contacts = [:]
     }
 }

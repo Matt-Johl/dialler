@@ -165,6 +165,8 @@ final class AppModel: ObservableObject {
     private var pushManager: NEAppPushManager?
     /// Every loaded manager instance, kept alive so their delegates stay set.
     private var pushManagers: [NEAppPushManager] = []
+    /// Live observation of the adopted manager's `isActive`.
+    private var pushObservation: NSKeyValueObservation?
     private lazy var localPushDelegate = LocalPushDelegate(model: self)
     /// The address book, persisted (SPEC §6 item 7) so the sync cursor
     /// survives a launch and the list is on screen before the first sync.
@@ -608,7 +610,24 @@ final class AppModel: ObservableObject {
         // (on a matching SSID). false here explains "callee offline, wake
         // undeliverable" on the server: nothing holds the wake connection.
         append("Local Push: delegate attached (enabled=\(manager.isEnabled), active=\(manager.isActive), ssids=\(manager.matchSSIDs))")
-        backgroundCalls = Self.backgroundCallState(enabled: manager.isEnabled, active: manager.isActive)
+        refreshBackgroundCalls()
+        // The provider starts (and stops) a moment after a save, not
+        // during it, so a value read at save time went stale until the
+        // next launch. Apple's sample observes `isActive` (SimplePush
+        // `PushConfigurationManager`); so do we, for the life of the
+        // loaded instance.
+        pushObservation = manager.observe(\.isActive, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.refreshBackgroundCalls() }
+        }
+    }
+
+    /// The Settings line, from the loaded manager as it stands now.
+    private func refreshBackgroundCalls() {
+        guard let m = pushManager else {
+            backgroundCalls = Self.backgroundCallState(enabled: false, active: false)
+            return
+        }
+        backgroundCalls = Self.backgroundCallState(enabled: m.isEnabled, active: m.isActive)
     }
 
     func connect() {
@@ -648,6 +667,7 @@ final class AppModel: ObservableObject {
     /// user disconnected) nothing happens.
     private func appBecameActive() {
         session?.setActive(true)
+        refreshBackgroundCalls() // the provider may have started or stopped while we were away
         // Calls the extension reported while we were away.
         if let store = recentsStore {
             recents = store.foldPending()
@@ -933,7 +953,15 @@ final class AppModel: ObservableObject {
                     m.removeFromPreferences { err in
                         Task { @MainActor in
                             self.localPushStatus = err.map { "remove failed: \($0.localizedDescription)" } ?? "removed; re-enable to save afresh"
-                            if err == nil { self.localPushSSIDs = [] }
+                            if err == nil {
+                                // Nothing is saved any more: say so now, not at
+                                // the next launch (it read "running" until then).
+                                self.localPushSSIDs = []
+                                self.pushObservation = nil
+                                self.pushManager = nil
+                                self.pushManagers = []
+                                self.refreshBackgroundCalls()
+                            }
                         }
                     }
                 }

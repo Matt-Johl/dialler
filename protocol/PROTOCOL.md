@@ -60,7 +60,7 @@ requires bumping `v`.
 | `pong` | — | Answer to `ping`. |
 | `wake` | `call_id`, `from{display_name,uri}`, `to{display_name,uri}`, `sip{host,port,transport}`, `expires_at` | Incoming call. Client MUST report to CallKit immediately and then register SIP to `sip`. |
 | `wake_cancel` | `call_id`, `reason` (`"caller_hangup"` \| `"answered_elsewhere"` \| `"timeout"`) | Stop ringing. |
-| `directory_changed` | `version` | Address book changed on the server; client should sync. |
+| `directory_changed` | `version` | Address book changed on the server; client should sync. From SPEC §6 item 7 the directory is per device: `version` (here and in `welcome`) is the receiving device's own directory version, and a device is never told about another device's changes. Semantic note only — same body, no bump. |
 | `error` | `code`, `message`, `fatal` (bool) | Protocol or auth error. If `fatal`, the server closes after sending. |
 
 Exactly one of `hello` (client) or `error` (server) is the first frame in each

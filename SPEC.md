@@ -103,6 +103,9 @@ lets ~everything be validated with no device (see §7).
 | Server language | **Go**, standard library only (no external modules) |
 | Coverage | **Wi-Fi-only (LPC).** Remote app users (cellular / home Wi-Fi) are **unscheduled** (§6 "Much later"). The wake transport stays abstracted so an APNS sibling could be added without a rework, but none is planned |
 | Distribution | **Public App Store**, in-app LPC configuration |
+| Directory ownership | **One directory per device.** The server is the source of truth for contacts; the admin (CSV) and the user (in-app) edit the same list, favourites included. No shared or global list (§6 item 7) |
+| Management plane | **Separate process, `dialler-admin`** (Go, stdlib, server-rendered HTML, embedded assets) speaking only to the call server's admin API. The call server gains additive JSON endpoints and nothing else; an admin action never interrupts a call and affects only the device it names (§4.8). Call history is device-local — the server keeps no call records |
+| Device onboarding | **Short-lived enrolment code**, delivered as a QR (`dialler://enrol…`) or typed with the server address; the claim rotates the device credential and pins the server certificate (§4.8, §6 item 8) |
 | Video / IM | **Not scheduled** (§6 "Much later") |
 
 ## 4. Architecture
@@ -541,6 +544,9 @@ real LPC, or a real PBX. Built and verified in dependency order:
 | 8 | **`AddressBookStore` + `DirectorySync`** | local store + reconcile | persistence + sync-conflict tests |
 | 9 | **`AudioSession` / media** | Opus/G.722/G.711 capture/playback | integration / manual call tests |
 | 10 | **Device enrolment / auth** (server + Swift) | issue / verify / revoke device credential | HTTP-level + keychain tests |
+| 11 | **`RecentsStore`** (Swift, DiallerCore) | append / list / delete / fold the extension's pending records; outcome classification | persistence tests against a temp App Group directory, a classification table test, no CallKit |
+| 12 | **Enrolment code** (server) + **`EnrolmentClient`** (Swift) | mint / claim / expire / rotate | `ServeHTTP` tests (expiry, single use, rate limit, rotation revokes the old token, other devices untouched); the Swift client against a stubbed `URLProtocol` |
+| 13 | **`dialler-admin`** | handlers over an in-process fake of the admin API; CSV ↔ contact list; QR encoder | handler tests, CSV round-trip incl. quoting and UTF-8, QR golden vectors (decoded on a phone once) |
 
 Key abstractions to keep future-proofing cheap (see §7 for how each is tested
 without a device):
@@ -809,7 +815,12 @@ on by config — see §7.4.
      label sit awkwardly at small widths, the keypad is plain, and the
      settings screen is a debug surface with the diagnostics controls in
      it. None of it is call-path work, so it can land whenever — but it
-     wants doing before anyone outside the team sees the app.
+     wants doing before anyone outside the team sees the app. *Scope
+     widened 2026-09-21:* the pass also covers the Recents tab (item 6),
+     the directory's edit forms, favourites and search (item 7), the
+     onboarding screens and the diagnostics sheet (item 8); the tab bar
+     it designs for is **Recents / Directory / Keypad / Settings**, with
+     Status gone from it.
   5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
      tuning (parked 2026-09-07). *2026-09-10:* the "received audio 0–2 s
      late, varying per call" symptom was the media relay, not the app: the
@@ -886,6 +897,148 @@ on by config — see §7.4.
      on the real WLAN: an app-leg Opus transcoder in the server, kept out
      on purpose (latency, tandem coding, breaks the copy-relay and the
      std-lib-only server).
+
+  *Items 6–9 added 2026-09-21.* They are ordered by call-path risk, lowest
+  first, and that is also the build order: the app-only work lands before
+  anything touches the server, and the one real server change (per-device
+  directories, item 7) lands before the process that depends on it (item
+  9). Decisions behind them are in §3 (directory ownership, management
+  plane, device onboarding) and the mechanism in §4.8. The governing rule
+  throughout: **the existing call server stays stable** — everything that
+  can live outside `dialler-server` does, and what must go in is additive.
+
+  6. **Recents (app only; no server change).** A list of the device's
+     calls: answered ones with their duration, missed ones, and dialled
+     ones with either a duration or why they failed. DiallerCore gains
+     `CallRecord { callID, direction, counterpart{displayName, uri},
+     startedAt, connectedAt?, endedAt, outcome }` with `outcome` one of
+     `completed | missed | declined | busy | noAnswer | unknownNumber |
+     unavailable | failed | answeredElsewhere` and the duration derived.
+     Classification is a table, unit-tested: incoming, never connected,
+     ended by the caller or the ring timeout → `missed`; incoming and
+     refused by the user → `declined`; incoming and cancelled
+     `answered_elsewhere` → `answeredElsewhere` (kept, but not in the
+     Missed filter); outgoing and connected → `completed`; outgoing and
+     never connected → whatever `CallProgress.forFailure` made of the SIP
+     status (busy, no answer, unknown number, unavailable, failed). The
+     record is written at `AppModel.callEnded`, which already has the
+     tracked call's title, direction and `connectedAt`, fed by the status
+     `CallController.handle(sipEnded:)` alone sees.
+     *Storage:* `RecentsStore` in the App Group container (the `FileLog`
+     directory is the precedent): `recents.json`, newest first, capped at
+     500, written atomically. The extension never writes that file; for a
+     wake it reported (and any `wake_cancel` it saw) it drops a sidecar
+     `recents/pending/<call_id>.json`, and the app folds those in at
+     launch, on foreground and at each call end, upserting by call id
+     with its own record winning — so a call the app never ran for still
+     shows as missed, and two processes never write one file.
+     *UI:* a **Recents** tab takes Status's place, and the tab order
+     becomes Recents / Directory / Keypad / Settings with Recents the
+     launch tab. Filter All / Missed; each row shows the name (a directory
+     lookup at render time, the stored name as fallback), the URI, a
+     direction glyph, a relative time, and the duration or the outcome
+     label; a tap redials; swipe to delete; Clear all. Missed calls badge
+     the tab until it is viewed. iOS's own Recents keep working
+     (`includesCallsInRecents` stays on). *Headless:* `make sim-call`,
+     `sim-call-refused` and `sim-call-cw` each assert the record they
+     should leave. *Device:* §7.3 item 8.
+
+  7. **Per-device directories, favourites, search, and in-app editing
+     (server: additive, plus one migration).** Today one global list with
+     one version counter is pushed to every device. From here each device
+     owns a directory: `<data-dir>/directories/<device_id>.json`, each
+     with its own version counter and tombstones, `directory.Store` keyed
+     by device. *Migration,* run once at start-up when the legacy
+     `directory.json` exists: copy its live contacts into every enrolled,
+     non-revoked device's directory, then rename the file
+     `directory.json.migrated`; tested against a fixture of the current
+     file shape. A downgrade loses per-device edits and nothing else.
+     *Push:* `gateway.NotifyDirectory(deviceID, version)` reaches only
+     that device's sessions, and `welcome.directory_version` is that
+     device's version — the "unique directory load per app instance".
+     The wire bodies are unchanged; PROTOCOL.md carries a one-sentence
+     semantic note, no version bump.
+     *Device-facing API:* `GET /v1/directory?since=` is unchanged (already
+     scoped by `X-Device-ID`); `POST /v1/directory`, `PUT` and `DELETE
+     /v1/directory/{id}` become **device-authenticated** writes to the
+     caller's own directory, with the same de-duplication by URI. The
+     admin-token verbs move to `/v1/admin/devices/{id}/directory…`
+     (§4.8) and `harness/provision.sh` follows. Edits are online-only —
+     no offline queue; a write returns the new version and the app
+     applies it as a delta, so `AddressBook.apply` needs no change.
+     *Favourites:* `Contact` gains `favourite` (JSON `favourite`, omitted
+     when false), versioned and synced like every other field, so a
+     toggle is an ordinary `PUT` and reaches the admin UI and the CSV
+     alike. The app pins a **Favourites** section above the full list,
+     puts a star on each row and in the edit form, and offers
+     swipe-to-favourite; the star is optimistic and reverts if the write
+     fails. *Search:* a search field over the directory (`.searchable`)
+     matching any substring of the display name or of the URI's user part
+     (the extension), case- and diacritic-insensitive, applied locally to
+     the in-memory book so it is instant and works offline, across both
+     sections. *App:* `AddressBook` is persisted in the App Group
+     container so the cursor survives a launch (and the extension can
+     name callers from it); `DirectoryClient` gains create / update /
+     delete; the Directory tab gains add (name, number, mode defaulting
+     by the routing rule of §4 "Standalone mode", favourite), edit and
+     swipe-to-delete.
+
+  8. **First-run enrolment, and Status hidden behind a gesture (app, plus
+     the enrolment-code routes of §4.8).** *Gate:* while
+     `AppConfig.isComplete` is false the app shows a full-screen
+     onboarding view instead of the tabs, with two ways in: **Scan QR**
+     (VisionKit `DataScannerViewController`; `NSCameraUsageDescription`
+     added to the app's Info.plist) and **Enter manually** (server
+     address and code; port defaults to 8080). Both end in
+     `EnrolmentClient.claim(host:port:code:)` (DiallerCore, testable), then
+     `AppConfig` is saved (token in the keychain, as now) and the app
+     connects. `onOpenURL` takes a `dialler://enrol…` link from the iOS
+     Camera app down the same path. Settings gains **Re-enrol this
+     device**, which wipes the credential and returns to onboarding.
+     *Status:* the tab is removed. Its content becomes a **Diagnostics**
+     sheet, opened by a **two-second long press on the keypad's number
+     display** (the blank area above the keys, empty or not) and, before
+     enrolment, on the onboarding logo. The sheet holds what Status and
+     the debug half of Settings hold today: gateway, session and engine
+     state, connect / disconnect, the in-memory log, send diagnostics,
+     and the dev-only fields — host, port, device id and token entered
+     directly, and accept-any-certificate. Settings keeps only what a
+     user should see: server address and device id (read-only), call
+     waiting, Local Push SSIDs, re-enrol, and the version and
+     acknowledgements screen of item 4. *Dev path:* `make dev-server` and
+     `harness/provision.sh` print an enrolment code per fixed device so
+     the simulator onboards through the real flow (it has no camera, so
+     manual entry); direct entry on the diagnostics sheet remains the
+     fallback.
+
+  9. **`dialler-admin` (new process; needs item 7 and the routes of
+     §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib
+     only, templates and CSS through `embed`. Flags: `-listen`, `-server`,
+     `-admin-token`, `-server-ca` or `-insecure`, `-password-file`,
+     `-tls-cert`/`-tls-key` (self-signed when absent); `make admin` and
+     `make dev-admin`. *Pages:* **Devices** — label, user, generated id
+     (read-only, copyable), app and extension online, SIP registered,
+     revoked; add a device (label + user) and be shown its code, expiry
+     and QR; per row: revoke, new code. **Device** — the directory as a
+     table with inline add / edit / delete and a favourite star,
+     **Download CSV**, **Upload CSV** (replace-all, with the counts of
+     rows added, changed and removed shown before it applies), and **Copy
+     directory to…** other devices. **Server** — healthz, version, trunk
+     qualify state. *CSV format* is in §4.8. *QR:* an in-tree encoder
+     (`internal/qr`: byte mode, error-correction M, versions 1–10)
+     rendered as inline SVG, so the binary stays stdlib-only and builds
+     offline; golden tests plus one scan on a phone. If that proves slow
+     to write, the fallback is a vendored single-file JavaScript encoder
+     (a one-off download outside the sandbox). *Remove* is the existing
+     revoke — the directory is kept, so re-enrolling the same device
+     restores it — and a separate *Purge* deletes record and directory.
+     *Isolation:* the rule of §4.8 applies in full — every admin action
+     touches one device's entry and one device's file, notifies one
+     device, and never restarts, reloads or re-binds anything. `make
+     harness-test` gains the check: with a dev-ha ↔ dev-hb call bridged,
+     revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
+     call's audio continues, and neither dev-ha nor dev-hb sees a session
+     close, a re-INVITE or a `directory_changed`.
 
 ### Much later (not scheduled)
 
@@ -1026,6 +1179,97 @@ of avoided half-second reconnects, and cost an interval of *slower*
 detection of a genuinely dead link, which is the wrong way round. If this
 ever looks worth revisiting, price it against that.
 
+### 4.8 Management plane and enrolment (decided 2026-09-21)
+
+Two processes. `dialler-server` is the call element and keeps exactly the
+responsibilities it has: gateway, registrar, B2BUA, relay, directory store,
+device credentials. `dialler-admin` is the operator's web UI: a second Go
+binary in the same module (stdlib only, templates and CSS embedded), holding
+the admin token and a login of its own, speaking to the call server's admin
+API over HTTPS and to nothing else. It never touches SIP, media or the wake
+gateway; it can crash, restart or be redeployed with no effect on a call.
+Typically both run on the same box (`-server https://127.0.0.1:8080`). The
+admin verifies the call server's certificate (`-server-ca`, or `-insecure`
+against the self-signed dev certificate) and serves its own pages over TLS
+through the same `tlsutil` pattern, behind a single operator password
+(`-password-file`), a session cookie and a CSRF token on every form. No
+roles.
+
+**Rule: an admin action never interrupts the call server, and affects only
+the device it names.** Every admin request is an ordinary handler call that
+takes the store lock, changes one device's entry and rewrites that device's
+file atomically. There is no reload, restart, listener re-bind or global
+re-read, and no file is shared between devices, so a half-written file for
+one device cannot damage another's. Effects are scoped: adding a device
+provisions one registry entry; revoking or rotating a credential closes that
+device's gateway sessions (`error/unauthorized`) and drops its registration
+— a call it is on runs to its natural end, since in-dialog requests are not
+challenged, but it cannot re-register; a directory write notifies that device
+alone; an enrolment code binds to one device. `make harness-test` proves it
+(§7.2, §6 item 9).
+
+**Identifiers.** The **device id** (`dev-a`) is the credential username of
+one phone install: the `X-Device-ID` header, `hello.device_id` and the SIP
+Digest username. The **user** (`201`) is the extension the device registers
+as and what other people dial; one user has at most one device. The operator
+never invents an id: the server generates one (`dev_` + six base32
+characters) when a device is added without one — `POST /v1/admin/devices`
+still honours an explicit `device_id`, which the harness fixtures rely on —
+and the device record carries an optional human `label` ("Matt's iPhone",
+"Warehouse 3") so the operator thinks in extension and label. The **contact
+id** (`ct_…`) is the server's stable key for one directory entry, so a
+rename is an update rather than a delete and an add, and a tombstone can name
+what went; the app never shows it and CSV omits it (the reconcile matches on
+URI).
+
+**Enrolment code.** Adding a device (or "new code" on an existing one) mints
+an eight-character code from the Crockford base32 alphabet without I, L, O
+and U, valid for fifteen minutes, single use, stored as a hash beside the
+credential in `devices.json`. Claiming it issues a fresh token and revokes
+the previous one, so re-enrolment is credential rotation, and a lost phone is
+handled by minting a code for its replacement. The claim route, `POST
+/v1/enrol {code}`, is the server's only unauthenticated write and is treated
+as such: constant-time comparison; an invalid or expired code answers 404
+after a fixed 500 ms; a source address gets five attempts a minute. The reply
+is `{device_id, user, token, signal_port, sip_domain, cert_sha256}`.
+
+**QR and manual entry.** The QR encodes
+`dialler://enrol?h=<host>&p=<https port>&c=<code>&f=<certificate SHA-256,
+base64url>`. The app registers the `dialler` URL scheme, so the iOS Camera
+app opens it directly and the in-app scanner reads the same URL. Manual entry
+is the host and the code (port defaults to 8080). After the claim the app
+**pins** the server certificate's SHA-256 — from the QR, or
+trust-on-first-use from the claim reply on the manual path — for both the
+signal socket and HTTPS, replacing today's "accept any certificate";
+`LANSocketTransport`'s verify block and `DirectoryClient`'s session take a
+pin instead of a boolean. The dev toggle survives on the hidden diagnostics
+sheet only (§6 item 8).
+
+**Admin API the frontend depends on** — all additive, admin bearer, new
+handlers; nothing that exists changes shape:
+
+- `GET /v1/admin/status` — per device: label, user, revoked, app and
+  extension sessions online, SIP registered and contact expiry; trunk
+  qualify state. Read-only views of what `gateway`, `registry` and `pbx`
+  already hold in memory.
+- `POST /v1/admin/devices/{id}/enrol-code` → `{code, expires_at, url}`.
+- `GET /v1/admin/devices/{id}/directory` (the full list) and `PUT`
+  (replace-all: the server reconciles by URI — upsert what changed,
+  tombstone what is missing — and bumps that device's version once).
+- `POST /v1/admin/devices/{id}/directory`, and `PUT` / `DELETE`
+  `…/directory/{cid}` per contact. The admin verbs on `/v1/directory` move
+  here; that path's write verbs become the device's own (§6 item 7).
+- `DELETE /v1/admin/devices/{id}` stays a revoke; `?purge=1` also deletes
+  the record and the directory.
+
+CSV lives in `dialler-admin`, not in the call server:
+`display_name,uri,mode,favourite` with a header row, UTF-8, RFC 4180
+quoting; `uri` may be a bare number, which the server normalises to
+`sip:<n>@<domain>`; `favourite` is `true`/`false`, and a missing column means
+false. The harness keeps issuing its fixed tokens through `POST
+/v1/admin/devices` and additionally prints an enrolment code per device, so
+onboarding can be exercised against it.
+
 ## 7. Validation strategy: maximise automation, bound the human touch
 
 Principle: **every Apple-hardware dependency is hidden behind a seam that has a
@@ -1065,6 +1309,11 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
   added — optional, not on the critical path).
 - Simulator: full app + CallKit control flow over `LANSocketTransport`, via
   XCTest in CI.
+- Admin isolation (§4.8): `make harness-test` revokes, re-directories and
+  re-codes other devices while a call is bridged and asserts the call and
+  its parties are untouched (§6 item 9). Enrolment codes, per-device
+  directory sync and the CSV round-trip are `ServeHTTP`-level tests
+  (§5 rows 11–13).
 
 ### 7.3 Irreducible human-touch list (the entire manual surface)
 1. Extension launches on matched-SSID join and survives app kill / background.
@@ -1107,6 +1356,21 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    cannot stage, because our server never sends it: a PBX destination
    answering with 183 and its own ring-back (Asterisk `Progress()`) must
    give **one** ring-back, not two.
+
+7. Enrolment (§6 item 8; plan 2026-09-21): enrol a fresh install from the
+   QR `dialler-admin` shows — once through the iOS Camera app, once through
+   the in-app scanner, once by typing host and code — and confirm the pin
+   holds: swap the server certificate and the app must refuse to connect
+   with a message that says why.
+
+8. Recents (§6 item 6): with the app killed, ring the phone and let it
+   time out; open the app — one Missed row, the right name and time, and a
+   tap redials. Then one answered call and one dialled call that is
+   declined: a duration on the first, "Declined" on the second.
+
+9. The hidden gesture (§6 item 8): a two-second press on the number display
+   opens Diagnostics; a tap or a one-second press does not, and a press
+   while digits are entered does not clear them.
 
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".
@@ -1631,6 +1895,18 @@ it is neither linked nor redistributed.
     is then either a PBX setting on the trunk endpoint (`moh_passthrough`,
     `rtp_symmetric`, MOH class) or a specific re-INVITE/SSRC handling in
     diago — different work, so nothing is changed until that is seen.
+14. **An unauthenticated write on the LAN-exposed server (planned, §4.8).**
+    `POST /v1/enrol` is the first route that writes without a credential:
+    a claimed code rotates a device's token. Mitigations are part of the
+    design — a single-use eight-character code that expires in fifteen
+    minutes, stored hashed, compared in constant time, a fixed delay on a
+    miss and five attempts a minute per source address — and every other
+    admin verb stays behind the admin token, on a separate process.
+    Residual: someone on the LAN who sees the QR before the phone does;
+    the expiry and single use bound it, and the operator sees the device
+    come online under the wrong address in `dialler-admin`. Validate the
+    rate limit and the "other devices untouched" property in the
+    `ServeHTTP` tests before the route ships.
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

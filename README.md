@@ -104,15 +104,13 @@ See [ios/README.md](ios/README.md). `make ios-test`, `make ios-typecheck`,
 then open `ios/Dialler/Dialler.xcodeproj` and run on an iPhone simulator
 against `make harness-up`; `make harness-ring-sim` rings it.
 
-## Next (Phase 1, remaining)
+## Next
 
-- **First real call on a device**: `make ios-vendor` once, then build the
-  app (it now links `DiallerEngine`), start the harness with
-  `DIALLER_PUBLIC_HOST=$(ipconfig getifaddr en0) make harness-up`, and answer
-  a `make harness-ring-sim` call. Expect registration → INVITE → established
-  → audio through the server's relay.
-- Killed-app wake through the Local Push extension (SPEC §7.3.1–2).
-- Ring-back before the callee answers (diago answers the caller first).
-- App-leg REGISTER authentication (LAN exposure on shared Wi-Fi; no longer
-  gated on the public edge, which is unscheduled — SPEC §6, §9 risk 2).
-- Trunk-side listener for the PBX leg (Phase 2).
+The roadmap lives in [SPEC.md §6](SPEC.md) ("Remaining near-term"). Items 6–9
+(added 2026-09-21) are the next tranche, in build order: a Recents tab,
+per-device directories with favourites, search and in-app editing, first-run
+enrolment by QR or code with the Status tab hidden behind a gesture, and a
+separate `dialler-admin` web UI (`cmd/dialler-admin`, `internal/qr`) that
+manages devices and directories (CSV up/down) through the admin API. The
+mechanism and the isolation rule are in SPEC §4.8: nothing the admin does
+interrupts the call server or any device other than the one named.

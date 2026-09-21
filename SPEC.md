@@ -1254,7 +1254,13 @@ on by config — see §7.4.
      through to the device; small inline SVG icons (`icons.go`); the
      Save affordance in the page header, hidden until something changes;
      light and dark palettes both tuned. Behaviour (in-place editing,
-     dialogs, motion, plain-form fallback) unchanged.
+     dialogs, motion, plain-form fallback) unchanged. Then: the device id
+     is chosen on the Add device form (validated, refused when taken),
+     leads every list, title and confirmation, and the label is a
+     secondary note; adding a device lands on its page with **no code
+     minted** (`"code": false`), because the settings must be in before
+     enrolment is worth anything, and the code is asked for from the
+     page header when the device is ready.
 
 ### Much later (not scheduled)
 
@@ -1471,6 +1477,10 @@ handlers; nothing that exists changes shape:
   qualify state. Read-only views of what `gateway`, `registry` and `pbx`
   already hold in memory.
 - `POST /v1/admin/devices/{id}/enrol-code` → `{code, expires_at, url}`.
+  `POST /v1/admin/devices` mints a first code with the device unless the
+  body says `"code": false` — which the console does, since a device needs
+  its settings (networks, PBX credentials) before a phone can usefully
+  enrol; the admin adds it, fills its page in, then asks for the code.
 - `GET /v1/admin/devices/{id}/directory` (the full list) and `PUT`
   (replace-all: the server reconciles by URI — upsert what changed,
   tombstone what is missing — and bumps that device's version once).

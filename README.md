@@ -58,8 +58,10 @@ characters, fifteen minutes, single use, returned with a `dialler://enrol`
 link the admin UI shows as a QR. Leave `token` out (as a real deployment
 does) and the device has no credential until it claims the code; a
 `token` (the harness's fixed fixtures) issues that credential at once as
-well. `POST /v1/admin/devices/<id>/enrol-code` mints a new one for an
-existing device — a lost phone, or a revoked device coming back. The phone
+well. Send `"code": false` to add a device without minting a code (the
+admin console does: settings first, code when ready).
+`POST /v1/admin/devices/<id>/enrol-code` mints one for an existing
+device — a lost phone, a revoked device coming back, or a device just set up. The phone
 claims with the server's one unauthenticated write, which rotates the
 credential and drops whatever was connected with the old one:
 

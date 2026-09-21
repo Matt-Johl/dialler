@@ -175,3 +175,28 @@ func TestDeviceIDRule(t *testing.T) {
 		t.Fatalf("a generated id must pass the rule: %q %v", id, err)
 	}
 }
+
+func TestCreateWithoutCode(t *testing.T) {
+	store, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewAdminHandler(store, "admin-secret", Link{Host: "10.0.0.1", HTTPSPort: 8080}, Hooks{})
+	req := httptest.NewRequest("POST", "/v1/admin/devices", strings.NewReader(`{"device_id":"dev-q","user":"210","code":false}`))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 201 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if _, minted := out["code"]; minted {
+		t.Fatal("a create with code:false must not mint")
+	}
+	for _, d := range store.Devices() {
+		if d.DeviceID == "dev-q" && d.CodePending {
+			t.Fatal("no code should be pending")
+		}
+	}
+}

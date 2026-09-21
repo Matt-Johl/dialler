@@ -422,8 +422,8 @@ func (a *App) createDevice(w http.ResponseWriter, r *http.Request, sess *session
 		a.apiFailed(w, r, sess, "/devices/new", err)
 		return
 	}
-	a.sessions.setFlash(sess, "code:"+created.DeviceID, Code{Code: created.Code, ExpiresAt: created.ExpiresAt, URL: created.URL})
-	http.Redirect(w, r, "/devices/"+url.PathEscape(created.DeviceID)+"/code", http.StatusSeeOther)
+	a.sessions.setFlash(sess, "notice", "Device added. Put its settings in, then issue an enrolment code.")
+	http.Redirect(w, r, "/devices/"+url.PathEscape(created.DeviceID), http.StatusSeeOther)
 }
 
 // find returns one device's status row, or an error when it is unknown.

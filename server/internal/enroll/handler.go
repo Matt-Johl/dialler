@@ -97,6 +97,10 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			// Optional fixed token (dev fixtures); no credential is issued
 			// when absent — the device claims its code for one.
 			Token string `json:"token,omitempty"`
+			// A first enrolment code is minted unless "code" is false:
+			// the admin console adds a device, has its settings put in,
+			// and only then asks for a code.
+			Code *bool `json:"code,omitempty"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -124,12 +128,14 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			}
 			out["token"] = tok
 		}
-		code, expires, err := store.MintCode(id)
-		if err != nil {
-			http.Error(w, "enrolment store: "+err.Error(), http.StatusInternalServerError)
-			return
+		if in.Code == nil || *in.Code {
+			code, expires, err := store.MintCode(id)
+			if err != nil {
+				http.Error(w, "enrolment store: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			out["code"], out["expires_at"], out["url"] = code, expires, link.URL(code)
 		}
-		out["code"], out["expires_at"], out["url"] = code, expires, link.URL(code)
 		if hooks.OnIssue != nil {
 			hooks.OnIssue(id, in.User)
 		}

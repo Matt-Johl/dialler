@@ -115,6 +115,7 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			DeviceID string `json:"device_id"`
 			User     string `json:"user"`
 			Label    string `json:"label"`
+			Code     *bool  `json:"code"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		if in.User == "" {
@@ -129,10 +130,15 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if id == "" {
 			id = "dev_NEW001"
 		}
-		f.devices = append(f.devices, status.Device{Device: enroll.Device{DeviceID: id, User: in.User, Label: in.Label, CodePending: true}, Online: []wire.ClientKind{}})
-		f.minted++
+		mint := in.Code == nil || *in.Code
+		f.devices = append(f.devices, status.Device{Device: enroll.Device{DeviceID: id, User: in.User, Label: in.Label, CodePending: mint}, Online: []wire.ClientKind{}})
+		out := map[string]any{"device_id": id, "user": in.User, "label": in.Label}
+		if mint {
+			f.minted++
+			out["code"], out["expires_at"], out["url"] = "A7K2M9PX", time.Now().Add(15*time.Minute), "dialler://enrol?c=A7K2M9PX&f=fp&h=10.0.0.1&p=8080"
+		}
 		w.WriteHeader(201)
-		write(map[string]any{"device_id": id, "user": in.User, "label": in.Label, "code": "A7K2M9PX", "expires_at": time.Now().Add(15 * time.Minute), "url": "dialler://enrol?c=A7K2M9PX&f=fp&h=10.0.0.1&p=8080"})
+		write(out)
 	case len(parts) == 2 && parts[0] == "devices" && r.Method == "PUT":
 		var in struct{ User, Label string }
 		_ = json.NewDecoder(r.Body).Decode(&in)
@@ -414,22 +420,33 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 	_, api, b := setup(t)
 	signIn(t, b)
+	// Adding a device lands on its page with no code minted: the settings
+	// come first, the code is asked for after.
 	rec := b.post("/devices", url.Values{"user": {"205"}, "label": {"Warehouse 3"}})
-	if rec.Code != 303 || rec.Header().Get("Location") != "/devices/dev_NEW001/code" {
+	if rec.Code != 303 || rec.Header().Get("Location") != "/devices/dev_NEW001" {
 		t.Fatalf("create: %d → %s", rec.Code, rec.Header().Get("Location"))
 	}
+	if api.minted != 0 || api.devices[len(api.devices)-1].CodePending {
+		t.Fatal("adding a device must not mint a code")
+	}
+	if page := b.get("/devices/dev_NEW001").Body.String(); !strings.Contains(page, "Device added.") || !strings.Contains(page, "Not enrolled") {
+		t.Fatal("device page after add")
+	}
+	if rec := b.post("/devices/dev_NEW001/code", url.Values{}); rec.Code != 303 {
+		t.Fatalf("mint: %d", rec.Code)
+	}
 	page := b.get("/devices/dev_NEW001/code").Body.String()
-	for _, want := range []string{"A7K2-M9PX", "<svg", "Warehouse 3", "dialler://enrol?c=A7K2M9PX"} {
+	for _, want := range []string{"BFF6-GB4Z", "<svg", "Warehouse 3", "dialler://enrol?c=BFF6GB4Z"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("code page lacks %q", want)
 		}
 	}
 	// Reloading does not show it again.
-	if again := b.get("/devices/dev_NEW001/code").Body.String(); strings.Contains(again, "A7K2-M9PX") || !strings.Contains(again, "No code to show") {
+	if again := b.get("/devices/dev_NEW001/code").Body.String(); strings.Contains(again, "BFF6-GB4Z") || !strings.Contains(again, "No code to show") {
 		t.Fatal("the code must be shown once")
 	}
 	// A chosen id is used as given.
-	if rec := b.post("/devices", url.Values{"device_id": {"warehouse-3"}, "user": {"206"}}); rec.Code != 303 || rec.Header().Get("Location") != "/devices/warehouse-3/code" {
+	if rec := b.post("/devices", url.Values{"device_id": {"warehouse-3"}, "user": {"206"}}); rec.Code != 303 || rec.Header().Get("Location") != "/devices/warehouse-3" {
 		t.Fatalf("create with id: %d → %s", rec.Code, rec.Header().Get("Location"))
 	}
 	if api.devices[len(api.devices)-1].DeviceID != "warehouse-3" {
@@ -458,7 +475,7 @@ func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 	if page := b.get("/devices/dev-a/code").Body.String(); !strings.Contains(page, "BFF6-GB4Z") {
 		t.Fatal("new code not shown")
 	}
-	if api.minted != 3 {
+	if api.minted != 2 {
 		t.Fatalf("minted %d", api.minted)
 	}
 	// An empty extension never reaches the server.

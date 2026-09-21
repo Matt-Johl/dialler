@@ -1,9 +1,9 @@
 {{define "content"}}
-<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a>
+<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{.Device.DeviceID}}</a>
 {{if .Code}}
 <section class="enrol">
-  <h1>Enrol {{if .Device.Label}}{{.Device.Label}}{{else}}extension {{.Device.User}}{{end}}</h1>
-  <p class="sub">Scan with the phone's camera, or type the code into the app.</p>
+  <h1>Enrol <span class="mono" style="font-size:inherit">{{.Device.DeviceID}}</span></h1>
+  <p class="sub">Extension {{.Device.User}}{{if .Device.Label}} · {{.Device.Label}}{{end}}. Scan with the phone's camera, or type the code into the app.</p>
   <div class="qr">{{.QR}}</div>
   <p class="code">{{grouped .Code.Code}}</p>
   <p class="hint">Works once, for {{minutesLeft .Code.ExpiresAt}} more minutes. It won't be shown again.</p>

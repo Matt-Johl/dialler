@@ -111,13 +111,24 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		delete(f.pbxCreds, parts[1])
 		w.WriteHeader(204)
 	case r.Method == "POST" && p == "devices":
-		var in struct{ User, Label string }
+		var in struct {
+			DeviceID string `json:"device_id"`
+			User     string `json:"user"`
+			Label    string `json:"label"`
+		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		if in.User == "" {
 			http.Error(w, "enroll: device_id and user are required", 400)
 			return
 		}
-		id := "dev_NEW001"
+		if in.DeviceID != "" && !enroll.ValidDeviceID(in.DeviceID) {
+			http.Error(w, enroll.ErrBadDeviceID.Error(), 400)
+			return
+		}
+		id := in.DeviceID
+		if id == "" {
+			id = "dev_NEW001"
+		}
 		f.devices = append(f.devices, status.Device{Device: enroll.Device{DeviceID: id, User: in.User, Label: in.Label, CodePending: true}, Online: []wire.ClientKind{}})
 		f.minted++
 		w.WriteHeader(201)
@@ -362,7 +373,7 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 	_, _, b := setup(t)
 	signIn(t, b)
 	body := b.get("/").Body.String()
-	for _, want := range []string{"Matt&#39;s iPhone", "Extension 201", "app · extension", "Enrolled", "Code issued", "Extension 202"} {
+	for _, want := range []string{"dev-a", "Matt&#39;s iPhone", ">201<", "app · extension", "Enrolled", "Code issued", "dev-b", ">202<"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("devices page lacks %q", want)
 		}
@@ -380,7 +391,7 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 			t.Fatalf("device page lacks %q", want)
 		}
 	}
-	if copyPage := b.get("/devices/dev-a/directory/copy").Body.String(); !strings.Contains(copyPage, "Extension 202") || !strings.Contains(copyPage, `value="dev-b"`) {
+	if copyPage := b.get("/devices/dev-a/directory/copy").Body.String(); !strings.Contains(copyPage, "ext 202") || !strings.Contains(copyPage, `value="dev-b"`) {
 		t.Fatal("copy page must list the other devices")
 	}
 	if edit := b.get("/devices/dev-a/contacts/ct_2/edit").Body.String(); !strings.Contains(edit, `value="Matt"`) || !strings.Contains(edit, `name="favourite" checked`) || !strings.Contains(edit, "Delete this contact") {
@@ -417,6 +428,29 @@ func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 	if again := b.get("/devices/dev_NEW001/code").Body.String(); strings.Contains(again, "A7K2-M9PX") || !strings.Contains(again, "No code to show") {
 		t.Fatal("the code must be shown once")
 	}
+	// A chosen id is used as given.
+	if rec := b.post("/devices", url.Values{"device_id": {"warehouse-3"}, "user": {"206"}}); rec.Code != 303 || rec.Header().Get("Location") != "/devices/warehouse-3/code" {
+		t.Fatalf("create with id: %d → %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if api.devices[len(api.devices)-1].DeviceID != "warehouse-3" {
+		t.Fatal("the chosen id did not reach the call server")
+	}
+	// A taken or malformed id comes back to the form with the reason and
+	// what was typed, and nothing is created.
+	n := len(api.devices)
+	for _, bad := range []url.Values{
+		{"device_id": {"dev-a"}, "user": {"207"}},
+		{"device_id": {"../etc"}, "user": {"207"}},
+		{"device_id": {""}, "user": {""}, "label": {"Kept"}},
+	} {
+		rec := b.post("/devices", bad)
+		if rec.Code != 422 || !strings.Contains(rec.Body.String(), `class="flash error"`) || !strings.Contains(rec.Body.String(), `value="`+bad.Get("user")+`"`) {
+			t.Fatalf("bad create %v: %d", bad, rec.Code)
+		}
+	}
+	if len(api.devices) != n {
+		t.Fatal("a refused form reached the call server")
+	}
 	// A new code for an existing device.
 	if rec := b.post("/devices/dev-a/code", url.Values{}); rec.Code != 303 {
 		t.Fatalf("new code: %d", rec.Code)
@@ -424,11 +458,11 @@ func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 	if page := b.get("/devices/dev-a/code").Body.String(); !strings.Contains(page, "BFF6-GB4Z") {
 		t.Fatal("new code not shown")
 	}
-	if api.minted != 2 {
+	if api.minted != 3 {
 		t.Fatalf("minted %d", api.minted)
 	}
 	// An empty extension never reaches the server.
-	if rec := b.post("/devices", url.Values{"user": {" "}}); rec.Code != 303 || len(api.devices) != 3 {
+	if rec := b.post("/devices", url.Values{"user": {" "}}); rec.Code != 422 || len(api.devices) != 4 {
 		t.Fatalf("blank user: %d devices=%d", rec.Code, len(api.devices))
 	}
 }
@@ -529,7 +563,7 @@ func TestContactsAnswerJSONToFetch(t *testing.T) {
 func TestRevokeNeedsConfirmation(t *testing.T) {
 	_, api, b := setup(t)
 	signIn(t, b)
-	if page := b.get("/devices/dev-a/revoke").Body.String(); !strings.Contains(page, "Revoke Matt&#39;s iPhone?") {
+	if page := b.get("/devices/dev-a/revoke").Body.String(); !strings.Contains(page, "Revoke dev-a?") {
 		t.Fatal("confirm page")
 	}
 	if len(api.revoked) != 0 {
@@ -545,7 +579,7 @@ func TestRevokeNeedsConfirmation(t *testing.T) {
 		t.Fatal("notice not shown after the redirect")
 	}
 	// Delete: its own confirmation, then the device is gone from the list.
-	if page := b.get("/devices/dev-b/delete").Body.String(); !strings.Contains(page, "Delete Extension 202?") || !strings.Contains(page, "no undo") {
+	if page := b.get("/devices/dev-b/delete").Body.String(); !strings.Contains(page, "Delete dev-b?") || !strings.Contains(page, "no undo") {
 		t.Fatal("delete confirm page")
 	}
 	if len(api.purged) != 0 {
@@ -557,7 +591,7 @@ func TestRevokeNeedsConfirmation(t *testing.T) {
 	if len(api.purged) != 1 || api.purged[0] != "dev-b" {
 		t.Fatalf("purged %v", api.purged)
 	}
-	if list := b.get("/").Body.String(); strings.Contains(list, "Extension 202") || !strings.Contains(list, "Device deleted.") {
+	if list := b.get("/").Body.String(); strings.Contains(list, ">dev-b<") || !strings.Contains(list, "Device deleted.") {
 		t.Fatal("deleted device still listed, or no notice")
 	}
 }

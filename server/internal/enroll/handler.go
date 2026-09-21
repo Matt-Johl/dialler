@@ -103,7 +103,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			return
 		}
 		id, err := store.Create(in.DeviceID, in.User, in.Label)
-		if errors.Is(err, ErrInvalid) {
+		if errors.Is(err, ErrInvalid) || errors.Is(err, ErrBadDeviceID) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}

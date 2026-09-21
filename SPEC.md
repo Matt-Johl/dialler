@@ -1164,9 +1164,9 @@ on by config — see §7.4.
      only, templates and CSS through `embed`. Flags: `-listen`, `-server`,
      `-admin-token`, `-server-ca` or `-insecure`, `-password-file`,
      `-tls-cert`/`-tls-key` (self-signed when absent); `make admin` and
-     `make dev-admin`. *Pages:* **Devices** — label, user, generated id
-     (read-only, copyable), app and extension online, SIP registered,
-     revoked; add a device (label + user) and be shown its code, expiry
+     `make dev-admin`. *Pages:* **Devices** — id, user, label, app and
+     extension online, SIP registered, revoked; add a device (id, chosen
+     or generated, + user + optional label) and be shown its code, expiry
      and QR; per row: revoke, new code. **Device** — the directory as a
      table with inline add / edit / delete and a favourite star,
      **Download CSV**, **Upload CSV** (replace-all, with the counts of
@@ -1428,11 +1428,13 @@ alone; an enrolment code binds to one device. `make harness-test` proves it
 one phone install: the `X-Device-ID` header, `hello.device_id` and the SIP
 Digest username. The **user** (`201`) is the extension the device registers
 as and what other people dial; one user has at most one device. The operator
-never invents an id: the server generates one (`dev_` + six base32
-characters) when a device is added without one — `POST /v1/admin/devices`
-still honours an explicit `device_id`, which the harness fixtures rely on —
-and the device record carries an optional human `label` ("Matt's iPhone",
-"Warehouse 3") so the operator thinks in extension and label. The **contact
+chooses the id when adding a device (`dev-a`, `warehouse-3`: 1 to 64
+letters, digits, dots, dashes or underscores, checked by `enroll.ValidDeviceID`
+since it is also a file name under the data directory); left blank, the
+server generates one (`dev_` + six base32 characters). It cannot be changed
+afterwards. The console leads with the id everywhere — list, page title,
+confirmations — and the device record carries an optional human `label`
+("Matt's iPhone") as a secondary note. The **contact
 id** (`ct_…`) is the server's stable key for one directory entry, so a
 rename is an update rather than a delete and an add, and a tombstone can name
 what went; the app never shows it and CSV omits it (the reconcile matches on

@@ -12,12 +12,14 @@
 </div>
 <table class="table">
   <thead>
-    <tr><th>Device</th><th>Status</th><th>Connection</th><th>Registered</th><th>PBX</th><th class="r"></th></tr>
+    <tr><th>Device</th><th>Extension</th><th>Name</th><th>Status</th><th>Connection</th><th>Registered</th><th>PBX</th><th class="r"></th></tr>
   </thead>
   <tbody>
   {{range .Devices}}
-    <tr data-device-row data-text="{{.Label}} {{.User}} {{.DeviceID}}"{{if .Revoked}} class="muted"{{end}}>
-      <td><a class="row-link" href="/devices/{{.DeviceID}}"><span class="row-title">{{if .Label}}{{.Label}}{{else}}Extension {{.User}}{{end}}</span>{{if .Label}}<span class="row-sub">Extension {{.User}}</span>{{end}}</a></td>
+    <tr data-device-row data-text="{{.DeviceID}} {{.User}} {{.Label}}"{{if .Revoked}} class="muted"{{end}}>
+      <td><a class="row-link" href="/devices/{{.DeviceID}}"><span class="row-title mono">{{.DeviceID}}</span></a></td>
+      <td class="mono">{{.User}}</td>
+      <td>{{if .Label}}{{.Label}}{{else}}<span class="muted">—</span>{{end}}</td>
       <td><span class="status"><span class="dot {{if eq .StateKey "enrolled"}}ok{{else if eq .StateKey "revoked"}}danger{{else}}warn{{end}}"></span>{{.State}}</span></td>
       <td>{{if eq .Presence "offline"}}<span class="status muted"><span class="dot"></span>Offline</span>{{else}}<span class="status"><span class="dot ok"></span>{{.Presence}}</span>{{end}}</td>
       <td>{{if .Registered}}<span class="status"><span class="dot ok"></span>Yes</span>{{else}}<span class="muted">No</span>{{end}}</td>

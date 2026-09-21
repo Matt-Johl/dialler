@@ -4,8 +4,9 @@
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <header class="page">
   <div>
-    <h1>{{.Title}} <span class="mono">{{.Device.User}}</span></h1>
+    <h1><span class="mono" style="font-size:20px;color:inherit;font-weight:600">{{.Device.DeviceID}}</span> <span class="mono">ext {{.Device.User}}</span></h1>
     <div class="meta">
+      {{if .Device.Label}}<span>{{.Device.Label}}</span>{{end}}
       <span class="status"><span class="dot {{if eq .Device.StateKey "enrolled"}}ok{{else if eq .Device.StateKey "revoked"}}danger{{else}}warn{{end}}"></span>{{.Device.State}}</span>
       <span class="status">{{if eq .Device.Presence "offline"}}<span class="dot"></span>Offline{{else}}<span class="dot ok"></span>{{.Device.Presence}}{{end}}</span>
       <span class="status">{{if .Device.Registered}}<span class="dot ok"></span>Registered{{else}}<span class="dot"></span>Not registered{{end}}</span>
@@ -31,7 +32,7 @@
     </div>
     <div class="prop last">
       <dt>Device id</dt>
-      <dd><span class="mono muted">{{.Device.DeviceID}}</span></dd>
+      <dd><span class="mono">{{.Device.DeviceID}}</span><span class="hint">Fixed at creation: it is the name the phone presents</span></dd>
     </div>
   </dl>
 </section>

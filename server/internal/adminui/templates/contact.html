@@ -1,5 +1,5 @@
 {{define "content"}}
-<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a>
+<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{.Device.DeviceID}}</a>
 <header class="page">
   <div><h1>{{if .IsNew}}Add a contact{{else}}Edit contact{{end}}</h1></div>
 </header>

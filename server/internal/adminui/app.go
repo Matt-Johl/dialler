@@ -380,7 +380,7 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request, sess *session) {
 
 type newDeviceView struct {
 	base
-	User, Label string
+	DeviceID, User, Label string
 }
 
 func (a *App) newDevicePage(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -388,14 +388,36 @@ func (a *App) newDevicePage(w http.ResponseWriter, r *http.Request, sess *sessio
 }
 
 func (a *App) createDevice(w http.ResponseWriter, r *http.Request, sess *session) {
-	user := strings.TrimSpace(r.FormValue("user"))
-	label := strings.TrimSpace(r.FormValue("label"))
-	if user == "" {
-		a.sessions.setFlash(sess, "error", "A device needs an extension: the number it answers as.")
-		http.Redirect(w, r, "/devices/new", http.StatusSeeOther)
+	v := newDeviceView{
+		base:     a.base(sess, "Add a device", "/devices/new"),
+		DeviceID: strings.TrimSpace(r.FormValue("device_id")),
+		User:     strings.TrimSpace(r.FormValue("user")),
+		Label:    strings.TrimSpace(r.FormValue("label")),
+	}
+	// The form comes back with what was typed and the reason, rather
+	// than a bare redirect that loses it.
+	reject := func(msg string) {
+		v.Error = msg
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		a.render(w, r, sess, "device-new.html", v)
+	}
+	switch {
+	case v.User == "":
+		reject("A device needs an extension: the number it answers as.")
+		return
+	case v.DeviceID != "" && !enroll.ValidDeviceID(v.DeviceID):
+		reject("A device id is 1 to 64 letters, digits, dots, dashes or underscores.")
 		return
 	}
-	created, err := a.cfg.Client.CreateDevice(r.Context(), user, label)
+	if v.DeviceID != "" {
+		// The call server treats a repeated id as an update (the harness
+		// relies on that), so the console refuses one that is taken.
+		if _, _, err := a.find(r.Context(), v.DeviceID); err == nil {
+			reject("There is already a device " + v.DeviceID + ".")
+			return
+		}
+	}
+	created, err := a.cfg.Client.CreateDevice(r.Context(), v.DeviceID, v.User, v.Label)
 	if err != nil {
 		a.apiFailed(w, r, sess, "/devices/new", err)
 		return
@@ -443,10 +465,7 @@ func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
 		a.fail(w, r, http.StatusBadGateway, err.Error())
 		return
 	}
-	v := deviceView{base: a.base(sess, row.Label, "/devices/"+id), Device: row, Server: st.Server, CSVColumn: strings.Join(csvdir.Columns, ",")}
-	if v.Title == "" {
-		v.Title = "Extension " + row.User
-	}
+	v := deviceView{base: a.base(sess, row.DeviceID, "/devices/"+id), Device: row, Server: st.Server, CSVColumn: strings.Join(csvdir.Columns, ",")}
 	dir, err := a.cfg.Client.Directory(r.Context(), id)
 	if err != nil {
 		v.Error = err.Error()
@@ -623,12 +642,9 @@ func (a *App) newCode(w http.ResponseWriter, r *http.Request, sess *session) {
 	http.Redirect(w, r, "/devices/"+url.PathEscape(id)+"/code", http.StatusSeeOther)
 }
 
-func deviceName(d deviceRow) string {
-	if d.Label != "" {
-		return d.Label
-	}
-	return "Extension " + d.User
-}
+// deviceName is how a device is referred to in titles and confirmations:
+// by its id, which is what the admin chose and what the phone presents.
+func deviceName(d deviceRow) string { return d.DeviceID }
 
 // MARK: revoke
 

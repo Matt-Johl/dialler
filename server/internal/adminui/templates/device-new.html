@@ -8,8 +8,12 @@
   <input type="hidden" name="_csrf" value="{{.CSRF}}">
   <dl class="props">
     <div class="prop">
+      <dt><label for="device_id">Device id</label></dt>
+      <dd><input id="device_id" name="device_id" value="{{.DeviceID}}" placeholder="dev-a" class="mono" autocomplete="off" autofocus pattern="[A-Za-z0-9._\-]{1,64}" title="Letters, digits, dots, dashes or underscores"><span class="hint">Generated if blank. Cannot be changed later.</span></dd>
+    </div>
+    <div class="prop">
       <dt><label for="user">Extension</label></dt>
-      <dd><input id="user" name="user" value="{{.User}}" placeholder="201" inputmode="numeric" autocomplete="off" required autofocus class="narrow"><span class="hint">The number it answers as</span></dd>
+      <dd><input id="user" name="user" value="{{.User}}" placeholder="201" inputmode="numeric" autocomplete="off" required class="narrow"><span class="hint">The number it answers as</span></dd>
     </div>
     <div class="prop last">
       <dt><label for="label">Name</label></dt>

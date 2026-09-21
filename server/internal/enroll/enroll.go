@@ -125,6 +125,27 @@ type Store struct {
 // ErrInvalid is returned for empty device ids or users.
 var ErrInvalid = errors.New("enroll: device_id and user are required")
 
+// ErrBadDeviceID is returned for a device id outside the accepted form.
+var ErrBadDeviceID = errors.New("enroll: a device id is 1 to 64 letters, digits, dots, dashes or underscores")
+
+// ValidDeviceID reports whether id may name a device. The id is the SIP
+// Digest username, an HTTP header value and a file name under the data
+// directory, so it is kept to a plain, portable form.
+func ValidDeviceID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '.', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return id != "." && id != ".."
+}
+
 // Open loads the store at path, creating it on first save. An empty path
 // gives an in-memory store.
 func Open(path string) (*Store, error) {
@@ -199,6 +220,9 @@ func (s *Store) IssueToken(deviceID, user, token string) (string, error) {
 func (s *Store) Create(deviceID, user, label string) (string, error) {
 	if user == "" {
 		return "", ErrInvalid
+	}
+	if deviceID != "" && !ValidDeviceID(deviceID) {
+		return "", ErrBadDeviceID
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

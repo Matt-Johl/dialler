@@ -3,6 +3,7 @@ package enroll
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -149,5 +150,28 @@ func TestAdminHandler(t *testing.T) {
 	}
 	if resp := do("DELETE", "/v1/admin/devices/ghost", "", "admin-secret"); resp.StatusCode != 404 {
 		t.Fatalf("revoke unknown: %d", resp.StatusCode)
+	}
+}
+
+func TestDeviceIDRule(t *testing.T) {
+	for _, ok := range []string{"dev-a", "dev_A1", "warehouse.3", "x"} {
+		if !ValidDeviceID(ok) {
+			t.Errorf("%q should be a valid device id", ok)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "a/b", "a\\b", "dev a", "dév", "x:y", strings.Repeat("a", 65)} {
+		if ValidDeviceID(bad) {
+			t.Errorf("%q should not be a valid device id", bad)
+		}
+	}
+	s, err := Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create("../etc", "201", ""); !errors.Is(err, ErrBadDeviceID) {
+		t.Fatalf("a bad id must be refused: %v", err)
+	}
+	if id, err := s.Create("", "201", ""); err != nil || !ValidDeviceID(id) {
+		t.Fatalf("a generated id must pass the rule: %q %v", id, err)
 	}
 }

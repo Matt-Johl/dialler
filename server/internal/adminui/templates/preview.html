@@ -1,5 +1,5 @@
 {{define "content"}}
-<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a>
+<a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{.Device.DeviceID}}</a>
 <header class="page">
   <div><h1>Replace the directory?</h1><p class="sub">{{.FileName}} holds {{.Total}} contact{{if ne .Total 1}}s{{end}}. Nothing has changed yet.</p></div>
 </header>

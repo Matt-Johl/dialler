@@ -67,7 +67,11 @@ func main() {
 	}
 	var w wire.Welcome
 	_ = e.DecodeBody(&w)
-	log.Info("connected", "session", w.SessionID, "heartbeat_s", w.HeartbeatSeconds)
+	if w.Config != nil {
+		log.Info("connected", "session", w.SessionID, "heartbeat_s", w.HeartbeatSeconds, "config_version", w.Config.Version, "ssids", w.Config.SSIDs)
+	} else {
+		log.Info("connected", "session", w.SessionID, "heartbeat_s", w.HeartbeatSeconds, "config", "none")
+	}
 
 	// Heartbeat.
 	stop := make(chan struct{})

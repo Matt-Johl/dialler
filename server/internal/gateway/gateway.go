@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -166,6 +167,19 @@ func (g *Gateway) Online(deviceID string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.sessions[deviceID]) > 0
+}
+
+// Sessions lists the kinds of connection deviceID holds right now (app,
+// extension), sorted; empty when offline. The admin UI's presence column.
+func (g *Gateway) Sessions(deviceID string) []wire.ClientKind {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]wire.ClientKind, 0, len(g.sessions[deviceID]))
+	for kind := range g.sessions[deviceID] {
+		out = append(out, kind)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // Wake delivers w to every live connection of deviceID and remembers it until

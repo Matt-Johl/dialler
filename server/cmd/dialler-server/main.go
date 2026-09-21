@@ -34,6 +34,7 @@ import (
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
 	"dialler/server/internal/sipauth"
+	"dialler/server/internal/status"
 	"dialler/server/internal/tlsutil"
 	"dialler/server/internal/wire"
 
@@ -389,6 +390,12 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		enroll.Link{Host: o.publicHost, HTTPSPort: httpPort, CertSHA256: certSHA256}, hooks))
 	mux.Handle("POST /v1/enrol", enroll.NewEnrolHandler(devices,
 		enroll.EnrolInfo{SignalPort: signalPort, SIPDomain: o.localDomain, CertSHA256: certSHA256}, hooks))
+	// The operator's read-only view (SPEC §4.8), what dialler-admin shows.
+	mux.Handle("GET /v1/admin/status", status.Handler(status.Server{
+		PublicHost: o.publicHost, SIPDomain: o.localDomain,
+		SignalPort: signalPort, SIPPort: publicSIPPort, HTTPSPort: httpPort,
+		CertSHA256: certSHA256, StartedAt: time.Now(), Trunk: o.trunk,
+	}, o.adminToken, status.Sources{Devices: devices.Devices, Sessions: gw.Sessions, Lookup: reg.Lookup}))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintln(w, "ok") })
 
 	// Listeners.

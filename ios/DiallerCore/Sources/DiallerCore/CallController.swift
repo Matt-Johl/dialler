@@ -152,6 +152,10 @@ public struct TrackedCall: Equatable, Sendable {
     public var answerWhenInvite: Bool = false
     /// On hold (re-INVITE sendonly). The other call is the active one.
     public var held: Bool = false
+    /// When the call started ringing (either direction), for its record.
+    public var startedAt: Date = .distantPast
+    /// When the conversation began; nil until answered.
+    public var connectedAt: Date? = nil
 }
 
 /// Turns gateway events into system-call-UI actions and acks, and user UI
@@ -234,6 +238,32 @@ public final class CallController {
     /// on (SPEC §4.4 rule 6a).
     public var onTransferFailed: ((_ reason: String, _ progress: CallProgress?) -> Void)?
 
+    /// A call has left the table, with what became of it, for the Recents
+    /// list (SPEC §6 item 6). Fired on every exit — answered or not, ended
+    /// by either side, refused, expired or never started — exactly once per
+    /// call. The app persists it; the headless tools log it.
+    public var onCallEnded: ((CallRecord) -> Void)?
+
+    /// Build and emit the record for `c`, tracked as `id`, which `ending`
+    /// has just removed from the table.
+    private func record(_ c: TrackedCall, id: String, ending: CallRecord.Ending) {
+        let direction: CallRecord.Direction = c.direction == .outgoing ? .outgoing : .incoming
+        let outcome = CallRecord.outcome(direction: direction, answered: c.phase == .answered, ending: ending)
+        var party = c.direction == .outgoing ? c.wake.to : c.wake.from
+        // The name the banner showed (directory → caller's own → number) is
+        // the best one known; keep it where the party carried none.
+        if party.displayName?.isEmpty != false, !c.reportedName.isEmpty { party.displayName = c.reportedName }
+        let ended = now()
+        // The server's id, when the call was tracked under another: a
+        // sidecar the extension wrote for the same wake must match it.
+        let serverID = c.wakeCallID ?? c.diallerCallID
+        let r = CallRecord(id: id, wakeCallID: serverID == id ? nil : serverID, direction: direction, counterpart: party,
+                           startedAt: c.startedAt == .distantPast ? ended : c.startedAt, connectedAt: c.connectedAt,
+                           endedAt: ended, outcome: outcome)
+        log("recents: \(outcome.rawValue) \(direction.rawValue) \(party.uri) \(r.duration.map { CallRecord.durationText($0) } ?? "-")")
+        onCallEnded?(r)
+    }
+
     /// Resolves the friendly name to show for an incoming caller. The app
     /// layer sets this to look the caller up in the directory (which it owns);
     /// it is given the caller's URI and any display name the wake carried, and
@@ -283,7 +313,7 @@ public final class CallController {
         let id: String = lock.withLock { sipCallSeq += 1; return "out-\(sipCallSeq)" }
         let wake = Wake(callID: id, from: Party(uri: "sip:\(account.user)"), to: Party(displayName: displayName, uri: trimmed),
                         sip: account.sip, expiresAt: now().addingTimeInterval(120))
-        lock.withLock { calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, direction: .outgoing, target: trimmed) }
+        lock.withLock { calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, direction: .outgoing, target: trimmed, startedAt: now()) }
         log("calling \(trimmed) as \(id)")
         ui.startOutgoing(callID: id, handle: trimmed, displayName: displayName ?? trimmed)
         return id
@@ -298,14 +328,19 @@ public final class CallController {
         } else {
             lock.withLock { calls[callID] = nil }
             log("call \(callID) to \(call.target) could not be started")
+            record(call, id: callID, ending: .failed)
             ui.end(callID: callID, reason: .failed)
         }
     }
 
     /// The system UI could not start the call (CallKit refused the action).
     public func startFailed(callID: String) {
-        lock.withLock { calls[callID] = nil }
+        let call: TrackedCall? = lock.withLock {
+            defer { calls[callID] = nil }
+            return calls[callID]
+        }
         log("outgoing call \(callID) refused by the system")
+        if let call { record(call, id: callID, ending: .failed) }
     }
 
     public func setMuted(_ muted: Bool) {
@@ -346,7 +381,10 @@ public final class CallController {
 
     private func handle(established engineCallID: String) {
         guard let id = trackedID(forEngineCallID: engineCallID) else { return }
-        lock.withLock { calls[id]?.phase = .answered }
+        lock.withLock {
+            calls[id]?.phase = .answered
+            calls[id]?.connectedAt = now()
+        }
         log("\(id): connected")
         stopTone(for: id) // answered: ring-back stops
         ui.outgoingConnected(callID: id)
@@ -441,7 +479,7 @@ public final class CallController {
             let wake = Wake(callID: id, from: from, to: Party(uri: "sip:\(account.user)"),
                             sip: account.sip, expiresAt: now().addingTimeInterval(60))
             calls[id] = TrackedCall(wake: wake, phase: .ringing, sipArrived: true, reportedName: name,
-                                    engineCallID: engineCallID, diallerCallID: diallerCallID)
+                                    engineCallID: engineCallID, diallerCallID: diallerCallID, startedAt: now())
             return .created(id)
         }
         let id: String
@@ -472,20 +510,26 @@ public final class CallController {
         ui.reportIncoming(callID: id, displayName: name, handle: peer) { [weak self] err in
             guard let self, let err else { return }
             self.log("CallKit refused SIP call \(id): \(err)")
-            self.lock.withLock { self.calls[id] = nil }
+            let call: TrackedCall? = self.lock.withLock {
+                defer { self.calls[id] = nil }
+                return self.calls[id]
+            }
             self.engine?.hangup(engineCallID: engineCallID)
+            if let call { self.record(call, id: id, ending: .failed) }
         }
     }
 
     /// A SIP call ended on the far side (or failed).
     public func handle(sipEnded reason: String, engineCallID: String, status: Int = 0) {
-        let (ended, wasAnswered, wasOutgoing): (String?, Bool, Bool) = lock.withLock {
-            guard let (id, c) = calls.first(where: { $0.value.engineCallID == engineCallID }) else { return (nil, false, false) }
+        let (ended, call): (String?, TrackedCall?) = lock.withLock {
+            guard let (id, c) = calls.first(where: { $0.value.engineCallID == engineCallID }) else { return (nil, nil) }
             calls[id] = nil
-            return (id, c.phase == .answered, c.direction == .outgoing)
+            return (id, c)
         }
-        guard let ended else { return } // a call we never tracked (e.g. one we refused)
+        guard let ended, let call else { return } // a call we never tracked (e.g. one we refused)
+        let wasAnswered = call.phase == .answered, wasOutgoing = call.direction == .outgoing
         log("call \(ended) ended by SIP: \(reason)")
+        record(call, id: ended, ending: .sip(status: status))
         stopTone(for: ended) // this call's own ring-back, if it had one
         // Plan Phase J: an outgoing call the far end refused. The caller
         // hears busy or congestion first, as on a desk phone — which means
@@ -632,12 +676,14 @@ public final class CallController {
                 return .existing(id: id, reported: c.reportedName)
             }
             guard admitsAnotherCallLocked() else { return .refused }
-            calls[w.callID] = TrackedCall(wake: w, phase: .ringing, reportedName: name, wakeCallID: w.callID)
+            calls[w.callID] = TrackedCall(wake: w, phase: .ringing, reportedName: name, wakeCallID: w.callID, startedAt: now())
             return .created
         }
         if case .refused = found {
             log("wake \(w.callID) refused: \(callWaitingEnabled ? "no room for another call" : "call waiting is off")")
             transport?.send(.wakeAck(WakeAck(callID: w.callID, action: .busy)))
+            // The caller heard busy and the user saw nothing: a missed call.
+            record(TrackedCall(wake: w, phase: .ringing, reportedName: name, wakeCallID: w.callID, startedAt: now()), id: w.callID, ending: .refused)
             return .refused
         }
         if case .existing(let id, let reported) = found { // de-duplicated across app + extension delivery
@@ -652,8 +698,13 @@ public final class CallController {
             return .duplicate(of: existing.id)
         }
         if w.expiresAt <= now() {
-            lock.withLock { calls[w.callID] = nil }
+            let call: TrackedCall? = lock.withLock {
+                defer { calls[w.callID] = nil }
+                return calls[w.callID]
+            }
             log("wake \(w.callID) already expired; ignoring")
+            // The caller gave up before the app could ring: missed.
+            if let call { record(call, id: w.callID, ending: .refused) }
             return .expired
         }
         log("incoming call \(w.callID) from \(name)")
@@ -670,13 +721,13 @@ public final class CallController {
                 // ever answer or cancel it — the engine stayed "ringing",
                 // deferred every registration reset, and no later call
                 // reached the phone until it timed out (2026-09-17 13:22).
-                let engineID: String? = self.lock.withLock {
-                    let id = self.calls[w.callID]?.engineCallID
-                    self.calls[w.callID] = nil
-                    return id
+                let call: TrackedCall? = self.lock.withLock {
+                    defer { self.calls[w.callID] = nil }
+                    return self.calls[w.callID]
                 }
-                if let engineID { self.engine?.hangup(engineCallID: engineID) }
+                if let engineID = call?.engineCallID { self.engine?.hangup(engineCallID: engineID) }
                 self.transport?.send(.wakeAck(WakeAck(callID: w.callID, action: .busy)))
+                if let call { self.record(call, id: w.callID, ending: .failed) }
                 return
             }
             // Reported to the system UI before any network work (PROTOCOL.md §6).
@@ -696,6 +747,7 @@ public final class CallController {
         let (call, others): (TrackedCall?, [String]) = lock.withLock {
             guard var c = calls[callID], c.phase == .ringing else { return (nil, []) }
             c.phase = .answered
+            c.connectedAt = now()
             c.answerWhenInvite = c.engineCallID == nil
             calls[callID] = c
             var held: [String] = []
@@ -742,16 +794,21 @@ public final class CallController {
         // registration), using the wake's own id. A call that rang from the
         // INVITE alone has no wake to ack; the 486 the engine sends is the
         // whole answer.
-        let (declineAckID, engineID, wasAnswered): (String?, String?, Bool) = lock.withLock {
-            guard let c = calls[callID] else { return (nil, nil, false) }
-            calls[callID] = nil
-            return (c.phase == .ringing && c.direction == .incoming ? c.wakeCallID : nil, c.engineCallID, c.phase == .answered)
+        let call: TrackedCall? = lock.withLock {
+            defer { calls[callID] = nil }
+            return calls[callID]
         }
-        if let declineAckID {
+        guard let call else {
+            log("ended \(callID) by user (not tracked)")
+            return
+        }
+        let wasAnswered = call.phase == .answered
+        if call.phase == .ringing, call.direction == .incoming, let declineAckID = call.wakeCallID {
             transport?.send(.wakeAck(WakeAck(callID: declineAckID, action: .decline)))
         }
-        if let engineID { engine?.hangup(engineCallID: engineID) }
+        if let engineID = call.engineCallID { engine?.hangup(engineCallID: engineID) }
         log("ended \(callID) by user")
+        record(call, id: callID, ending: .user)
         if wasAnswered { resumeLoneHeldCall() }
     }
 
@@ -775,16 +832,23 @@ public final class CallController {
     }
 
     private func end(callID: String, reason: CallEndReason) {
-        let (known, engineID, wasAnswered): (Bool, String?, Bool) = lock.withLock {
-            guard let c = calls[callID] else { return (false, nil, false) }
-            calls[callID] = nil
-            return (true, c.engineCallID, c.phase == .answered)
+        let call: TrackedCall? = lock.withLock {
+            defer { calls[callID] = nil }
+            return calls[callID]
         }
-        guard known else { return }
+        guard let call else { return }
         log("call \(callID) ended: \(reason)")
+        let ending: CallRecord.Ending
+        switch reason {
+        case .answeredElsewhere: ending = .cancelled(.answeredElsewhere)
+        case .unanswered: ending = .cancelled(.timeout)
+        case .remoteEnded: ending = .cancelled(.callerHangup)
+        case .failed: ending = .failed
+        }
+        record(call, id: callID, ending: ending)
         ui.end(callID: callID, reason: reason)
-        if let engineID { engine?.hangup(engineCallID: engineID) }
-        if wasAnswered { resumeLoneHeldCall() }
+        if let engineID = call.engineCallID { engine?.hangup(engineCallID: engineID) }
+        if call.phase == .answered { resumeLoneHeldCall() }
     }
 }
 

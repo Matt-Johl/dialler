@@ -37,6 +37,22 @@ A held call owns no
 audio units: the shim's hold stops the call's audio and keeps baresip from
 re-creating its source, because iOS allows one VoiceProcessingIO input and
 the active call must have it (SPEC §4.4 rule 8).
+
+**Recents (SPEC §6 item 6).** Every way a call leaves the controller's
+table emits one `CallRecord` through `CallController.onCallEnded`
+(`DiallerCore/Recents.swift`: direction, the other party, start / connect /
+end times, and an outcome from the classification table there — completed,
+missed, declined, cancelled, answered elsewhere, or the same failure the
+in-call screen names). The app writes them to
+`<App Group>/recents/recents.json` through `RecentsStore` (newest first,
+500 kept); the extension never touches that file — for each wake it reports
+it drops `recents/pending/<call id>.json`, which the app folds in at
+launch, on foreground and at each call end, discarding any it has its own
+record for. A call the app never ran for therefore still shows as missed.
+The controller also logs each record as `recents: <outcome> <direction>
+<uri> <duration>`, which `harness/sim_call.sh` asserts per mode. The
+Recents tab (first in the tab bar, badged with unseen missed calls) lists
+them with All / Missed, tap to redial, swipe to delete.
 Every layer addresses calls by
 id: baresip's SIP Call-ID in the shim and engine (`cb_event_info`,
 `answer(engineCallID:)` …), the server's `X-Dialler-Call-ID` header to pair

@@ -26,6 +26,9 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
     private let logger = Logger(subsystem: DiallerIDs.bundlePrefix, category: "push-provider")
     /// Persistent log in the App Group; the app uploads it with its own.
     private let fileLog = FileLog(name: "extension")
+    /// Recents (SPEC §6 item 6): a sidecar per wake reported here, so a call
+    /// the app never ran for still shows as missed. The app folds them in.
+    private let recents = RecentsStore()
 
     private func note(_ line: String) {
         logger.notice("\(line, privacy: .public)")
@@ -132,9 +135,11 @@ final class PushProvider: NEAppPushProvider, @unchecked Sendable {
             reportIncomingCall(userInfo: ["wake": json, "call_id": w.callID])
             // The call has been surfaced to the system (PROTOCOL.md §6 step 3).
             session.send(.wakeAck(WakeAck(callID: w.callID, action: .willAnswer)))
+            recents?.notePending(wake: w)
         case .wakeCancel(let c):
             note("wake cancelled: \(c.callID) \(c.reason.rawValue)")
             // The app (if running) receives the same cancel on its own socket.
+            recents?.notePending(cancel: c)
         case .directoryChanged:
             break // the app syncs; the extension does not hold the address book
         case .protocolError(let e):

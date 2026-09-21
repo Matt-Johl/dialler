@@ -10,6 +10,13 @@
 # Tokens are FIXED dev fixtures so a re-provisioned harness (every
 # `down -v` / `harness-up`) keeps the same credentials and the app does not
 # need re-entering. Override with DEV_A_TOKEN / DEV_B_TOKEN. Not for prod.
+#
+# Each device line the server prints also carries a fresh enrolment "code"
+# and its "url" (dialler://enrol?…), valid for fifteen minutes: type the
+# code into a fresh install's onboarding screen (or render the url as a QR)
+# to enrol it through the real flow (SPEC §6 item 8). Claiming it rotates
+# that device's token, so a phone enrolled that way no longer uses the
+# fixed one above.
 set -eu
 # TLS on the server's (self-signed in dev) certificate, hence -k below.
 API="${DIALLER_API:-https://127.0.0.1:8080}"

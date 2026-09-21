@@ -245,6 +245,19 @@ func (g *Gateway) ForgetWake(deviceID, callID string) {
 	g.mu.Unlock()
 }
 
+// Disconnect closes every live connection of deviceID with a fatal
+// unauthorized: its credential was rotated (an enrolment code claimed,
+// SPEC §4.8), so whatever holds the old token must reconnect with the new
+// one or stop. No other device is touched.
+func (g *Gateway) Disconnect(deviceID string) {
+	g.mu.Lock()
+	all := g.snapshotLocked(deviceID)
+	g.mu.Unlock()
+	for _, s := range all {
+		s.fail(wire.CodeUnauthorized, "credential rotated; re-enrol")
+	}
+}
+
 // NotifyDirectory sends a directory_changed to every live connection of
 // deviceID — and to no other device: directories are per device (SPEC §6
 // item 7), so nobody else has anything to sync.

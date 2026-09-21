@@ -76,7 +76,7 @@ func TestIssueAuthenticateRevokePersist(t *testing.T) {
 func TestAdminHandler(t *testing.T) {
 	s, _ := Open("")
 	var issued []string
-	h := NewAdminHandler(s, "admin-secret", Hooks{OnIssue: func(d, u string) { issued = append(issued, d+"/"+u) }})
+	h := NewAdminHandler(s, "admin-secret", Link{Host: "10.0.0.1", HTTPSPort: 8080}, Hooks{OnIssue: func(d, u string) { issued = append(issued, d+"/"+u) }})
 
 	// Handlers are exercised via ServeHTTP + a recorder: no sockets needed.
 	do := func(method, path, body, bearer string) *http.Response {
@@ -92,7 +92,7 @@ func TestAdminHandler(t *testing.T) {
 	if resp := do("POST", "/v1/admin/devices", `{"device_id":"d","user":"1"}`, "wrong"); resp.StatusCode != 401 {
 		t.Fatalf("bad token: %d", resp.StatusCode)
 	}
-	resp := do("POST", "/v1/admin/devices", `{"device_id":"dev1","user":"201"}`, "admin-secret")
+	resp := do("POST", "/v1/admin/devices", `{"device_id":"dev1","user":"201","token":"tok_fixture_for_dev1"}`, "admin-secret")
 	if resp.StatusCode != 201 {
 		t.Fatalf("issue: %d", resp.StatusCode)
 	}
@@ -100,6 +100,9 @@ func TestAdminHandler(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&out)
 	if !strings.HasPrefix(out["token"], "tok_") {
 		t.Fatalf("no token in %v", out)
+	}
+	if len(out["code"]) != 8 || !strings.HasPrefix(out["url"], "dialler://enrol?c="+out["code"]) {
+		t.Fatalf("adding a device must also mint its enrolment code and link: %v", out)
 	}
 	if len(issued) != 1 || issued[0] != "dev1/201" {
 		t.Fatalf("hook not called: %v", issued)
@@ -122,13 +125,14 @@ func TestAdminHandler(t *testing.T) {
 		t.Fatalf("device auth with bad token: %d", code)
 	}
 
-	if resp := do("POST", "/v1/admin/devices", `{"device_id":"","user":"1"}`, "admin-secret"); resp.StatusCode != 400 {
+	// No user is invalid; no device id is fine (one is generated, §4.8).
+	if resp := do("POST", "/v1/admin/devices", `{"device_id":"d2","user":""}`, "admin-secret"); resp.StatusCode != 400 {
 		t.Fatalf("invalid enrolment: %d", resp.StatusCode)
 	}
 	// A store that cannot persist is a server fault, not a client one.
 	broken, _ := Open(t.TempDir() + "/not-a-dir/x/devices.json")
 	_ = os.WriteFile(filepath.Dir(filepath.Dir(broken.path)), []byte("file, not dir"), 0o600)
-	brokenH := NewAdminHandler(broken, "admin-secret", Hooks{})
+	brokenH := NewAdminHandler(broken, "admin-secret", Link{}, Hooks{})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/v1/admin/devices", strings.NewReader(`{"device_id":"d","user":"1"}`))
 	req.Header.Set("Authorization", "Bearer admin-secret")

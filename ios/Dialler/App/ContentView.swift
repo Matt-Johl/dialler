@@ -599,7 +599,6 @@ struct SettingsView: View {
                         Text("Your administrator has not set this phone's networks yet; whatever is saved on the phone applies.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    LabeledContent("State", value: model.localPushStatus)
                     LabeledContent("Background calls", value: model.backgroundCalls)
                     Text("\"Background calls\" is whether iOS is running the provider right now. While it says no, a call to this phone cannot arrive unless the app is open — the server has nowhere to send the wake.")
                         .font(.caption).foregroundStyle(.secondary)

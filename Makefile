@@ -177,7 +177,7 @@ LAN_TLS = harness/tls/lan
 TRUNK_TLS_FLAGS = $(if $(filter 1,$(TRUNK_TLS)),-trunk "sip:$(ASTERISK_HOST):5061;transport=tls" -trunk-tls-cert $(LAN_TLS)/dialler.pem -trunk-tls-key $(LAN_TLS)/dialler.key -trunk-tls-ca $(LAN_TLS)/ca.pem,-trunk "sip:$(ASTERISK_HOST):5060;transport=udp")
 TRUNK_FLAGS = $(if $(ASTERISK_HOST),$(TRUNK_TLS_FLAGS) -trunk-addr :5062 -trunk-external-host $(DIALLER_PUBLIC_HOST) $(if $(TRUNK_SRTP),-trunk-srtp $(TRUNK_SRTP),),)
 dev-server: server tone
-	@echo "native server on $(DIALLER_PUBLIC_HOST); app Settings: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed"
+	@echo "native server on $(DIALLER_PUBLIC_HOST); enrol the app with the dev-a code printed below (15 min), or the dev path: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed (fresh data dir only — an enrolled dev-a keeps its own token)"
 	@echo "trunk: $(if $(ASTERISK_HOST),Asterisk at $(ASTERISK_HOST):$(if $(filter 1,$(TRUNK_TLS)),5061 over TLS,5060 over UDP); trunk listener :5062$(if $(TRUNK_SRTP), ; media SRTP $(TRUNK_SRTP),),none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
 	@$(if $(filter 1,$(TRUNK_TLS)),test -f $(LAN_TLS)/dialler.pem || { echo "no $(LAN_TLS)/dialler.pem — run: OUT=lan DIALLER_IP=$(DIALLER_PUBLIC_HOST) ASTERISK_IP=$(ASTERISK_HOST) sh harness/tls/gen_certs.sh"; exit 1; },true)
 	( sleep 2 && DIALLER_API=https://127.0.0.1:8080 sh harness/provision.sh ) &

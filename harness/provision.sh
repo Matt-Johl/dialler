@@ -55,7 +55,25 @@ echo "# devices (fixed dev tokens)"
 # its Settings). No harness phone uses it: a real phone pointed at this
 # server (the app with the native server stopped) would otherwise take the
 # harness's calls to 201 — it rang the user's phone during the trunk tests.
-post /v1/admin/devices "{\"device_id\":\"dev-a\",\"user\":\"201\",\"token\":\"$DEV_A_TOKEN\"}"
+#
+# A phone enrolled by code holds a ROTATED token, and re-issuing the fixed
+# one here on every `make dev-server` start threw that phone off the
+# server until it re-enrolled (2026-09-21). So dev-a's credential is only
+# issued when dev-a is not enrolled yet (a fresh harness volume); an
+# enrolled dev-a is left as it is and merely gets a fresh code.
+get() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -sSk -H "Authorization: Bearer $TOKEN" "$API$1"
+  else
+    wget -q -O- --no-check-certificate --header="Authorization: Bearer $TOKEN" "$API$1"
+  fi
+}
+if get /v1/admin/devices | tr '}' '\n' | grep '"device_id":"dev-a"' | grep -q '"enrolled":true'; then
+  echo "dev-a is enrolled already; keeping its credential"
+  post /v1/admin/devices '{"device_id":"dev-a","user":"201"}'
+else
+  post /v1/admin/devices "{\"device_id\":\"dev-a\",\"user\":\"201\",\"token\":\"$DEV_A_TOKEN\"}"
+fi
 # The docker phones (baresip-a / baresip-b in docker-compose.yml).
 post /v1/admin/devices "{\"device_id\":\"dev-ha\",\"user\":\"211\",\"token\":\"$DEV_HA_TOKEN\"}"
 post /v1/admin/devices "{\"device_id\":\"dev-hb\",\"user\":\"212\",\"token\":\"$DEV_HB_TOKEN\"}"

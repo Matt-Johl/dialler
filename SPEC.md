@@ -1124,6 +1124,16 @@ on by config — see §7.4.
      PUT). Tests: store versioning, persistence and isolation; the admin
      routes; welcome and push in the gateway to one device; the policy
      table; the session machine; both golden suites.
+     *Same day, on the phone:* no calls at all after a dev-server
+     restart, foreground included, which looked like the pinned
+     certificate changing. It had not (both starts logged the same
+     fingerprint): the phone had enrolled by code, which rotates the
+     token, and `make dev-server` re-runs `harness/provision.sh` at every
+     start, which re-issued dev-a's fixed token over it. `provision.sh`
+     now leaves an enrolled dev-a's credential alone and only mints it a
+     fresh code; the fixed token is issued only into a fresh data
+     directory. Settings › Re-enrol (not a reinstall) is the recovery for
+     a phone whose credential the server no longer holds.
 
   9. **`dialler-admin` (new process; needs item 7 and the routes of
      §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib

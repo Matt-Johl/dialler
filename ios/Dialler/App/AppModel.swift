@@ -30,6 +30,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var status = "disconnected"
     @Published private(set) var sessionID = ""
     @Published private(set) var contacts: [DirectoryContact] = []
+    /// The Recents list (SPEC §6 item 6), newest first. Written by the
+    /// controller's record of every call and by the extension's sidecars.
+    @Published private(set) var recents: [CallRecord] = []
+    /// Missed calls the user has not looked at yet: the Recents tab's badge.
+    @Published private(set) var unseenMissed = 0
     @Published private(set) var log: [String] = []
     @Published private(set) var localPushStatus = "not configured"
     /// Whether iOS is actually running the provider extension right now.
@@ -151,6 +156,13 @@ final class AppModel: ObservableObject {
     /// Thread-safe caller-name lookup for incoming calls (the controller
     /// resolves names off the main actor). Kept in step with `contacts`.
     private nonisolated let nameIndex = DirectoryNameIndex()
+    private let recentsStore = RecentsStore()
+    /// When the user last opened the Recents tab; missed calls after it
+    /// count towards the badge. A per-device convenience, so UserDefaults.
+    private var recentsSeenAt: Date {
+        get { UserDefaults.standard.object(forKey: "recentsSeenAt") as? Date ?? .distantPast }
+        set { UserDefaults.standard.set(newValue, forKey: "recentsSeenAt") }
+    }
     private let logger = Logger(subsystem: DiallerIDs.bundlePrefix, category: "app")
     /// Persistent log in the App Group (survives a kill; uploaded to the dev
     /// server on the next launch), beside the in-memory view.
@@ -187,6 +199,14 @@ final class AppModel: ObservableObject {
         MXMetricManager.shared.add(diagnostics)
         Task { await sendDiagnostics(reason: "launch") }
         controller.callWaitingEnabled = callWaiting
+        // Recents: every call the controller lets go of, whatever became of
+        // it, plus what the extension noted while this process was not
+        // running. Folded again on each return to the foreground.
+        recents = recentsStore?.foldPending() ?? []
+        refreshUnseenMissed()
+        controller.onCallEnded = { [weak self] record in
+            Task { @MainActor in self?.recordCall(record) }
+        }
         // A second call rings without a ringtone (iOS suppresses it) and
         // without a tone of its own; the beep is ours to play, into the ear
         // of the person already on a call.
@@ -384,6 +404,45 @@ final class AppModel: ObservableObject {
         session?.setActive(true)
     }
 
+    // MARK: Recents
+
+    private func recordCall(_ record: CallRecord) {
+        guard let store = recentsStore else { return }
+        store.record(record)
+        recents = store.foldPending() // the extension may have noted this wake too
+        refreshUnseenMissed()
+    }
+
+    /// The name to show for a record: the directory's current name for the
+    /// number, else the name known when the call ended, else the number.
+    func recentName(for record: CallRecord) -> String {
+        nameIndex.name(forURI: record.counterpart.uri)
+            ?? (record.counterpart.displayName?.isEmpty == false ? record.counterpart.displayName! : record.number)
+    }
+
+    func deleteRecent(id: String) {
+        guard let store = recentsStore else { return }
+        recents = store.delete(id: id)
+        refreshUnseenMissed()
+    }
+
+    func clearRecents() {
+        recentsStore?.clear()
+        recents = []
+        refreshUnseenMissed()
+    }
+
+    /// The user is looking at the list: nothing on it is unseen any more.
+    func markRecentsSeen() {
+        recentsSeenAt = Date()
+        refreshUnseenMissed()
+    }
+
+    private func refreshUnseenMissed() {
+        let since = recentsSeenAt
+        unseenMissed = recents.filter { $0.isMissed && $0.endedAt > since }.count
+    }
+
     private func title(for call: TrackedCall) -> String {
         if call.direction == .outgoing {
             return call.wake.to.displayName ?? call.target
@@ -488,6 +547,11 @@ final class AppModel: ObservableObject {
     /// user disconnected) nothing happens.
     private func appBecameActive() {
         session?.setActive(true)
+        // Calls the extension reported while we were away.
+        if let store = recentsStore {
+            recents = store.foldPending()
+            refreshUnseenMissed()
+        }
     }
 
     /// Backgrounded: normally stop retrying the gateway (the extension

@@ -355,6 +355,32 @@ if [ -n "${DECLINE:-}" ]; then
   fi
   echo "   PASS: caller received 486 Busy Here for $CALLS declined call(s)"
 fi
+# Recents (SPEC §6 item 6): the controller logs one "recents:" line per
+# call as it leaves its table — the same record the app persists — so each
+# mode asserts the record its call must leave, and that there is one per call.
+echo "== recents: what record did each call leave?"
+if [ -n "${REFUSED:-}" ]; then
+  want='recents: (busy|declined|noAnswer|unknownNumber|unavailable|failed) outgoing'
+elif [ -n "${DECLINE:-}" ]; then
+  want='recents: declined incoming'
+elif [ -n "${OUTBOUND:-}" ]; then
+  want='recents: completed outgoing'
+else
+  want='recents: completed incoming'
+fi
+expected="$CALLS"
+[ -n "${CALLWAITING:-}" ] && expected=2   # the first call and the one taken on top of it
+got="$(grep -cE "$want" "$OUT" || true)"
+total="$(grep -c 'recents: ' "$OUT" || true)"
+grep -E 'recents: ' "$OUT" | sed 's/^/   /'
+if [ "$got" -lt "$expected" ]; then
+  echo "FAIL: expected $expected record(s) matching /$want/, found $got"; exit 1
+fi
+if [ "$total" -ne "$expected" ]; then
+  echo "FAIL: $total recents line(s) for $expected call(s) — every call must be recorded exactly once"; exit 1
+fi
+echo "   PASS: $got record(s) as expected"
+
 if [ "$SERVER" = native ]; then
   echo "== server: native; its relay lines are in the dev-server terminal"
 else

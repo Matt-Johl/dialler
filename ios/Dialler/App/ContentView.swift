@@ -5,11 +5,16 @@ struct ContentView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        // Tab order per SPEC §6 item 6. Status stays, last, until item 8
+        // moves its contents behind the hidden gesture.
         TabView {
-            KeypadView().tabItem { Label("Keypad", systemImage: "circle.grid.3x3") }
+            RecentsView()
+                .tabItem { Label("Recents", systemImage: "clock") }
+                .badge(model.unseenMissed)
             DirectoryView().tabItem { Label("Directory", systemImage: "person.2") }
-            StatusView().tabItem { Label("Status", systemImage: "antenna.radiowaves.left.and.right") }
+            KeypadView().tabItem { Label("Keypad", systemImage: "circle.grid.3x3") }
             SettingsView().tabItem { Label("Settings", systemImage: "gear") }
+            StatusView().tabItem { Label("Status", systemImage: "antenna.radiowaves.left.and.right") }
         }
         // Ringing is CallKit's UI alone (banner, lock screen, Recents). While
         // a call is ACTIVE and the app is in front, iOS shows only the green
@@ -187,6 +192,111 @@ struct KeypadView: View {
             }
             .navigationTitle("Keypad")
         }
+    }
+}
+
+// MARK: - Recents
+
+struct RecentsView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var missedOnly = false
+    @State private var confirmClear = false
+
+    private var shown: [CallRecord] {
+        missedOnly ? model.recents.filter(\.isMissed) : model.recents
+    }
+
+    var body: some View {
+        NavigationStack {
+            list
+                .listStyle(.plain)
+                .overlay { if shown.isEmpty { empty } }
+                .navigationTitle("Recents")
+                .toolbar { toolbar }
+                .confirmationDialog("Clear all recent calls?", isPresented: $confirmClear, titleVisibility: .visible) {
+                    Button("Clear All", role: .destructive) { model.clearRecents() }
+                }
+                .onAppear { model.markRecentsSeen() }
+                .onChange(of: model.recents) { _, _ in model.markRecentsSeen() }
+        }
+    }
+
+    private var list: some View {
+        List {
+            ForEach(shown) { r in
+                Button {
+                    model.dial(r.counterpart.uri)
+                } label: {
+                    RecentRow(record: r, name: model.recentName(for: r))
+                }
+                .disabled(model.activeCall != nil)
+            }
+            .onDelete(perform: delete)
+        }
+    }
+
+    private func delete(at offsets: IndexSet) {
+        let ids = offsets.map { shown[$0].id }
+        for id in ids { model.deleteRecent(id: id) }
+    }
+
+    private var empty: some View {
+        ContentUnavailableView(missedOnly ? "No missed calls" : "No recent calls", systemImage: "clock",
+                               description: Text(missedOnly ? "Missed calls appear here." : "Calls you make and receive appear here."))
+    }
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Picker("Filter", selection: $missedOnly) {
+                Text("All").tag(false)
+                Text("Missed").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 200)
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button("Clear") { confirmClear = true }
+                .disabled(model.recents.isEmpty)
+        }
+    }
+}
+
+private struct RecentRow: View {
+    let record: CallRecord
+    let name: String
+
+    private var glyph: (name: String, color: Color) {
+        switch record.outcome {
+        case .missed: return ("phone.arrow.down.left", .red)
+        case .declined where record.direction == .incoming: return ("phone.arrow.down.left", .secondary)
+        case .answeredElsewhere: return ("phone.arrow.down.left", .secondary)
+        default: return record.direction == .outgoing ? ("phone.arrow.up.right", .secondary) : ("phone.arrow.down.left", .secondary)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: glyph.name).foregroundStyle(glyph.color).frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).foregroundStyle(record.isMissed ? .red : .primary).lineLimit(1)
+                Text(record.number).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(record.endedAt, format: Self.when(record.endedAt)).font(.caption).foregroundStyle(.secondary)
+                Text(record.summary).font(.caption).foregroundStyle(record.duration == nil ? .secondary : .primary)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    /// Today: the time; this week: the weekday; otherwise the date.
+    private static func when(_ date: Date) -> Date.FormatStyle {
+        let cal = Calendar.current
+        if cal.isDateInToday(date) { return .dateTime.hour().minute() }
+        if let week = cal.date(byAdding: .day, value: -6, to: Date()), date > week { return .dateTime.weekday(.wide) }
+        return .dateTime.day().month(.abbreviated)
     }
 }
 

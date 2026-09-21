@@ -942,6 +942,20 @@ on by config — see §7.4.
      (`includesCallsInRecents` stays on). *Headless:* `make sim-call`,
      `sim-call-refused` and `sim-call-cw` each assert the record they
      should leave. *Device:* §7.3 item 8.
+     *Built 2026-09-21 (branch `feature/recents`, awaiting approval):* as
+     above, with three things decided in the building. A `cancelled`
+     outcome was added for an outgoing call the user hangs up before the
+     answer (and for the 487 that answers our own CANCEL), which the table
+     had no word for. A wake the app refuses (call waiting off, no room)
+     or finds expired is recorded as missed: the caller heard busy and the
+     user saw nothing. And the Status tab stays, last in the bar, until
+     item 8 gives its contents a home — so the bar is Recents / Directory
+     / Keypad / Settings / Status for now. The record is emitted from
+     `CallController` at every exit from its table (eight of them; each
+     unit-tested in `CallRecordEmissionTests`), the extension's sidecars
+     and the fold are `RecentsStore` (`RecentsTests`), and
+     `harness/sim_call.sh` now fails unless every call leaves exactly one
+     record of the outcome its mode expects.
 
   7. **Per-device directories, favourites, search, and in-app editing
      (server: additive, plus one migration).** Today one global list with

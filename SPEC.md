@@ -1081,6 +1081,14 @@ on by config — see §7.4.
      five-second press on its icon. The simulator has no camera:
      `DataScannerViewController.isAvailable` is false there, so the QR
      button is disabled and manual entry is the way in.
+     *Found on the harness the same day:* the dev server generated a new
+     self-signed certificate at every start, so a QR minted before a
+     restart named a certificate that no longer existed, and every
+     enrolled phone would have been stranded by each `make dev-server`.
+     The certificate is now kept under `<data-dir>/tls` and reused
+     (`tlsutil.LoadOrKeep`; `TestLoadOrKeepReusesTheSelfSignedCertificate`),
+     proven by minting a code, restarting the container and minting
+     again: one fingerprint. A production `-tls-cert` was never affected.
 
   9. **`dialler-admin` (new process; needs item 7 and the routes of
      §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib

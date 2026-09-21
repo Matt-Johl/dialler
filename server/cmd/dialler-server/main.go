@@ -186,12 +186,14 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		log.Warn("no -admin-token given; generated one for this run", "admin_token", o.adminToken)
 	}
 
-	tlsCfg, selfSigned, err := tlsutil.Load(o.certFile, o.keyFile, []string{o.publicHost, "localhost", "127.0.0.1"})
+	// The dev certificate is kept under <data-dir>/tls so a restart presents
+	// the same one: enrolled apps pin its fingerprint (SPEC §4.8).
+	tlsCfg, selfSigned, err := tlsutil.LoadOrKeep(o.certFile, o.keyFile, []string{o.publicHost, "localhost", "127.0.0.1"}, filepath.Join(o.dataDir, "tls"))
 	if err != nil {
 		return err
 	}
 	if selfSigned {
-		log.Warn("using a self-signed TLS certificate; clients must pin or disable verification in dev")
+		log.Warn("using a self-signed TLS certificate, kept in <data-dir>/tls; enrolled apps pin it, other clients must disable verification in dev", "fingerprint_sha256", certFingerprint(tlsCfg))
 	}
 
 	// Stores.

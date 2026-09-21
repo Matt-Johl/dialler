@@ -818,7 +818,7 @@ on by config — see §7.4.
      wants doing before anyone outside the team sees the app. *Scope
      widened 2026-09-21:* the pass also covers the Recents tab (item 6),
      the directory's edit forms, favourites and search (item 7), the
-     onboarding screens and the diagnostics sheet (item 8); the tab bar
+     onboarding screens and the hidden Status page (item 8); the tab bar
      it designs for is **Recents / Directory / Keypad / Settings**, with
      Status gone from it.
   5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
@@ -1030,21 +1030,33 @@ on by config — see §7.4.
      connects. `onOpenURL` takes a `dialler://enrol…` link from the iOS
      Camera app down the same path. Settings gains **Re-enrol this
      device**, which wipes the credential and returns to onboarding.
-     *Status:* the tab is removed. Its content becomes a **Diagnostics**
-     sheet, opened by a **two-second long press on the keypad's number
-     display** (the blank area above the keys, empty or not) and, before
-     enrolment, on the onboarding logo. The sheet holds what Status and
-     the debug half of Settings hold today: gateway, session and engine
-     state, connect / disconnect, the in-memory log, send diagnostics,
-     and the dev-only fields — host, port, device id and token entered
-     directly, and accept-any-certificate. Settings keeps only what a
-     user should see: server address and device id (read-only), call
-     waiting, Local Push SSIDs, re-enrol, and the version and
-     acknowledgements screen of item 4. *Dev path:* `make dev-server` and
-     `harness/provision.sh` print an enrolment code per fixed device so
-     the simulator onboards through the real flow (it has no camera, so
-     manual entry); direct entry on the diagnostics sheet remains the
-     fallback.
+     *Status (decided 2026-09-21, replacing an earlier keypad gesture):*
+     the tab is removed. The Status page is reached by a **five-second
+     press on the Settings title** at the top of the Settings tab, which
+     pushes it onto that tab's navigation; **Back** pops it, and so does
+     **any tap on the tab bar**, the Settings tab's own button included —
+     nothing a user does by accident opens it, and nothing they do
+     normally leaves it open. It holds what the tab held: gateway,
+     session and engine state, connect / disconnect, the in-memory log
+     and send diagnostics. Once enrolment lands, the dev-only fields —
+     host, port, device id and token entered directly, and
+     accept-any-certificate — leave Settings for this page too, and
+     Settings keeps only what a user should see: server address and
+     device id (read-only), call waiting, Local Push SSIDs, re-enrol,
+     and the version and acknowledgements screen of item 4. Until then
+     Settings keeps its fields, since they are the only way in.
+     *Dev path:* `make dev-server` and `harness/provision.sh` print an
+     enrolment code per fixed device so the simulator onboards through
+     the real flow (it has no camera, so manual entry); direct entry on
+     the Status page remains the fallback.
+     *Built 2026-09-21 (branch `feature/enrolment`, the Status half):*
+     the tab is gone, the bar is Recents / Directory / Keypad /
+     Settings, and Status is pushed by the five-second press on the
+     Settings title. The title is drawn as a toolbar item because a
+     large navigation title takes no gesture, so Settings shows an
+     inline title. The tab-bar rule is the selection binding's setter,
+     which SwiftUI runs on every tab-bar tap including the current
+     tab's, and which empties the Settings navigation path.
 
   9. **`dialler-admin` (new process; needs item 7 and the routes of
      §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib
@@ -1403,9 +1415,11 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    tap redials. Then one answered call and one dialled call that is
    declined: a duration on the first, "Declined" on the second.
 
-9. The hidden gesture (§6 item 8): a two-second press on the number display
-   opens Diagnostics; a tap or a one-second press does not, and a press
-   while digits are entered does not clear them.
+9. The hidden gesture (§6 item 8): a five-second press on the Settings
+   title opens Status; a tap or a two-second press does not. Back returns
+   to Settings; with Status open, tapping any tab-bar button — Settings'
+   own included — returns to that tab with Status closed, and coming back
+   to Settings finds it closed.
 
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".

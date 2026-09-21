@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -60,6 +62,7 @@ func main() {
 		logLevel     = flag.String("log-level", "info", "debug|info|warn|error (debug includes the media relay's RTP source learning)")
 		rtpSym       = flag.Bool("rtp-symmetric", true, "re-target a phone's media at the source of its first RTP packet (needed behind NAT); false where that source is not a deliverable reply address (Docker Desktop harness)")
 		pubSIPPort   = flag.Int("public-sip-port", 0, "SIP port advertised to apps (welcome, wakes) when it differs from -sip-addr, e.g. a container published on another host port; 0 = same as -sip-addr")
+		pubHTTPPort  = flag.Int("public-http-port", 0, "HTTPS port written into enrolment QR links when it differs from -http-addr (a container published on another host port); 0 = same as -http-addr")
 		trunk        = flag.String("trunk", "", "PBX SIP peer for non-local destinations, e.g. sip:asterisk:5060;transport=tcp (empty: standalone, app↔app only)")
 		trunkAddr    = flag.String("trunk-addr", "", "listen address for trunk-originated calls (default :5060, :5062 for a TLS trunk — not 5061, which is the app leg's); transport follows -trunk")
 		trunkExt     = flag.String("trunk-external-host", "", "address the PBX reaches this server at, used in trunk-leg Contact and SDP (default: this host's first address)")
@@ -112,6 +115,7 @@ func main() {
 		keepAdvertisedContact: !*rewrite,
 		noSymmetricRTP:        !*rtpSym,
 		publicSIPPort:         *pubSIPPort,
+		publicHTTPPort:        *pubHTTPPort,
 		trunk:                 *trunk,
 		trunkAddr:             *trunkAddr,
 		trunkExternalHost:     *trunkExt,
@@ -129,6 +133,16 @@ func main() {
 	}
 }
 
+// certFingerprint is the base64url SHA-256 of the server certificate's DER,
+// what the app pins after enrolment (SPEC §4.8). Empty if there is none.
+func certFingerprint(cfg *tls.Config) string {
+	if cfg == nil || len(cfg.Certificates) == 0 || len(cfg.Certificates[0].Certificate) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(cfg.Certificates[0].Certificate[0])
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
 type options struct {
 	signalAddr, sipAddr, httpAddr string
 	certFile, keyFile             string
@@ -139,6 +153,7 @@ type options struct {
 	keepAdvertisedContact         bool
 	noSymmetricRTP                bool
 	publicSIPPort                 int
+	publicHTTPPort                int
 	trunk, trunkAddr              string
 	trunkExternalHost             string
 	trunkCodecs                   []media.Codec
@@ -171,12 +186,14 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		log.Warn("no -admin-token given; generated one for this run", "admin_token", o.adminToken)
 	}
 
-	tlsCfg, selfSigned, err := tlsutil.Load(o.certFile, o.keyFile, []string{o.publicHost, "localhost", "127.0.0.1"})
+	// The dev certificate is kept under <data-dir>/tls so a restart presents
+	// the same one: enrolled apps pin its fingerprint (SPEC §4.8).
+	tlsCfg, selfSigned, err := tlsutil.LoadOrKeep(o.certFile, o.keyFile, []string{o.publicHost, "localhost", "127.0.0.1"}, filepath.Join(o.dataDir, "tls"))
 	if err != nil {
 		return err
 	}
 	if selfSigned {
-		log.Warn("using a self-signed TLS certificate; clients must pin or disable verification in dev")
+		log.Warn("using a self-signed TLS certificate, kept in <data-dir>/tls; enrolled apps pin it, other clients must disable verification in dev", "fingerprint_sha256", certFingerprint(tlsCfg))
 	}
 
 	// Stores.
@@ -322,14 +339,42 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// logs, MetricKit crash/CPU reports): readable on this machine without
 	// touching the phone. See ios/README.md "When the app dies or freezes".
 	mux.Handle("/v1/diag", diag.Handler(filepath.Join(o.dataDir, "diag"), devices.DeviceAuth, log))
-	mux.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken, enroll.Hooks{
+	// Enrolment (SPEC §4.8): the admin mints a code, the phone claims it
+	// for a credential. The QR link and the claim reply carry the server's
+	// certificate fingerprint so the app can pin it from the first
+	// connection.
+	certSHA256 := certFingerprint(tlsCfg)
+	_, httpPortStr, err := net.SplitHostPort(o.httpAddr)
+	if err != nil {
+		return fmt.Errorf("bad -http-addr %q: %w", o.httpAddr, err)
+	}
+	httpPort, _ := strconv.Atoi(httpPortStr)
+	if o.publicHTTPPort != 0 {
+		httpPort = o.publicHTTPPort
+	}
+	_, signalPortStr, _ := net.SplitHostPort(o.signalAddr)
+	signalPort, _ := strconv.Atoi(signalPortStr)
+	hooks := enroll.Hooks{
 		OnIssue: func(deviceID, user string) { reg.Provision(user, deviceID) },
 		OnRevoke: func(deviceID string) {
 			if ep, ok := reg.LookupDevice(deviceID); ok {
 				reg.Deprovision(ep.User)
 			}
+			gw.Disconnect(deviceID)
 		},
-	}))
+		// A claim rotates the credential: whatever is connected with the
+		// old one is dropped (it reconnects with the new one, or it was a
+		// phone this device id no longer belongs to). One device only.
+		OnClaim: func(deviceID, user string) {
+			log.Info("enrolment code claimed", "device", deviceID, "user", user)
+			reg.Provision(user, deviceID)
+			gw.Disconnect(deviceID)
+		},
+	}
+	mux.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,
+		enroll.Link{Host: o.publicHost, HTTPSPort: httpPort, CertSHA256: certSHA256}, hooks))
+	mux.Handle("POST /v1/enrol", enroll.NewEnrolHandler(devices,
+		enroll.EnrolInfo{SignalPort: signalPort, SIPDomain: o.localDomain, CertSHA256: certSHA256}, hooks))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintln(w, "ok") })
 
 	// Listeners.

@@ -10,13 +10,62 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// LoadOrKeep is Load with the self-signed certificate kept on disk under
+// cacheDir (self-signed.pem / self-signed.key, mode 0600) and reused on
+// every later start. Apps pin the certificate's fingerprint at enrolment
+// (SPEC §4.8), so a certificate that changed with every restart would
+// strand every enrolled phone each time the dev server came up
+// (2026-09-21, harness: a container recreated between provisioning and
+// the claim). A cached certificate's names are not revisited: the pin
+// is on the leaf, not on a SAN. An empty cacheDir behaves like Load.
+func LoadOrKeep(certFile, keyFile string, hosts []string, cacheDir string) (*tls.Config, bool, error) {
+	if certFile != "" || keyFile != "" || cacheDir == "" {
+		return Load(certFile, keyFile, hosts)
+	}
+	certPath := filepath.Join(cacheDir, "self-signed.pem")
+	keyPath := filepath.Join(cacheDir, "self-signed.key")
+	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+		return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}, true, nil
+	}
+	cert, err := SelfSigned(hosts)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := keepSelfSigned(cert, certPath, keyPath); err != nil {
+		return nil, false, fmt.Errorf("tlsutil: keep self-signed certificate: %w", err)
+	}
+	return &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13}, true, nil
+}
+
+func keepSelfSigned(cert tls.Certificate, certPath, keyPath string) error {
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o700); err != nil {
+		return err
+	}
+	key, ok := cert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return fmt.Errorf("unexpected key type %T", cert.PrivateKey)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(certPath, certPEM, 0o600)
+}
 
 // Load returns a TLS config from certFile/keyFile, or a fresh self-signed
 // certificate covering hosts when both paths are empty.

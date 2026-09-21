@@ -495,6 +495,22 @@ func TestDirectoryChangeReachesOnlyItsDevice(t *testing.T) {
 	other.expectSilence()
 }
 
+// A rotated credential drops that device's sessions with unauthorized and
+// leaves another device's alone (SPEC §4.8 isolation).
+func TestDisconnectClosesOnlyThatDevice(t *testing.T) {
+	h := start(t, Config{})
+	a := h.dial(t)
+	a.hello(wire.ClientApp)
+	other := h.dial(t)
+	other.helloAs("dev2", "tok2", wire.ClientApp)
+	h.g.Disconnect("dev1")
+	a.expectError(wire.CodeUnauthorized)
+	other.expectSilence()
+	if h.g.Online("dev1") || !h.g.Online("dev2") {
+		t.Fatal("dev1 should be offline and dev2 online")
+	}
+}
+
 func TestOversizedFrameIsFatal(t *testing.T) {
 	h := start(t, Config{})
 	c := h.dial(t)

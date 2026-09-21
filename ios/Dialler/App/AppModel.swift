@@ -25,6 +25,16 @@ final class AppModel: ObservableObject {
     @Published var deviceID = ""
     @Published var token = ""
     @Published var acceptAnyCertificate = true
+    /// The server certificate pinned at enrolment (SPEC §4.8); nil on the
+    /// dev path, where the toggle above decides.
+    @Published var certSHA256: String?
+
+    // Enrolment (SPEC §6 item 8)
+    /// Whether the app holds a credential. False shows the onboarding
+    /// screen instead of the tabs.
+    @Published private(set) var enrolled = false
+    @Published private(set) var enrolling = false
+    @Published var enrolmentError: String?
 
     // Status
     @Published private(set) var status = "disconnected"
@@ -194,6 +204,8 @@ final class AppModel: ObservableObject {
             deviceID = cfg.deviceID
             token = cfg.token
             acceptAnyCertificate = cfg.gateway.acceptAnyCertificate
+            certSHA256 = cfg.gateway.certSHA256
+            enrolled = cfg.isComplete
         }
         fileLog?.write("---- launch \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") ----")
         if let saved = bookStore?.load() {
@@ -463,8 +475,81 @@ final class AppModel: ObservableObject {
     }
 
     var currentConfig: AppConfig {
-        AppConfig(gateway: GatewayEndpoint(host: host, port: UInt16(port) ?? 7443, acceptAnyCertificate: acceptAnyCertificate),
+        AppConfig(gateway: GatewayEndpoint(host: host, port: UInt16(port) ?? 7443, acceptAnyCertificate: acceptAnyCertificate, certSHA256: certSHA256),
                   deviceID: deviceID, token: token)
+    }
+
+    // MARK: Enrolment (SPEC §6 item 8, §4.8)
+
+    /// A `dialler://enrol` link: from the in-app scanner, or from the iOS
+    /// Camera app through `onOpenURL`.
+    func handle(url: URL) {
+        guard let link = EnrolmentLink(url: url) else {
+            append("ignored URL \(url)")
+            return
+        }
+        Task { await enrol(link) }
+    }
+
+    func enrol(url: URL) async {
+        guard let link = EnrolmentLink(url: url) else {
+            enrolmentError = "That QR code is not an enrolment code."
+            return
+        }
+        await enrol(link)
+    }
+
+    /// Manual entry: host and code; the server's reply names the
+    /// certificate to pin (trust on first use).
+    func enrol(host: String, port: UInt16, code: String) async {
+        await enrol(EnrolmentLink(host: host.trimmingCharacters(in: .whitespacesAndNewlines), port: port, code: EnrolmentLink.normalise(code)))
+    }
+
+    private func enrol(_ link: EnrolmentLink) async {
+        guard !enrolling else { return }
+        enrolling = true
+        enrolmentError = nil
+        defer { enrolling = false }
+        append("enrolling at \(link.host):\(link.port) (\(link.certSHA256 == nil ? "trust on first use" : "pinned from the QR"))")
+        do {
+            let result = try await EnrolmentClient().claim(link)
+            let cfg = result.config(host: link.host, appVersion: currentConfig.appVersion)
+            // A different device than before: its directory is not ours.
+            if cfg.deviceID != deviceID {
+                book.reset()
+                publishBook()
+            }
+            host = cfg.gateway.host
+            port = String(cfg.gateway.port)
+            deviceID = cfg.deviceID
+            token = cfg.token
+            acceptAnyCertificate = false
+            certSHA256 = cfg.gateway.certSHA256
+            append("enrolled as \(cfg.deviceID) (user \(result.user)); certificate pinned")
+            enrolled = true
+            connect()
+        } catch {
+            append("enrolment failed: \(error.localizedDescription)")
+            enrolmentError = error.localizedDescription
+        }
+    }
+
+    /// Forget the credential and return to onboarding. The server-side
+    /// device is untouched: its next code brings this phone (or another)
+    /// back under the same identity.
+    func reEnrol() {
+        disconnect()
+        store.clear()
+        bookStore?.clear()
+        book.reset()
+        publishBook()
+        host = ""
+        deviceID = ""
+        token = ""
+        certSHA256 = nil
+        enrolmentError = nil
+        enrolled = false
+        append("credential cleared; re-enrol")
     }
 
     // MARK: Connection
@@ -526,6 +611,7 @@ final class AppModel: ObservableObject {
         let cfg = currentConfig
         guard cfg.isComplete else { status = "incomplete settings"; return }
         do { try store.save(cfg) } catch { append("config save failed: \(error)") }
+        enrolled = true // the dev path: fields entered directly on the Status page
         // The same enrolment credential authenticates the SIP leg (Digest).
         engine.setCredentials(username: cfg.deviceID, password: cfg.token)
 
@@ -675,7 +761,7 @@ final class AppModel: ObservableObject {
     private var directoryClient: DirectoryClient {
         let cfg = currentConfig
         return DirectoryClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
-                               session: DirectoryClient.session(acceptAnyCertificate: cfg.gateway.acceptAnyCertificate))
+                               session: DirectoryClient.session(for: cfg.gateway))
     }
 
     /// `contacts` and the name index follow the book; the book follows disk.
@@ -843,7 +929,7 @@ final class AppModel: ObservableObject {
             DiagnosticsClient.enqueue(kind: "extension-log", name: reason, data: data)
         }
         let client = DiagnosticsClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
-                                       acceptAnyCertificate: cfg.gateway.acceptAnyCertificate)
+                                       acceptAnyCertificate: cfg.gateway.acceptAnyCertificate, certSHA256: cfg.gateway.certSHA256)
         let result = await client.flush()
         diagnosticsStatus = result.failed == 0 ? "sent \(result.sent) item(s)" : "sent \(result.sent), \(result.failed) queued (server unreachable)"
         append("diagnostics (\(reason)): \(diagnosticsStatus)")

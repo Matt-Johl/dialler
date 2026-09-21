@@ -53,6 +53,24 @@ A server that still has the old global `data/directory.json` folds it into
 every enrolled device's directory at start-up, once, and renames it
 `directory.json.migrated`.
 
+Adding a device also mints its **enrolment code** (SPEC §4.8): eight
+characters, fifteen minutes, single use, returned with a `dialler://enrol`
+link the admin UI shows as a QR. Leave `token` out (as a real deployment
+does) and the device has no credential until it claims the code; a
+`token` (the harness's fixed fixtures) issues that credential at once as
+well. `POST /v1/admin/devices/<id>/enrol-code` mints a new one for an
+existing device — a lost phone, or a revoked device coming back. The phone
+claims with the server's one unauthenticated write, which rotates the
+credential and drops whatever was connected with the old one:
+
+```sh
+curl -sk -H 'Content-Type: application/json' -d '{"code":"A7K2-M9PX"}' https://<host>:8080/v1/enrol
+# → {"device_id","user","token","signal_port","sip_domain","cert_sha256"}
+```
+
+A miss answers 404 after half a second, and a source address gets five
+attempts a minute. `cert_sha256` (also in the link) is what the app pins.
+
 ### The SIP domain
 
 Users are SIP addresses like `sip:201@dialler`; the part after the `@` is
@@ -81,7 +99,7 @@ re-enrol devices after a rename. There is no reason to change it.
 cmd/dialler-server     wiring + flags
 internal/wire          protocol envelope, bodies, framing        (golden tests)
 internal/gateway       TLS signal gateway: hello/welcome, wake fan-out, replay, supersede, idle
-internal/enroll        device credentials + admin API + device-auth middleware
+internal/enroll        device credentials, enrolment codes + the claim route, admin API, device-auth middleware
 internal/registry      user ↔ device ↔ SIP contact location table (+ WaitRegistered for the wake path)
 internal/routing       local | trunk | unknown decision
 internal/b2bua         app-leg SIP element on sipgo + diago: TLS registrar, wake-then-bridge, media proxy

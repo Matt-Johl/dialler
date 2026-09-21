@@ -153,6 +153,12 @@ public extension DirectoryClient {
         guard acceptAnyCertificate else { return .shared }
         return URLSession(configuration: .default, delegate: AnyCertificateTrust(), delegateQueue: nil)
     }
+
+    /// A session trusting the gateway's server as the endpoint says: the
+    /// pinned certificate from enrolment, or the dev toggle, or the roots.
+    static func session(for endpoint: GatewayEndpoint) -> URLSession {
+        .forEndpoint(pin: endpoint.certSHA256, acceptAny: endpoint.acceptAnyCertificate)
+    }
 }
 
 /// Accepts any server certificate. Development only.

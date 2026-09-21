@@ -10,19 +10,16 @@ struct ContentView: View {
     @State private var settingsPath = NavigationPath()
 
     var body: some View {
-        // Tab order per SPEC §6 item 6. Status has no tab (item 8): it is
-        // reached by a five-second press on the Settings title. The
-        // selection binding's setter runs on every tab-bar tap, the
-        // current tab included, which is what hides Status again.
-        TabView(selection: Binding(get: { tab }, set: { tab = $0; settingsPath = NavigationPath() })) {
-            RecentsView()
-                .tabItem { Label("Recents", systemImage: "clock") }
-                .badge(model.unseenMissed)
-                .tag(Tab.recents)
-            DirectoryView().tabItem { Label("Directory", systemImage: "person.2") }.tag(Tab.directory)
-            KeypadView().tabItem { Label("Keypad", systemImage: "circle.grid.3x3") }.tag(Tab.keypad)
-            SettingsView(path: $settingsPath).tabItem { Label("Settings", systemImage: "gear") }.tag(Tab.settings)
+        Group {
+            if model.enrolled {
+                tabs
+            } else {
+                // First run (SPEC §6 item 8): no credential, no tabs.
+                OnboardingView()
+            }
         }
+        // A dialler://enrol link from the iOS Camera app.
+        .onOpenURL { model.handle(url: $0) }
         // Ringing is CallKit's UI alone (banner, lock screen, Recents). While
         // a call is ACTIVE and the app is in front, iOS shows only the green
         // status indicator, so the in-call controls are ours. The cover
@@ -36,7 +33,24 @@ struct ContentView: View {
             InCallView()
         }
     }
+
+    private var tabs: some View {
+        // Tab order per SPEC §6 item 6. Status has no tab (item 8): it is
+        // reached by a five-second press on the Settings title. The
+        // selection binding's setter runs on every tab-bar tap, the
+        // current tab included, which is what hides Status again.
+        TabView(selection: Binding(get: { tab }, set: { tab = $0; settingsPath = NavigationPath() })) {
+            RecentsView()
+                .tabItem { Label("Recents", systemImage: "clock") }
+                .badge(model.unseenMissed)
+                .tag(Tab.recents)
+            DirectoryView().tabItem { Label("Directory", systemImage: "person.2") }.tag(Tab.directory)
+            KeypadView().tabItem { Label("Keypad", systemImage: "circle.grid.3x3") }.tag(Tab.keypad)
+            SettingsView(path: $settingsPath).tabItem { Label("Settings", systemImage: "gear") }.tag(Tab.settings)
+        }
+    }
 }
+
 
 // MARK: - In-call
 
@@ -497,6 +511,20 @@ struct StatusView: View {
                     Button("Disconnect", role: .destructive) { model.disconnect() }
                 }
             }
+            // The dev path (SPEC §6 item 8): the fields that used to be
+            // Settings, for a harness with fixed tokens and no camera.
+            Section("Connection (dev)") {
+                TextField("Host", text: $model.host).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("Port", text: $model.port).keyboardType(.numberPad)
+                TextField("Device ID", text: $model.deviceID).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField("Token", text: $model.token)
+                Toggle("Accept any certificate (dev)", isOn: $model.acceptAnyCertificate)
+                if model.certSHA256 != nil {
+                    Text("A certificate is pinned from enrolment; the toggle above is ignored while it is.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Save & connect") { model.connect() }
+            }
             Section("Log") {
                 Button("Send diagnostics to the server") { Task { await model.sendDiagnostics(reason: "manual") } }
                 if !model.diagnosticsStatus.isEmpty {
@@ -521,21 +549,26 @@ struct SettingsView: View {
     /// Comma-separated, as typed; parsed by `SSIDList` on save. Prefilled
     /// from the saved configuration, which loads asynchronously.
     @State private var ssids = ""
+    @State private var confirmReEnrol = false
 
     enum Route: Hashable { case status }
+
+    static var version: String {
+        let info = Bundle.main.infoDictionary
+        let v = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let b = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(v) (\(b))"
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
             Form {
-                Section("Light server") {
-                    TextField("Host", text: $model.host).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    TextField("Port", text: $model.port).keyboardType(.numberPad)
-                    Toggle("Accept self-signed certificate (dev)", isOn: $model.acceptAnyCertificate)
-                }
-                Section("Device enrolment") {
-                    TextField("Device ID", text: $model.deviceID).textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("Token", text: $model.token)
-                    Text("Issue with: POST /v1/admin/devices on the server (see harness/provision.sh).")
+                Section("Server") {
+                    LabeledContent("Server", value: "\(model.host):\(model.port)")
+                    LabeledContent("Device", value: model.deviceID)
+                    LabeledContent("Certificate", value: model.certSHA256 == nil ? (model.acceptAnyCertificate ? "any (dev)" : "system roots") : "pinned")
+                    Button("Re-enrol this device", role: .destructive) { confirmReEnrol = true }
+                    Text("Clears this phone's credential and returns to setup. Ask your administrator for a new enrolment code first.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Calls") {
@@ -560,9 +593,14 @@ struct SettingsView: View {
                 .onChange(of: model.localPushSSIDs) { _, saved in
                     if ssids.isEmpty { ssids = SSIDList.format(saved) }
                 }
-                Section {
-                    Button("Save & connect") { model.connect() }
+                Section("About") {
+                    LabeledContent("Version", value: Self.version)
                 }
+            }
+            .confirmationDialog("Re-enrol this device?", isPresented: $confirmReEnrol, titleVisibility: .visible) {
+                Button("Clear credential and re-enrol", role: .destructive) { model.reEnrol() }
+            } message: {
+                Text("Calls will not reach this phone until it is enrolled again.")
             }
             .navigationTitle("Settings")
             // The title is drawn by us so it can take the gesture (a large

@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,21 +26,53 @@ import (
 
 // Device is the public view of an enrolled device.
 type Device struct {
-	DeviceID string    `json:"device_id"`
-	User     string    `json:"user"`
+	DeviceID string `json:"device_id"`
+	User     string `json:"user"`
+	// Label is the operator's name for the phone ("Matt's iPhone"); the
+	// device id is a credential username nobody should have to read.
+	Label    string    `json:"label,omitempty"`
 	IssuedAt time.Time `json:"issued_at"`
 	Revoked  bool      `json:"revoked"`
+	// Enrolled is whether the device holds a credential at all: false
+	// between its creation and the claim of its enrolment code.
+	Enrolled bool `json:"enrolled"`
+	// CodePending is whether an unexpired enrolment code is outstanding.
+	CodePending bool `json:"code_pending,omitempty"`
 }
 
 type record struct {
-	User      string `json:"user"`
-	TokenHash string `json:"token_hash"` // hex sha256
+	User  string `json:"user"`
+	Label string `json:"label,omitempty"`
+	// TokenHash is the hex sha256 of the bearer token; "" until a
+	// credential has been issued (a device waiting for its first claim).
+	TokenHash string `json:"token_hash"`
 	// HA1 is the SIP Digest form of the same token, MD5(device:realm:token)
 	// (sipauth.HA1): what the app-leg registrar verifies against. Empty for
 	// credentials issued before a realm was configured; re-issue those.
 	HA1      string    `json:"ha1,omitempty"`
 	IssuedAt time.Time `json:"issued_at"`
 	Revoked  bool      `json:"revoked"`
+	// The outstanding enrolment code (SPEC §4.8), stored only as its hex
+	// sha256, and when it stops being claimable.
+	CodeHash    string    `json:"code_hash,omitempty"`
+	CodeExpires time.Time `json:"code_expires,omitempty"`
+}
+
+// CodeTTL is how long an enrolment code can be claimed.
+const CodeTTL = 15 * time.Minute
+
+// codeAlphabet is Crockford base32 without I, L, O and U: nothing that
+// reads as something else when typed from a screen.
+const codeAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+// ErrBadCode is returned for an unknown, used or expired enrolment code.
+var ErrBadCode = errors.New("enroll: unknown or expired enrolment code")
+
+// Claimed is what a device gets for a valid enrolment code.
+type Claimed struct {
+	DeviceID string
+	User     string
+	Token    string
 }
 
 // Store is safe for concurrent use.
@@ -108,6 +141,9 @@ func (s *Store) IssueToken(deviceID, user, token string) (string, error) {
 	}
 	s.mu.Lock()
 	rec := &record{User: user, TokenHash: hashToken(tok), IssuedAt: s.now()}
+	if old, ok := s.devices[deviceID]; ok {
+		rec.Label = old.Label
+	}
 	if s.Realm != "" {
 		rec.HA1 = sipauth.HA1(deviceID, s.Realm, tok)
 	}
@@ -120,12 +156,125 @@ func (s *Store) IssueToken(deviceID, user, token string) (string, error) {
 	return tok, nil
 }
 
+// Create registers a device without a credential: it exists, bound to
+// user, until an enrolment code is claimed for it (SPEC §4.8). An empty
+// deviceID is generated ("dev_" + six code characters). An existing
+// device keeps its credential; only the label and user are updated.
+func (s *Store) Create(deviceID, user, label string) (string, error) {
+	if user == "" {
+		return "", ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if deviceID == "" {
+		for {
+			deviceID = "dev_" + randomCode(6)
+			if _, taken := s.devices[deviceID]; !taken {
+				break
+			}
+		}
+	}
+	rec, ok := s.devices[deviceID]
+	if !ok {
+		rec = &record{IssuedAt: s.now()}
+		s.devices[deviceID] = rec
+	}
+	rec.User, rec.Label = user, label
+	return deviceID, s.saveLocked()
+}
+
+// MintCode issues a fresh enrolment code for deviceID, replacing any
+// outstanding one: eight characters, claimable for CodeTTL, stored only
+// as a hash. The device may be revoked — claiming the code brings it back
+// with a new credential.
+func (s *Store) MintCode(deviceID string) (code string, expires time.Time, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.devices[deviceID]
+	if !ok {
+		return "", time.Time{}, ErrInvalid
+	}
+	code = randomCode(8)
+	rec.CodeHash = hashToken(code)
+	rec.CodeExpires = s.now().Add(CodeTTL)
+	return code, rec.CodeExpires, s.saveLocked()
+}
+
+// Claim trades an enrolment code for a fresh credential: the code is
+// spent, the device's previous token (if any) stops working, and a
+// revoked device is live again. Every record is compared in constant time
+// whether or not one has matched, so the answer's timing says nothing.
+func (s *Store) Claim(code string) (Claimed, error) {
+	want := []byte(hashToken(NormalizeCode(code)))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var id string
+	var rec *record
+	now := s.now()
+	for d, r := range s.devices {
+		if r.CodeHash == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(r.CodeHash), want) == 1 && now.Before(r.CodeExpires) {
+			id, rec = d, r
+		}
+	}
+	if rec == nil {
+		return Claimed{}, ErrBadCode
+	}
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return Claimed{}, err
+	}
+	tok := "tok_" + base64.RawURLEncoding.EncodeToString(b[:])
+	rec.TokenHash = hashToken(tok)
+	rec.HA1 = ""
+	if s.Realm != "" {
+		rec.HA1 = sipauth.HA1(id, s.Realm, tok)
+	}
+	rec.IssuedAt = now
+	rec.Revoked = false
+	rec.CodeHash, rec.CodeExpires = "", time.Time{}
+	if err := s.saveLocked(); err != nil {
+		return Claimed{}, err
+	}
+	return Claimed{DeviceID: id, User: rec.User, Token: tok}, nil
+}
+
+// NormalizeCode makes a typed code comparable: upper case, separators
+// dropped, and the letters the alphabet leaves out mapped to the digits
+// they are mistaken for (I and L → 1, O → 0).
+func NormalizeCode(code string) string {
+	out := make([]byte, 0, len(code))
+	for _, c := range strings.ToUpper(code) {
+		switch {
+		case c == ' ' || c == '-':
+		case c == 'I' || c == 'L':
+			out = append(out, '1')
+		case c == 'O':
+			out = append(out, '0')
+		case c < 128:
+			out = append(out, byte(c))
+		}
+	}
+	return string(out)
+}
+
+func randomCode(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	for i := range b {
+		b[i] = codeAlphabet[int(b[i])%len(codeAlphabet)]
+	}
+	return string(b)
+}
+
 // Authenticate satisfies gateway.Authenticator.
 func (s *Store) Authenticate(_ context.Context, deviceID, token string) (bool, error) {
 	s.mu.RLock()
 	r, ok := s.devices[deviceID]
 	s.mu.RUnlock()
-	if !ok || r.Revoked {
+	if !ok || r.Revoked || r.TokenHash == "" {
 		return false, nil
 	}
 	want := []byte(r.TokenHash)
@@ -174,8 +323,13 @@ func (s *Store) Devices() []Device {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]Device, 0, len(s.devices))
+	now := s.now()
 	for id, r := range s.devices {
-		out = append(out, Device{DeviceID: id, User: r.User, IssuedAt: r.IssuedAt, Revoked: r.Revoked})
+		out = append(out, Device{
+			DeviceID: id, User: r.User, Label: r.Label, IssuedAt: r.IssuedAt, Revoked: r.Revoked,
+			Enrolled:    r.TokenHash != "",
+			CodePending: r.CodeHash != "" && now.Before(r.CodeExpires),
+		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DeviceID < out[j].DeviceID })
 	return out

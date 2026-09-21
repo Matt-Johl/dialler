@@ -42,10 +42,16 @@ public struct GatewayEndpoint: Equatable, Codable, Sendable {
     public var port: UInt16
     /// Development only: accept the server's self-signed certificate.
     public var acceptAnyCertificate: Bool
+    /// The server certificate's SHA-256 (base64url), learned at enrolment
+    /// (SPEC §4.8): when set, this certificate and no other is trusted, on
+    /// the signal socket and on HTTPS alike, whatever `acceptAnyCertificate`
+    /// says.
+    public var certSHA256: String?
 
-    public init(host: String, port: UInt16 = 7443, acceptAnyCertificate: Bool = false) {
+    public init(host: String, port: UInt16 = 7443, acceptAnyCertificate: Bool = false, certSHA256: String? = nil) {
         self.host = host
         self.port = port
         self.acceptAnyCertificate = acceptAnyCertificate
+        self.certSHA256 = certSHA256
     }
 }

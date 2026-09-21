@@ -257,17 +257,26 @@ after REGISTER and INVITE and therefore after activation.
    `dev-a` token it prints.
 2. Open `Dialler/Dialler.xcodeproj`, run the `Dialler` scheme on an iPhone
    simulator.
-3. Settings tab: host `127.0.0.1`, port `7443`, keep "accept self-signed",
-   device ID `dev-a`, paste the token, **Save & connect**. The Status
-   page (gateway state, engine state, the log, send diagnostics) has no
-   tab: press and hold the **Settings** title for five seconds and it is
-   pushed; Back or any tab-bar tap closes it (SPEC §6 item 8). It shows
-   `connected`, and the directory tab fills from `/v1/directory`.
-   *Planned (SPEC §6 item 8, rest):* a fresh install will open on an
-   onboarding screen instead — scan the QR from `dialler-admin`, or type
-   the host and the enrolment code `harness/provision.sh` prints — and
-   this direct host / device id / token entry moves to the Status page as
-   the dev path.
+3. A fresh install opens on the setup screen (SPEC §6 item 8). Two ways in:
+   - **Enter details manually**: server `127.0.0.1`, port `8080`, and the
+     eight-character `code` the harness printed for `dev-a` (it is valid
+     for fifteen minutes; `make harness-up` again for a fresh one). The
+     app claims it, pins the server's certificate, and connects. Note the
+     claim rotates dev-a's token, so the fixed fixture no longer works
+     for that device until the harness is re-provisioned.
+   - **Scan QR code** needs a camera, so not in the simulator (the button
+     is disabled there); on a device, render the printed `url` as a QR,
+     or open it from the Camera app — the `dialler://` scheme launches
+     the app.
+   - The dev path, for the fixed tokens: press and hold the setup screen's
+     icon for five seconds to open the Status page, and in "Connection
+     (dev)" enter host `127.0.0.1`, port `7443`, device ID `dev-a`, the
+     fixed token, keep "accept any certificate", **Save & connect**.
+   Once enrolled the Status page has no tab: press and hold the
+   **Settings** title for five seconds and it is pushed; Back or any
+   tab-bar tap closes it. It shows `connected`, and the directory tab
+   fills from `/v1/directory`. Settings › **Re-enrol this device** clears
+   the credential and returns to setup.
 4. Ring it: `make harness-ring-sim` makes the harness phone 202 dial 201.
    Nothing else holds 201's registration, so the server wakes `dev-a`, the
    app, over its socket and the simulator shows the CallKit incoming-call

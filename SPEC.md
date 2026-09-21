@@ -1057,6 +1057,30 @@ on by config — see §7.4.
      inline title. The tab-bar rule is the selection binding's setter,
      which SwiftUI runs on every tab-bar tap including the current
      tab's, and which empties the Settings navigation path.
+     *Built 2026-09-21 (same branch, the enrolment half; awaiting
+     approval):* server and app as specified in §4.8, in two commits.
+     Decided in the building: adding a device always mints its code and
+     link, and a fixture `token` in the same request also issues that
+     credential, so the harness is unchanged and gets codes for free; a
+     device created without a token holds no credential at all until its
+     claim (an empty token hash never authenticates); a claim un-revokes;
+     a claim or a revoke drops that device's gateway sessions with
+     `unauthorized` (`gateway.Disconnect`) and no other's. Typed codes
+     are normalised on both ends (case, dashes, I/L → 1, O → 0). On the
+     app the pin lives on `GatewayEndpoint.certSHA256` and, when set,
+     overrides the dev toggle on the signal socket and every HTTPS
+     session (`CertificatePin`, `EndpointTrust`); the manual path trusts
+     the first connection and refuses to continue if the certificate it
+     saw is not the one the reply names. Re-enrol clears the credential
+     and the directory book. **Not done, and worth knowing:** the SIP
+     leg still accepts any certificate (`BaresipCallEngine` passes
+     `acceptAnyCertificate: true` to the stack); pinning there means
+     handing baresip the fingerprint or a CA file (`sip_cafile` /
+     `sip_verify_server`), a separate change. The dev fields moved from
+     Settings to the Status page, which onboarding also reaches by a
+     five-second press on its icon. The simulator has no camera:
+     `DataScannerViewController.isAvailable` is false there, so the QR
+     button is disabled and manual entry is the way in.
 
   9. **`dialler-admin` (new process; needs item 7 and the routes of
      §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib

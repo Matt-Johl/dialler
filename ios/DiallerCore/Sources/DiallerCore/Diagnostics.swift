@@ -115,12 +115,15 @@ public struct DiagnosticsClient: Sendable {
     public let deviceID: String
     public let token: String
     public let acceptAnyCertificate: Bool
+    /// The pinned certificate from enrolment, when there is one.
+    public let certSHA256: String?
 
-    public init(base: URL, deviceID: String, token: String, acceptAnyCertificate: Bool) {
+    public init(base: URL, deviceID: String, token: String, acceptAnyCertificate: Bool, certSHA256: String? = nil) {
         self.base = base
         self.deviceID = deviceID
         self.token = token
         self.acceptAnyCertificate = acceptAnyCertificate
+        self.certSHA256 = certSHA256
     }
 
     /// The queue directory: `<App Group>/diag-pending/`.
@@ -155,7 +158,7 @@ public struct DiagnosticsClient: Sendable {
         req.setValue(kind, forHTTPHeaderField: "X-Diag-Kind")
         if let name, !name.isEmpty { req.setValue(name, forHTTPHeaderField: "X-Diag-Name") }
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        let session = DirectoryClient.session(acceptAnyCertificate: acceptAnyCertificate)
+        let session = URLSession.forEndpoint(pin: certSHA256, acceptAny: acceptAnyCertificate)
         let (_, response) = try await session.upload(for: req, from: data)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw URLError(.badServerResponse)

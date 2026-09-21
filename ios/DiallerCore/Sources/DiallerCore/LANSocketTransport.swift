@@ -63,7 +63,14 @@ public final class LANSocketTransport: SignalTransport {
 
         let tls = NWProtocolTLS.Options()
         sec_protocol_options_set_min_tls_protocol_version(tls.securityProtocolOptions, .TLSv12)
-        if endpoint.acceptAnyCertificate {
+        if let pin = endpoint.certSHA256 {
+            // Pinned at enrolment (SPEC §4.8): the presented leaf must be
+            // the certificate the server named, self-signed or not.
+            sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, trustRef, complete in
+                let trust = sec_trust_copy_ref(trustRef).takeRetainedValue()
+                complete(CertificatePin.matches(trust, pin: pin))
+            }, queue)
+        } else if endpoint.acceptAnyCertificate {
             sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, _, complete in
                 complete(true) // dev: self-signed server cert
             }, queue)

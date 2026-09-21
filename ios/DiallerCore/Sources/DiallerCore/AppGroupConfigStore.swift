@@ -18,6 +18,7 @@ public final class AppGroupConfigStore: AppConfigStore {
         static let host = "gateway.host"
         static let port = "gateway.port"
         static let acceptAny = "gateway.acceptAnyCertificate"
+        static let pin = "gateway.certSHA256"
         static let deviceID = "device.id"
     }
 
@@ -26,8 +27,9 @@ public final class AppGroupConfigStore: AppConfigStore {
               let deviceID = defaults.string(forKey: Key.deviceID), !deviceID.isEmpty else { return nil }
         let port = UInt16(clamping: defaults.integer(forKey: Key.port))
         let token = readToken() ?? ""
+        let pin = defaults.string(forKey: Key.pin).flatMap { $0.isEmpty ? nil : $0 }
         return AppConfig(
-            gateway: GatewayEndpoint(host: host, port: port == 0 ? 7443 : port, acceptAnyCertificate: defaults.bool(forKey: Key.acceptAny)),
+            gateway: GatewayEndpoint(host: host, port: port == 0 ? 7443 : port, acceptAnyCertificate: defaults.bool(forKey: Key.acceptAny), certSHA256: pin),
             deviceID: deviceID,
             token: token
         )
@@ -37,12 +39,13 @@ public final class AppGroupConfigStore: AppConfigStore {
         defaults.set(config.gateway.host, forKey: Key.host)
         defaults.set(Int(config.gateway.port), forKey: Key.port)
         defaults.set(config.gateway.acceptAnyCertificate, forKey: Key.acceptAny)
+        defaults.set(config.gateway.certSHA256 ?? "", forKey: Key.pin)
         defaults.set(config.deviceID, forKey: Key.deviceID)
         try writeToken(config.token)
     }
 
     public func clear() {
-        for k in [Key.host, Key.port, Key.acceptAny, Key.deviceID] { defaults.removeObject(forKey: k) }
+        for k in [Key.host, Key.port, Key.acceptAny, Key.pin, Key.deviceID] { defaults.removeObject(forKey: k) }
         SecItemDelete(baseQuery() as CFDictionary)
     }
 

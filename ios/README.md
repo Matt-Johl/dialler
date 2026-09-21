@@ -46,7 +46,13 @@ by the usual delta sync, which the server's `directory_changed` to this
 device triggers and the app also requests after each write. The star flips
 optimistically and a failed write puts it back. The book is persisted in
 `<App Group>/directory/book.json` (`AddressBookStore`), so the cursor
-survives a launch and the list is on screen before the first sync.
+survives a launch and the list is on screen before the first sync. A
+server whose version is *behind* that cursor has been reset (a
+re-provisioned harness; the move to per-device directories, whose
+counters start at 1): `DirectoryClient.sync` clears the book and syncs
+from zero, and the log says so. Found on 2026-09-21 the hard way — the
+app held the old global cursor 702, every write landed on the server,
+and none of them showed.
 Search (`DirectorySearch`) matches any substring of the name or the
 extension, case- and diacritic-insensitive, locally. A new contact's mode
 is guessed from its number (bare or in our SIP domain → local, elsewhere →

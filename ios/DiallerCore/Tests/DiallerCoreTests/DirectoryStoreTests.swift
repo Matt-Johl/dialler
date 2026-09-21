@@ -54,6 +54,42 @@ final class DirectoryStoreTests: XCTestCase {
         XCTAssertEqual(DirectorySearch.filter(list, query: "nobody").map(\.id), [])
     }
 
+    /// The bug of 2026-09-21: the app held cursor 702 from the old global
+    /// directory; the new per-device one was at 24; every "since=702" came
+    /// back empty and no write ever showed. A server behind the cursor is
+    /// a reset server: clear the book and sync from zero.
+    func testSyncResetsWhenTheServerIsBehindTheCursor() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let client = DirectoryClient(base: URL(string: "https://server:8080")!, deviceID: "dev-a", token: "tok",
+                                     session: URLSession(configuration: config))
+        var book = AddressBook()
+        book.apply(DirectorySync(version: 702, since: 0, contacts: [contact("old", "Stale", uri: "sip:1@x")]))
+
+        var requested: [String] = []
+        StubURLProtocol.respond = { req in
+            let since = URLComponents(url: req.url!, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "since" }!.value!
+            requested.append(since)
+            return since == "0"
+                ? (200, #"{"version":24,"since":0,"contacts":[{"id":"n","display_name":"Bob","uri":"670","mode":"local","version":20}]}"#)
+                : (200, #"{"version":24,"since":702,"contacts":[]}"#)
+        }
+        let reset = try await client.sync(&book)
+        XCTAssertTrue(reset)
+        XCTAssertEqual(requested, ["702", "0"], "the empty delta reveals the regression; then a full sync")
+        XCTAssertEqual(book.version, 24)
+        XCTAssertEqual(book.sorted.map(\.id), ["n"], "the stale book is gone, the server's list is what remains")
+
+        // An ordinary delta (server ahead) does not reset.
+        requested = []
+        StubURLProtocol.respond = { _ in (200, #"{"version":25,"since":24,"contacts":[{"id":"n","display_name":"Bob","uri":"670","mode":"local","version":25,"deleted":true}]}"#) }
+        let resetAgain = try await client.sync(&book)
+        XCTAssertFalse(resetAgain)
+        XCTAssertEqual(StubURLProtocol.last?.url?.query, "since=24", "one delta request from the cursor, no reset")
+        XCTAssertEqual(book.version, 25)
+        XCTAssertTrue(book.sorted.isEmpty)
+    }
+
     func testWriteRequestsCarryDeviceAuthAndTheDraft() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]

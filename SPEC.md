@@ -1009,6 +1009,14 @@ on by config — see §7.4.
      fixture of the old file, per-device isolation of files, versions
      and notifications, and replace-all as one delta; DiallerCore tests
      cover the persisted book, the search and the client's writes.
+     *Same day, on the device:* saves, adds and deletes all reached the
+     server and none showed in the app. The app's cursor was the old
+     global directory's 702; the migrated per-device directory counts
+     from 1 (it was at 24), so "everything newer than 702" was always
+     empty. Persisting the book made a latent rule visible: a server
+     version behind the cursor means the server was reset, and the
+     client must clear the book and sync from zero
+     (`DirectoryClient.sync`, `testSyncResetsWhenTheServerIsBehindTheCursor`).
 
   8. **First-run enrolment, and Status hidden behind a gesture (app, plus
      the enrolment-code routes of §4.8).** *Gate:* while

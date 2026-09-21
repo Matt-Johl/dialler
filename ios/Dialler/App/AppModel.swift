@@ -689,10 +689,12 @@ final class AppModel: ObservableObject {
 
     func syncDirectory() async {
         do {
-            let delta = try await directoryClient.changes(since: book.version)
-            book.apply(delta)
+            let had = book.version
+            let reset = try await directoryClient.sync(&book)
             publishBook()
-            append("directory synced: v\(book.version), \(contacts.count) contacts")
+            append(reset
+                ? "directory: server is behind our cursor v\(had) (reset or re-provisioned); re-synced in full to v\(book.version), \(contacts.count) contacts"
+                : "directory synced: v\(book.version), \(contacts.count) contacts")
         } catch {
             append("directory sync failed: \(error.localizedDescription)")
         }

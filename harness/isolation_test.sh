@@ -55,8 +55,9 @@ ctl() {
 # The admin's verbs need DELETE and PUT, which busybox wget lacks; a
 # throwaway container with curl does them.
 admin() {
+  # The arguments travel as positional parameters, so JSON bodies survive.
   docker run --rm --network "$NET" alpine:3.20 sh -c \
-    "apk add --no-cache curl >/dev/null 2>&1 && curl -sk -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer harness' -H 'Content-Type: application/json' $*"
+    'apk add --no-cache curl >/dev/null 2>&1 && curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer harness" -H "Content-Type: application/json" "$@"' _ "$@"
 }
 
 echo "== dial 211 -> 212 and let it bridge"

@@ -1159,10 +1159,12 @@ on by config — see §7.4.
      *Isolation:* the rule of §4.8 applies in full — every admin action
      touches one device's entry and one device's file, notifies one
      device, and never restarts, reloads or re-binds anything. `make
-     harness-test` gains the check: with a dev-ha ↔ dev-hb call bridged,
-     revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
-     call's audio continues, and neither dev-ha nor dev-hb sees a session
-     close, a re-INVITE or a `directory_changed`.
+     harness-isolation` is the check: with a dev-ha ↔ dev-hb call bridged
+     and bystander gateway sessions held, revoke dev-s, replace dev-a's
+     directory, set dev-a's Wi-Fi and mint dev-a a code; the call's audio
+     continues to the end, dev-ha's session sees no error, no
+     `directory_changed` and no `config`, and dev-s's session is closed
+     with `unauthorized` and nothing else.
      *Built 2026-09-21 (branch `feature/admin-ui`, awaiting approval):*
      `server/cmd/dialler-admin` on `internal/adminui`, stdlib only, in
      four packages that each carry their own tests. `internal/qr` is the

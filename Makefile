@@ -50,6 +50,12 @@ harness-up: tone
 harness-test:
 	docker compose -f harness/docker-compose.yml --profile test run --rm --build sipp
 
+# Admin isolation (SPEC §4.8): revoke, replace a directory, set settings
+# and mint a code for OTHER devices while a call is bridged; the call and
+# its parties must not notice. Brings up its own stack and tears it down.
+harness-isolation:
+	sh harness/isolation_test.sh
+
 # The operator's UI beside the docker server: https://localhost:8443,
 # password "harness-admin".
 harness-admin-up:

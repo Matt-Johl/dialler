@@ -119,6 +119,8 @@ func main() {
 			log.Warn("wake cancelled before we could act", "body", string(e.Body))
 		case wire.TypeConfig:
 			log.Info("config received", "body", string(e.Body)) // the harness asserts on this
+		case wire.TypeDirectoryChanged:
+			log.Info("directory_changed received", "body", string(e.Body)) // and on this (isolation_test.sh)
 		case wire.TypeError:
 			log.Error("gateway error", "body", string(e.Body))
 			os.Exit(1)

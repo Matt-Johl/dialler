@@ -1,0 +1,29 @@
+{{define "content"}}
+<p class="crumb"><a href="/">Devices</a></p>
+<header class="page">
+  <div>
+    <h1>Add a device</h1>
+    <p class="sub">One phone, one extension. You'll be shown its enrolment code and QR right after.</p>
+  </div>
+</header>
+
+<section class="card narrow">
+  <form method="post" action="/devices" class="stack">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="user">Extension</label>
+      <input id="user" name="user" value="{{.User}}" placeholder="201" inputmode="numeric" autocomplete="off" required autofocus>
+      <p class="help">The number this phone answers as. Each extension belongs to one device.</p>
+    </div>
+    <div class="field">
+      <label for="label">Label <span class="optional">optional</span></label>
+      <input id="label" name="label" value="{{.Label}}" placeholder="Matt's iPhone" autocomplete="off">
+      <p class="help">A name for the phone, so you never have to read its id.</p>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="primary">Add device</button>
+      <a class="button ghost" href="/">Cancel</a>
+    </div>
+  </form>
+</section>
+{{end}}

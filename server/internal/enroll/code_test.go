@@ -217,6 +217,48 @@ func TestEnrolHandler(t *testing.T) {
 	}
 }
 
+// Revoke keeps the record for a later code; purge removes it, and the
+// hooks tell the two apart.
+func TestRevokeVersusPurge(t *testing.T) {
+	s, _ := Open("")
+	s.Create("dev-a", "201", "")
+	s.Create("dev-b", "202", "")
+	var revoked, purged []string
+	h := NewAdminHandler(s, "admin", Link{}, Hooks{
+		OnRevoke: func(d string) { revoked = append(revoked, d) },
+		OnPurge:  func(d string) { purged = append(purged, d) },
+	})
+	do := func(path string) int {
+		req := httptest.NewRequest("DELETE", path, nil)
+		req.Header.Set("Authorization", "Bearer admin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := do("/v1/admin/devices/dev-a"); code != 204 {
+		t.Fatalf("revoke: %d", code)
+	}
+	if len(s.Devices()) != 2 || !s.Devices()[0].Revoked {
+		t.Fatal("revoke must keep the record, marked revoked")
+	}
+	if code := do("/v1/admin/devices/dev-a?purge=1"); code != 204 {
+		t.Fatalf("purge: %d", code)
+	}
+	if len(s.Devices()) != 1 || s.Devices()[0].DeviceID != "dev-b" {
+		t.Fatalf("purge must remove the record: %+v", s.Devices())
+	}
+	if code := do("/v1/admin/devices/dev-a?purge=1"); code != 404 {
+		t.Fatalf("purge again: %d", code)
+	}
+	if len(revoked) != 1 || revoked[0] != "dev-a" || len(purged) != 1 || purged[0] != "dev-a" {
+		t.Fatalf("hooks: revoked=%v purged=%v", revoked, purged)
+	}
+	// The id can be enrolled afresh.
+	if _, err := s.Create("dev-a", "201", "again"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAdminMintsCodesAndLinks(t *testing.T) {
 	s, _ := Open("")
 	link := Link{Host: "10.18.0.212", HTTPSPort: 8080, CertSHA256: "c2hh"}

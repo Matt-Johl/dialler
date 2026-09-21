@@ -349,6 +349,19 @@ func (s *Store) Revoke(deviceID string) (bool, error) {
 	return true, s.saveLocked()
 }
 
+// Delete removes the device's record outright (SPEC §4.8 "purge"): its
+// credential, code and settings are gone and the id may be enrolled
+// afresh. Returns false if unknown.
+func (s *Store) Delete(deviceID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.devices[deviceID]; !ok {
+		return false, nil
+	}
+	delete(s.devices, deviceID)
+	return true, s.saveLocked()
+}
+
 // UserFor returns the SIP user bound to an enrolled, non-revoked device.
 func (s *Store) UserFor(deviceID string) (string, bool) {
 	s.mu.RLock()

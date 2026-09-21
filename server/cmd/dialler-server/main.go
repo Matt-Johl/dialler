@@ -379,6 +379,18 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			reg.Provision(user, deviceID)
 			gw.Disconnect(deviceID)
 		},
+		// Deleted for good: the registration, the sessions and the
+		// directory go with the record. One device only.
+		OnPurge: func(deviceID string) {
+			log.Info("device purged", "device", deviceID)
+			if ep, ok := reg.LookupDevice(deviceID); ok {
+				reg.Deprovision(ep.User)
+			}
+			gw.Disconnect(deviceID)
+			if err := dir.Purge(deviceID); err != nil {
+				log.Warn("purging the device's directory", "device", deviceID, "err", err)
+			}
+		},
 		// Settings changed: that device's live sessions get them now; a
 		// device not connected gets them in its next welcome.
 		OnConfig: func(deviceID string, cfg enroll.DeviceConfig) {

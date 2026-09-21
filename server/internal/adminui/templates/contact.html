@@ -1,0 +1,40 @@
+{{define "content"}}
+<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+<header class="page">
+  <div>
+    <h1>{{if .IsNew}}Add a contact{{else}}Edit contact{{end}}</h1>
+    <p class="sub">{{if .IsNew}}Appears in the phone's directory as soon as it is saved.{{else}}Changes reach the phone as soon as they are saved.{{end}}</p>
+  </div>
+</header>
+
+<section class="card narrow">
+  <form method="post" action="{{.Action}}" class="stack">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="display_name">Name</label>
+      <input id="display_name" name="display_name" value="{{.Contact.DisplayName}}" required autofocus>
+    </div>
+    <div class="field">
+      <label for="uri">Number</label>
+      <input id="uri" name="uri" value="{{.Contact.URI}}" class="mono" required placeholder="100, or sip:100@pbx">
+      <p class="help">A bare number is an extension on this server. Anything elsewhere goes through the PBX.</p>
+    </div>
+    <fieldset class="field">
+      <legend>Reached via</legend>
+      <label class="choice"><input type="radio" name="mode" value="local" {{if ne .Contact.Mode "trunk"}}checked{{end}}> This server</label>
+      <label class="choice"><input type="radio" name="mode" value="trunk" {{if eq .Contact.Mode "trunk"}}checked{{end}}> The PBX</label>
+    </fieldset>
+    <label class="choice"><input type="checkbox" name="favourite" {{if .Contact.Favourite}}checked{{end}}> Favourite <span class="help-inline">pinned at the top of the phone's directory</span></label>
+    <div class="form-actions">
+      <button type="submit" class="primary">{{if .IsNew}}Add contact{{else}}Save{{end}}</button>
+      <a class="button ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
+    </div>
+  </form>
+  {{if not .IsNew}}
+  <form method="post" action="/devices/{{.Device.DeviceID}}/contacts/{{.Contact.ID}}/delete" class="form-actions delete-contact">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="danger ghost">Delete this contact</button>
+  </form>
+  {{end}}
+</section>
+{{end}}

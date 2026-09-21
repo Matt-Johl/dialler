@@ -1,109 +1,95 @@
 {{define "content"}}
 <p class="crumb"><a href="/">Devices</a></p>
-<h1>{{.Title}}</h1>
-<p class="lede">
-  Extension <strong>{{.Device.User}}</strong> ·
-  <span class="state {{.Device.State | lower}}">{{.Device.State}}</span> ·
-  {{if eq .Device.Presence "offline"}}offline{{else}}<span class="dot on"></span>{{.Device.Presence}}{{end}} ·
-  {{if .Device.Registered}}registered{{else}}not registered{{end}}
-  · <span class="mono dim">{{.Device.DeviceID}}</span>
-</p>
-
-<section class="card actions">
-  <form method="post" action="/devices/{{.Device.DeviceID}}/code" class="inline">
+<header class="page">
+  <div>
+    <h1>{{.Title}}</h1>
+    <p class="sub">
+      Extension {{.Device.User}}
+      <span class="sep">·</span> <span class="pill {{.Device.StateKey}}">{{.Device.State}}</span>
+      <span class="sep">·</span> {{if eq .Device.Presence "offline"}}Offline{{else}}<span class="dot on"></span>{{.Device.Presence}}{{end}}
+      <span class="sep">·</span> {{if .Device.Registered}}Registered{{else}}Not registered{{end}}
+    </p>
+  </div>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/code">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
     <button type="submit" class="primary">New enrolment code</button>
   </form>
-  {{if not .Device.Revoked}}<a class="button danger" href="/devices/{{.Device.DeviceID}}/revoke">Revoke</a>{{end}}
-  <span class="hint">A new code rotates the phone's credential; the current app keeps working until it is claimed.</span>
-</section>
+</header>
 
-<h2>Office Wi-Fi</h2>
 <section class="card">
-  <form method="post" action="/devices/{{.Device.DeviceID}}/config">
+  <div class="card-head">
+    <div>
+      <h2>Background calls</h2>
+      <p class="help">The office Wi-Fi networks on which this phone takes calls with the app closed. Saving sends the list to the phone.</p>
+    </div>
+  </div>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/config" class="stack">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <label>Networks the phone answers on when the app is closed, one per line
-      <textarea name="ssids" rows="3" placeholder="Office&#10;Office-5G">{{.SSIDs}}</textarea>
-    </label>
-    <div class="row">
-      <button type="submit" class="primary">Save networks</button>
-      <span class="hint">{{if .Config}}Version {{.Config.Version}}, sent to the phone on save.{{else}}Not set: the phone keeps whatever it has.{{end}}</span>
+    <div class="field">
+      <label for="ssids">Networks <span class="optional">one per line</span></label>
+      <textarea id="ssids" name="ssids" rows="3" placeholder="Office&#10;Office-5G">{{.SSIDs}}</textarea>
+      <p class="help">{{if .Config}}Version {{.Config.Version}} is on the phone.{{else}}Nothing set yet: the phone keeps whatever it has. An empty list turns background calls off.{{end}}</p>
+    </div>
+    <div class="form-actions">
+      <button type="submit">Save networks</button>
     </div>
   </form>
 </section>
 
-<h2>Directory <span class="dim">{{len .Contacts}}</span></h2>
-<table class="directory">
-  <thead><tr><th>Name</th><th>Number</th><th>Via</th><th>★</th><th></th></tr></thead>
-  <tbody>
-  {{range .Contacts}}
-    <tr>
-      <form method="post" action="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}" id="c-{{.ID}}">
-        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-      </form>
-      <td><input form="c-{{.ID}}" name="display_name" value="{{.DisplayName}}" required></td>
-      <td><input form="c-{{.ID}}" name="uri" value="{{.URI}}" class="mono" required></td>
-      <td>
-        <select form="c-{{.ID}}" name="mode">
-          <option value="local" {{if eq .Mode "local"}}selected{{end}}>this server</option>
-          <option value="trunk" {{if eq .Mode "trunk"}}selected{{end}}>PBX</option>
-        </select>
-      </td>
-      <td class="centre"><input form="c-{{.ID}}" type="checkbox" name="favourite" {{if .Favourite}}checked{{end}} aria-label="favourite"></td>
-      <td class="right nowrap">
-        <button form="c-{{.ID}}" type="submit" class="small">Save</button>
-        <form method="post" action="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}/delete" class="inline">
-          <input type="hidden" name="_csrf" value="{{$.CSRF}}">
-          <button type="submit" class="small quiet">Delete</button>
-        </form>
-      </td>
-    </tr>
-  {{end}}
-    <tr class="new">
-      <form method="post" action="/devices/{{.Device.DeviceID}}/contacts" id="c-new">
-        <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      </form>
-      <td><input form="c-new" name="display_name" placeholder="New contact"></td>
-      <td><input form="c-new" name="uri" placeholder="100 or sip:100@pbx" class="mono"></td>
-      <td>
-        <select form="c-new" name="mode">
-          <option value="local">this server</option>
-          <option value="trunk">PBX</option>
-        </select>
-      </td>
-      <td class="centre"><input form="c-new" type="checkbox" name="favourite" aria-label="favourite"></td>
-      <td class="right"><button form="c-new" type="submit" class="small primary">Add</button></td>
-    </tr>
-  </tbody>
-</table>
-
-<section class="card split">
-  <div>
-    <h3>Spreadsheet</h3>
-    <p class="hint">Columns <span class="mono">{{.CSVColumn}}</span>. A bare number becomes an extension on this server. Uploading replaces the whole list, after a preview.</p>
-    <p><a class="button" href="/devices/{{.Device.DeviceID}}/directory.csv">Download CSV</a></p>
-    <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" class="row">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <input type="file" name="file" accept=".csv,text/csv" required>
-      <button type="submit">Upload CSV…</button>
-    </form>
+<section class="card">
+  <div class="card-head">
+    <div>
+      <h2>Directory <span class="count">{{len .Contacts}}</span></h2>
+      <p class="help">What the phone shows under Directory.{{if .Favourites}} {{.Favourites}} starred.{{end}}</p>
+    </div>
+    <div class="card-actions">
+      <a class="button primary" href="/devices/{{.Device.DeviceID}}/contacts/new">Add contact</a>
+    </div>
   </div>
-  <div>
-    <h3>Copy to other devices</h3>
-    {{if .Others}}
-    <form method="post" action="/devices/{{.Device.DeviceID}}/directory/copy">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <ul class="checks">
-      {{range .Others}}
-        <li><label><input type="checkbox" name="to" value="{{.DeviceID}}"> {{if .Label}}{{.Label}}{{else}}extension {{.User}}{{end}} <span class="dim">{{.User}}</span></label></li>
-      {{end}}
-      </ul>
-      <button type="submit">Copy directory</button>
-      <p class="hint">Replaces each chosen device's list with this one.</p>
-    </form>
-    {{else}}
-    <p class="hint">No other devices.</p>
+  {{if .Contacts}}
+  <table class="list">
+    <thead><tr><th>Name</th><th>Number</th><th>Reached via</th><th class="right"></th></tr></thead>
+    <tbody>
+    {{range .Contacts}}
+      <tr>
+        <td>{{if .Favourite}}<span class="star" title="Favourite">★</span> {{end}}{{.DisplayName}}</td>
+        <td class="mono">{{.URI}}</td>
+        <td class="dim">{{if eq .Mode "trunk"}}PBX{{else}}This server{{end}}</td>
+        <td class="right"><a class="chevron" href="/devices/{{$.Device.DeviceID}}/contacts/{{.ID}}/edit" aria-label="Edit">Edit</a></td>
+      </tr>
     {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty-inline">No contacts yet.</p>
+  {{end}}
+  <div class="card-foot">
+    <a class="button ghost" href="/devices/{{.Device.DeviceID}}/directory.csv">Download CSV</a>
+    <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" class="upload">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <label class="file"><input type="file" name="file" accept=".csv,text/csv" required><span>Choose CSV…</span></label>
+      <button type="submit" class="ghost">Preview upload</button>
+    </form>
+    <a class="button ghost" href="/devices/{{.Device.DeviceID}}/directory/copy">Copy to other devices</a>
+    <span class="help">Columns <span class="mono">{{.CSVColumn}}</span>. Uploading replaces the list, after a preview.</span>
+  </div>
+</section>
+
+<section class="card danger-zone">
+  <div class="card-head"><div><h2>Danger zone</h2></div></div>
+  <div class="danger-row">
+    <div>
+      <strong>Revoke this device</strong>
+      <p class="help">Disconnects the phone and stops it registering. Its directory is kept; a new code brings it back.</p>
+    </div>
+    <a class="button danger" href="/devices/{{.Device.DeviceID}}/revoke"{{if .Device.Revoked}} aria-disabled="true"{{end}}>Revoke</a>
+  </div>
+  <div class="danger-row">
+    <div>
+      <strong>Delete this device</strong>
+      <p class="help">Removes the device, its directory and its settings for good. Extension {{.Device.User}} becomes free.</p>
+    </div>
+    <a class="button danger" href="/devices/{{.Device.DeviceID}}/delete">Delete</a>
   </div>
 </section>
 {{end}}

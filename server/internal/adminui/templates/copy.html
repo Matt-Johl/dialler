@@ -1,0 +1,30 @@
+{{define "content"}}
+<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+<header class="page">
+  <div>
+    <h1>Copy the directory</h1>
+    <p class="sub">Give other phones this one's {{.Count}} contact{{if ne .Count 1}}s{{end}}. Each chosen phone's list is replaced with a copy.</p>
+  </div>
+</header>
+
+<section class="card narrow">
+  {{if .Others}}
+  <form method="post" action="/devices/{{.Device.DeviceID}}/directory/copy" class="stack">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <fieldset class="field">
+      <legend>Copy to</legend>
+      {{range .Others}}
+      <label class="choice"><input type="checkbox" name="to" value="{{.DeviceID}}"> {{if .Label}}{{.Label}}{{else}}Extension {{.User}}{{end}}{{if .Label}} <span class="dim">{{.User}}</span>{{end}}</label>
+      {{end}}
+    </fieldset>
+    <div class="form-actions">
+      <button type="submit" class="primary">Copy directory</button>
+      <a class="button ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
+    </div>
+  </form>
+  {{else}}
+  <p class="empty-inline">There are no other devices to copy to.</p>
+  <p><a class="button ghost" href="/devices/{{.Device.DeviceID}}">Back</a></p>
+  {{end}}
+</section>
+{{end}}

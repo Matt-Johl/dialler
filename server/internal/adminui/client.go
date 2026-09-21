@@ -62,7 +62,13 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base.ResolveReference(&url.URL{Path: path}).String(), body)
+	// path may carry a query ("…?purge=1"); parsed, not treated as a path,
+	// or the server would see an escaped "?" and do the wrong thing.
+	ref, err := url.Parse(path)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base.ResolveReference(ref).String(), body)
 	if err != nil {
 		return err
 	}
@@ -125,9 +131,14 @@ func (c *Client) NewCode(ctx context.Context, deviceID string) (Code, error) {
 	return out, err
 }
 
-// Revoke disables a device's credential.
+// Revoke disables a device's credential; the record and directory stay.
 func (c *Client) Revoke(ctx context.Context, deviceID string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/admin/devices/"+url.PathEscape(deviceID), nil, nil)
+}
+
+// Purge deletes a device for good: record, directory and settings.
+func (c *Client) Purge(ctx context.Context, deviceID string) error {
+	return c.do(ctx, http.MethodDelete, "/v1/admin/devices/"+url.PathEscape(deviceID)+"?purge=1", nil, nil)
 }
 
 // Directory is a device's live contacts and version.

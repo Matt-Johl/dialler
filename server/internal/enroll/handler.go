@@ -25,6 +25,9 @@ type Hooks struct {
 	OnClaim func(deviceID, user string)
 	// OnConfig: the admin changed a device's settings; push them to it.
 	OnConfig func(deviceID string, cfg DeviceConfig)
+	// OnPurge: the admin deleted a device for good; its directory,
+	// registration and sessions go with it.
+	OnPurge func(deviceID string)
 }
 
 // Link is what a phone needs to find the server, folded into the QR URL
@@ -61,7 +64,7 @@ type codeResponse struct {
 //	POST   /v1/admin/devices                  {"user"[,"device_id","label","token"]}
 //	                                          → 201 {"device_id","user","label","code","expires_at","url"[,"token"]}
 //	GET    /v1/admin/devices                  → [Device]
-//	DELETE /v1/admin/devices/{id}             → 204 (revoke)
+//	DELETE /v1/admin/devices/{id}             → 204 (revoke; ?purge=1 deletes the device outright)
 //	POST   /v1/admin/devices/{id}/enrol-code  → {"code","expires_at","url"}
 //	GET    /v1/admin/devices/{id}/config      → {"version","ssids"} (404 until set)
 //	PUT    /v1/admin/devices/{id}/config      {"ssids":[…]} → {"version","ssids"}   (POST accepted too)
@@ -133,7 +136,14 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 
 	mux.HandleFunc("DELETE /v1/admin/devices/{id}", guard(func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		ok, err := store.Revoke(id)
+		purge := r.URL.Query().Get("purge") == "1" || r.URL.Query().Get("purge") == "true"
+		var ok bool
+		var err error
+		if purge {
+			ok, err = store.Delete(id)
+		} else {
+			ok, err = store.Revoke(id)
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -142,7 +152,10 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			http.NotFound(w, r)
 			return
 		}
-		if hooks.OnRevoke != nil {
+		switch {
+		case purge && hooks.OnPurge != nil:
+			hooks.OnPurge(id)
+		case !purge && hooks.OnRevoke != nil:
 			hooks.OnRevoke(id)
 		}
 		w.WriteHeader(http.StatusNoContent)

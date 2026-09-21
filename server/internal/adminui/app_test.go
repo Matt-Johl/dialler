@@ -31,6 +31,7 @@ type fakeAPI struct {
 	configs  map[string]enroll.DeviceConfig
 	replaced map[string]int // ReplaceDirectory calls per device
 	revoked  []string
+	purged   []string
 	minted   int
 }
 
@@ -78,7 +79,18 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(201)
 		write(map[string]any{"device_id": id, "user": in.User, "label": in.Label, "code": "A7K2M9PX", "expires_at": time.Now().Add(15 * time.Minute), "url": "dialler://enrol?c=A7K2M9PX&f=fp&h=10.0.0.1&p=8080"})
 	case len(parts) == 2 && parts[0] == "devices" && r.Method == "DELETE":
-		f.revoked = append(f.revoked, parts[1])
+		if r.URL.Query().Get("purge") == "1" {
+			f.purged = append(f.purged, parts[1])
+			kept := f.devices[:0]
+			for _, d := range f.devices {
+				if d.DeviceID != parts[1] {
+					kept = append(kept, d)
+				}
+			}
+			f.devices = kept
+		} else {
+			f.revoked = append(f.revoked, parts[1])
+		}
 		w.WriteHeader(204)
 	case len(parts) == 3 && parts[2] == "enrol-code" && r.Method == "POST":
 		if !f.known(parts[1]) {
@@ -295,20 +307,35 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 	_, _, b := setup(t)
 	signIn(t, b)
 	body := b.get("/").Body.String()
-	for _, want := range []string{"Matt&#39;s iPhone", "201", "app · extension", "enrolled", "code issued", "dev-b"} {
+	for _, want := range []string{"Matt&#39;s iPhone", "Extension 201", "app · extension", "Enrolled", "Code issued", "Extension 202"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("devices page lacks %q", want)
 		}
+	}
+	if !strings.Contains(b.get("/devices/new").Body.String(), "Add a device") {
+		t.Fatal("add-device page")
 	}
 	page := b.get("/devices/dev-a")
 	if page.Code != 200 {
 		t.Fatalf("device page: %d", page.Code)
 	}
 	body = page.Body.String()
-	for _, want := range []string{"sip:100@asterisk", `value="Matt"`, "checked", "Download CSV", "extension 202", "Not set: the phone keeps"} {
+	for _, want := range []string{"sip:100@asterisk", "Matt</td>", "★", "Download CSV", "Danger zone", "Nothing set yet: the phone keeps", "/contacts/ct_1/edit"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("device page lacks %q", want)
 		}
+	}
+	if copyPage := b.get("/devices/dev-a/directory/copy").Body.String(); !strings.Contains(copyPage, "Extension 202") || !strings.Contains(copyPage, `value="dev-b"`) {
+		t.Fatal("copy page must list the other devices")
+	}
+	if edit := b.get("/devices/dev-a/contacts/ct_2/edit").Body.String(); !strings.Contains(edit, `value="Matt"`) || !strings.Contains(edit, `name="favourite" checked`) || !strings.Contains(edit, "Delete this contact") {
+		t.Fatal("edit page")
+	}
+	if add := b.get("/devices/dev-a/contacts/new").Body.String(); !strings.Contains(add, "Add a contact") || strings.Contains(add, "Delete this contact") {
+		t.Fatal("add page")
+	}
+	if rec := b.get("/devices/dev-a/contacts/ct_9/edit"); rec.Code != 404 {
+		t.Fatalf("unknown contact: %d", rec.Code)
 	}
 	if !strings.Contains(page.Header().Get("Content-Security-Policy"), "default-src 'none'") {
 		t.Fatal("no CSP")
@@ -368,6 +395,22 @@ func TestRevokeNeedsConfirmation(t *testing.T) {
 	}
 	if page := b.get("/devices/dev-a").Body.String(); !strings.Contains(page, "Revoked. A new enrolment code") {
 		t.Fatal("notice not shown after the redirect")
+	}
+	// Delete: its own confirmation, then the device is gone from the list.
+	if page := b.get("/devices/dev-b/delete").Body.String(); !strings.Contains(page, "Delete Extension 202?") || !strings.Contains(page, "no undo") {
+		t.Fatal("delete confirm page")
+	}
+	if len(api.purged) != 0 {
+		t.Fatal("viewing the confirmation purged")
+	}
+	if rec := b.post("/devices/dev-b/delete", url.Values{}); rec.Code != 303 || rec.Header().Get("Location") != "/" {
+		t.Fatalf("delete: %d → %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if len(api.purged) != 1 || api.purged[0] != "dev-b" {
+		t.Fatalf("purged %v", api.purged)
+	}
+	if list := b.get("/").Body.String(); strings.Contains(list, "Extension 202") || !strings.Contains(list, "Device deleted.") {
+		t.Fatal("deleted device still listed, or no notice")
 	}
 }
 

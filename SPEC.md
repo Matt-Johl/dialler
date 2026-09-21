@@ -1191,6 +1191,22 @@ on by config — see §7.4.
      its page through the session, so a reload cannot show it twice; the
      admin verifies the call server with `-server-ca`, for which the
      server's kept self-signed certificate serves directly.
+     *Same day, after review:* the first interface was rejected as ugly
+     and hard to use — every directory row was a bundle of raw form
+     controls, actions were scattered, and revoke sat beside the ordinary
+     buttons. Rebuilt: a sidebar shell, one primary action per page, a
+     page header with a one-line purpose, cards with real headings; the
+     device list as a calm table with status pills and click-through; the
+     directory read-only with add and edit on their own small pages; CSV
+     and copy grouped under the directory; revoke and **delete** together
+     in a danger zone at the foot of the device page, each behind its own
+     confirmation. Delete is the purge §4.8 promised and item 9 had left
+     out: `DELETE /v1/admin/devices/{id}?purge=1` removes the record, the
+     directory and the settings, deprovisions the user and drops the
+     sessions (`enroll.Store.Delete`, `TestRevokeVersusPurge`). The
+     handler test for it caught a real client defect on the way — the
+     query was being escaped into the path, which would have revoked
+     instead.
 
 ### Much later (not scheduled)
 

@@ -6,23 +6,23 @@
 <title>{{.Title}} · Dialler</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
-<header class="top">
-  <a class="wordmark" href="/">Dialler</a>
-  {{if .SignedIn}}
-  <nav>
-    <a href="/" {{if eq .Path "/"}}aria-current="page"{{end}}>Devices</a>
+<body class="{{if .SignedIn}}shell{{else}}bare{{end}}">
+{{if .SignedIn}}
+<aside class="side">
+  <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>Dialler</a>
+  <nav class="side-nav">
+    <a href="/" {{if or (eq .Path "/") (eq .Path "/devices/new")}}aria-current="page"{{end}}>Devices</a>
     <a href="/server" {{if eq .Path "/server"}}aria-current="page"{{end}}>Server</a>
-    <form method="post" action="/logout" class="inline">
-      <input type="hidden" name="_csrf" value="{{.CSRF}}">
-      <button type="submit" class="link">Sign out</button>
-    </form>
   </nav>
-  {{end}}
-</header>
-<main>
-  {{if .Notice}}<p class="flash notice">{{.Notice}}</p>{{end}}
-  {{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
+  <form method="post" action="/logout" class="side-foot">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="ghost">Sign out</button>
+  </form>
+</aside>
+{{end}}
+<main class="content">
+  {{if .Notice}}<div class="flash notice" role="status">{{.Notice}}</div>{{end}}
+  {{if .Error}}<div class="flash error" role="alert">{{.Error}}</div>{{end}}
   {{template "content" .}}
 </main>
 </body>

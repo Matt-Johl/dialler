@@ -88,9 +88,12 @@ the phone keeps whatever it has.
 separate process that holds the admin token and a password of its own,
 speaks only to the call server's admin API, and renders plain HTML with no
 scripting. Devices with their live state, add a device and show its
-enrolment QR, revoke, new code, each device's office Wi-Fi list, and its
-directory as an editable table with CSV download, CSV upload (previewed,
-then applied as one change) and copy-to-other-devices.
+enrolment QR, new code, each device's office Wi-Fi list, its directory
+with add and edit pages, CSV download, CSV upload (previewed, then applied
+as one change) and copy-to-other-devices, and a danger zone with revoke
+(the directory is kept; a new code brings the phone back) and delete
+(`DELETE /v1/admin/devices/<id>?purge=1`: record, directory and settings
+gone, the extension free again).
 
 ```sh
 make admin

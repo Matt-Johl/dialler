@@ -92,8 +92,14 @@ func (a *App) routes() {
 	m.HandleFunc("POST /logout", a.signedIn(a.logout))
 
 	m.HandleFunc("GET /{$}", a.signedIn(a.devices))
+	m.HandleFunc("GET /devices/new", a.signedIn(a.newDevicePage))
 	m.HandleFunc("POST /devices", a.signedIn(a.createDevice))
 	m.HandleFunc("GET /devices/{id}", a.signedIn(a.device))
+	m.HandleFunc("GET /devices/{id}/delete", a.signedIn(a.deletePage))
+	m.HandleFunc("POST /devices/{id}/delete", a.signedIn(a.purge))
+	m.HandleFunc("GET /devices/{id}/contacts/new", a.signedIn(a.contactPage))
+	m.HandleFunc("GET /devices/{id}/contacts/{cid}/edit", a.signedIn(a.contactPage))
+	m.HandleFunc("GET /devices/{id}/directory/copy", a.signedIn(a.copyPage))
 	m.HandleFunc("GET /devices/{id}/code", a.signedIn(a.codePage))
 	m.HandleFunc("POST /devices/{id}/code", a.signedIn(a.newCode))
 	m.HandleFunc("GET /devices/{id}/revoke", a.signedIn(a.revokePage))
@@ -311,8 +317,8 @@ func safeNext(next string) string {
 // deviceRow is one device as the list and the device page show it.
 type deviceRow struct {
 	status.Device
-	// State is one word for the enrolment column.
-	State string
+	// State is what the status column says; StateKey its CSS class.
+	State, StateKey string
 	// Presence is the connection kinds held, or "offline".
 	Presence string
 }
@@ -321,13 +327,13 @@ func toRow(d status.Device) deviceRow {
 	row := deviceRow{Device: d}
 	switch {
 	case d.Revoked:
-		row.State = "revoked"
+		row.State, row.StateKey = "Revoked", "revoked"
 	case !d.Enrolled && d.CodePending:
-		row.State = "code issued"
+		row.State, row.StateKey = "Code issued", "pending"
 	case !d.Enrolled:
-		row.State = "not enrolled"
+		row.State, row.StateKey = "Not enrolled", "none"
 	default:
-		row.State = "enrolled"
+		row.State, row.StateKey = "Enrolled", "enrolled"
 	}
 	if len(d.Online) == 0 {
 		row.Presence = "offline"
@@ -366,17 +372,26 @@ func (a *App) devices(w http.ResponseWriter, r *http.Request, sess *session) {
 	a.render(w, r, sess, "devices.html", v)
 }
 
+type newDeviceView struct {
+	base
+	User, Label string
+}
+
+func (a *App) newDevicePage(w http.ResponseWriter, r *http.Request, sess *session) {
+	a.render(w, r, sess, "device-new.html", newDeviceView{base: a.base(sess, "Add a device", "/devices/new")})
+}
+
 func (a *App) createDevice(w http.ResponseWriter, r *http.Request, sess *session) {
 	user := strings.TrimSpace(r.FormValue("user"))
 	label := strings.TrimSpace(r.FormValue("label"))
 	if user == "" {
-		a.sessions.setFlash(sess, "error", "A device needs an extension (the SIP user it answers as).")
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		a.sessions.setFlash(sess, "error", "A device needs an extension: the number it answers as.")
+		http.Redirect(w, r, "/devices/new", http.StatusSeeOther)
 		return
 	}
 	created, err := a.cfg.Client.CreateDevice(r.Context(), user, label)
 	if err != nil {
-		a.apiFailed(w, r, sess, "/", err)
+		a.apiFailed(w, r, sess, "/devices/new", err)
 		return
 	}
 	a.sessions.setFlash(sess, "code:"+created.DeviceID, Code{Code: created.Code, ExpiresAt: created.ExpiresAt, URL: created.URL})
@@ -399,14 +414,14 @@ func (a *App) find(ctx context.Context, id string) (deviceRow, status.Response, 
 
 type deviceView struct {
 	base
-	Device    deviceRow
-	Server    status.Server
-	Contacts  []directory.Contact
-	Version   int64
-	Config    *enroll.DeviceConfig
-	SSIDs     string
-	Others    []deviceRow
-	CSVColumn string
+	Device     deviceRow
+	Server     status.Server
+	Contacts   []directory.Contact
+	Version    int64
+	Config     *enroll.DeviceConfig
+	SSIDs      string
+	Favourites int
+	CSVColumn  string
 }
 
 func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
@@ -436,12 +451,41 @@ func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
 		v.Config = cfg
 		v.SSIDs = strings.Join(cfg.SSIDs, "\n")
 	}
-	for _, d := range st.Devices {
-		if d.DeviceID != id && !d.Revoked {
-			v.Others = append(v.Others, toRow(d))
+	for _, c := range v.Contacts {
+		if c.Favourite {
+			v.Favourites++
 		}
 	}
 	a.render(w, r, sess, "device.html", v)
+}
+
+// MARK: delete
+
+func (a *App) deletePage(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	row, _, err := a.find(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+		return
+	}
+	a.render(w, r, sess, "confirm.html", confirmView{
+		base:    a.base(sess, "Delete "+deviceName(row), "/devices/"+id+"/delete"),
+		Heading: "Delete " + deviceName(row) + "?",
+		Message: "The device, its directory and its settings are removed for good, and the phone is disconnected. Extension " + row.User + " becomes free for a new device. There is no undo.",
+		Action:  "/devices/" + url.PathEscape(id) + "/delete",
+		Button:  "Delete device",
+		Back:    "/devices/" + url.PathEscape(id),
+	})
+}
+
+func (a *App) purge(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	if err := a.cfg.Client.Purge(r.Context(), id); err != nil && !IsNotFound(err) {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", "Device deleted.")
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 // MARK: enrolment codes
@@ -485,7 +529,7 @@ func deviceName(d deviceRow) string {
 	if d.Label != "" {
 		return d.Label
 	}
-	return "extension " + d.User
+	return "Extension " + d.User
 }
 
 // MARK: revoke
@@ -553,6 +597,75 @@ func (a *App) setConfig(w http.ResponseWriter, r *http.Request, sess *session) {
 
 // MARK: contacts
 
+type contactView struct {
+	base
+	Device  deviceRow
+	Contact directory.Contact
+	IsNew   bool
+	Action  string
+}
+
+func (a *App) contactPage(w http.ResponseWriter, r *http.Request, sess *session) {
+	id, cid := r.PathValue("id"), r.PathValue("cid")
+	row, _, err := a.find(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+		return
+	}
+	v := contactView{Device: row, IsNew: cid == "", Action: "/devices/" + url.PathEscape(id) + "/contacts"}
+	v.Contact.Mode = directory.ModeLocal
+	if cid != "" {
+		dir, err := a.cfg.Client.Directory(r.Context(), id)
+		if err != nil {
+			a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
+			return
+		}
+		found := false
+		for _, c := range dir.Contacts {
+			if c.ID == cid {
+				v.Contact, found = c, true
+			}
+		}
+		if !found {
+			a.fail(w, r, http.StatusNotFound, "That contact is no longer in the directory.")
+			return
+		}
+		v.Action += "/" + url.PathEscape(cid)
+	}
+	title := "Add a contact"
+	if !v.IsNew {
+		title = "Edit " + v.Contact.DisplayName
+	}
+	v.base = a.base(sess, title, r.URL.Path)
+	a.render(w, r, sess, "contact.html", v)
+}
+
+type copyView struct {
+	base
+	Device deviceRow
+	Others []deviceRow
+	Count  int
+}
+
+func (a *App) copyPage(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	row, st, err := a.find(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+		return
+	}
+	v := copyView{base: a.base(sess, "Copy the directory", r.URL.Path), Device: row}
+	if dir, err := a.cfg.Client.Directory(r.Context(), id); err == nil {
+		v.Count = len(dir.Contacts)
+	}
+	for _, d := range st.Devices {
+		if d.DeviceID != id && !d.Revoked {
+			v.Others = append(v.Others, toRow(d))
+		}
+	}
+	a.render(w, r, sess, "copy.html", v)
+}
+
 func (a *App) saveContact(w http.ResponseWriter, r *http.Request, sess *session) {
 	id := r.PathValue("id")
 	back := "/devices/" + url.PathEscape(id)
@@ -565,7 +678,7 @@ func (a *App) saveContact(w http.ResponseWriter, r *http.Request, sess *session)
 	}
 	if c.DisplayName == "" || c.URI == "" {
 		a.sessions.setFlash(sess, "error", "A contact needs a name and a number.")
-		http.Redirect(w, r, back, http.StatusSeeOther)
+		http.Redirect(w, r, r.URL.Path+"/new", http.StatusSeeOther)
 		return
 	}
 	if _, err := a.cfg.Client.UpsertContact(r.Context(), id, c); err != nil {

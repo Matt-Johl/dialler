@@ -95,6 +95,8 @@ func (a *App) routes() {
 	m.HandleFunc("GET /devices/new", a.signedIn(a.newDevicePage))
 	m.HandleFunc("POST /devices", a.signedIn(a.createDevice))
 	m.HandleFunc("GET /devices/{id}", a.signedIn(a.device))
+	m.HandleFunc("GET /devices/{id}/edit", a.signedIn(a.editDevicePage))
+	m.HandleFunc("POST /devices/{id}/edit", a.signedIn(a.updateDevice))
 	m.HandleFunc("GET /devices/{id}/delete", a.signedIn(a.deletePage))
 	m.HandleFunc("POST /devices/{id}/delete", a.signedIn(a.purge))
 	m.HandleFunc("GET /devices/{id}/contacts/new", a.signedIn(a.contactPage))
@@ -457,6 +459,40 @@ func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
 		}
 	}
 	a.render(w, r, sess, "device.html", v)
+}
+
+// MARK: edit
+
+type editDeviceView struct {
+	base
+	Device deviceRow
+}
+
+func (a *App) editDevicePage(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	row, _, err := a.find(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+		return
+	}
+	a.render(w, r, sess, "device-edit.html", editDeviceView{base: a.base(sess, "Edit "+deviceName(row), r.URL.Path), Device: row})
+}
+
+func (a *App) updateDevice(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	user := strings.TrimSpace(r.FormValue("user"))
+	label := strings.TrimSpace(r.FormValue("label"))
+	if user == "" {
+		a.sessions.setFlash(sess, "error", "A device needs an extension: the number it answers as.")
+		http.Redirect(w, r, "/devices/"+url.PathEscape(id)+"/edit", http.StatusSeeOther)
+		return
+	}
+	if _, err := a.cfg.Client.UpdateDevice(r.Context(), id, user, label); err != nil {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id)+"/edit", err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", "Saved.")
+	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
 }
 
 // MARK: delete

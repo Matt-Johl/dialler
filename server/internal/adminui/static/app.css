@@ -78,7 +78,6 @@ body.shell { display: grid; grid-template-columns: var(--side) 1fr; }
 .side-nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
 .side-foot { margin-top: auto; }
 .content { padding: 44px 56px 96px; max-width: 1080px; width: 100%; }
-body.bare .content { max-width: none; padding: 0; }
 @media (max-width: 800px) {
   body.shell { grid-template-columns: 1fr; }
   .side { position: static; height: auto; flex-direction: row; align-items: center; gap: 20px; padding: 14px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -94,7 +93,8 @@ body.bare .content { max-width: none; padding: 0; }
 .page h1, .login h1, .confirm h1, .centred h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.2; }
 .sub { color: var(--ink-2); margin-top: 6px; font-size: 14px; }
 .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 6px; }
-.page > form { flex-shrink: 0; }
+.page > form, .page-actions { flex-shrink: 0; }
+.page-actions { display: flex; align-items: center; gap: 8px; }
 
 /* Cards */
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 24px 28px; }
@@ -222,9 +222,9 @@ ul.plain li:first-child { border-top: 0; }
 .link-details summary { cursor: pointer; }
 .link-details p { margin-top: 8px; word-break: break-all; }
 
-/* Login */
-body.bare { display: grid; place-items: center; }
-.login { width: 340px; padding: 40px 0; }
+/* Login: the one page without the shell, centred in the viewport. */
+body.bare .content { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login { width: 100%; max-width: 340px; }
 .login .brand { margin-bottom: 28px; }
 .login h1 { margin-bottom: 20px; }
 .login .stack { gap: 16px; }

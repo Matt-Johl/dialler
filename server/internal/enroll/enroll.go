@@ -197,6 +197,22 @@ func (s *Store) Create(deviceID, user, label string) (string, error) {
 	return deviceID, s.saveLocked()
 }
 
+// Update changes a device's extension and label, keeping its credential,
+// code and settings. ErrInvalid for an unknown device or an empty user.
+func (s *Store) Update(deviceID, user, label string) error {
+	if user == "" {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.devices[deviceID]
+	if !ok {
+		return ErrInvalid
+	}
+	rec.User, rec.Label = user, label
+	return s.saveLocked()
+}
+
 // MintCode issues a fresh enrolment code for deviceID, replacing any
 // outstanding one: eight characters, claimable for CodeTTL, stored only
 // as a hash. The device may be revoked — claiming the code brings it back
@@ -360,6 +376,14 @@ func (s *Store) Delete(deviceID string) (bool, error) {
 	}
 	delete(s.devices, deviceID)
 	return true, s.saveLocked()
+}
+
+// exists reports whether a record exists at all, revoked or not.
+func (s *Store) exists(deviceID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.devices[deviceID]
+	return ok
 }
 
 // UserFor returns the SIP user bound to an enrolled, non-revoked device.

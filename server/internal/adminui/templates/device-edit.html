@@ -1,0 +1,33 @@
+{{define "content"}}
+<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+<header class="page">
+  <div>
+    <h1>Edit device</h1>
+    <p class="sub">The name and extension. The phone's credential, code and settings are untouched.</p>
+  </div>
+</header>
+
+<section class="card narrow">
+  <form method="post" action="/devices/{{.Device.DeviceID}}/edit" class="stack">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <div class="field">
+      <label for="label">Name <span class="optional">optional</span></label>
+      <input id="label" name="label" value="{{.Device.Label}}" placeholder="Matt's iPhone" autocomplete="off" autofocus>
+      <p class="help">How this phone appears here.</p>
+    </div>
+    <div class="field">
+      <label for="user">Extension</label>
+      <input id="user" name="user" value="{{.Device.User}}" inputmode="numeric" autocomplete="off" required>
+      <p class="help">The number the phone answers as. Changing it takes effect at the phone's next connection.</p>
+    </div>
+    <div class="field">
+      <label>Device id</label>
+      <p class="mono dim">{{.Device.DeviceID}}</p>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="primary">Save</button>
+      <a class="button ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
+    </div>
+  </form>
+</section>
+{{end}}

@@ -78,6 +78,17 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.minted++
 		w.WriteHeader(201)
 		write(map[string]any{"device_id": id, "user": in.User, "label": in.Label, "code": "A7K2M9PX", "expires_at": time.Now().Add(15 * time.Minute), "url": "dialler://enrol?c=A7K2M9PX&f=fp&h=10.0.0.1&p=8080"})
+	case len(parts) == 2 && parts[0] == "devices" && r.Method == "PUT":
+		var in struct{ User, Label string }
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		for i := range f.devices {
+			if f.devices[i].DeviceID == parts[1] {
+				f.devices[i].User, f.devices[i].Label = in.User, in.Label
+				write(f.devices[i].Device)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	case len(parts) == 2 && parts[0] == "devices" && r.Method == "DELETE":
 		if r.URL.Query().Get("purge") == "1" {
 			f.purged = append(f.purged, parts[1])
@@ -375,6 +386,27 @@ func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 	// An empty extension never reaches the server.
 	if rec := b.post("/devices", url.Values{"user": {" "}}); rec.Code != 303 || len(api.devices) != 3 {
 		t.Fatalf("blank user: %d devices=%d", rec.Code, len(api.devices))
+	}
+}
+
+func TestEditDevice(t *testing.T) {
+	_, api, b := setup(t)
+	signIn(t, b)
+	if page := b.get("/devices/dev-a/edit").Body.String(); !strings.Contains(page, `value="Matt&#39;s iPhone"`) || !strings.Contains(page, `value="201"`) {
+		t.Fatal("edit page must show the current name and extension")
+	}
+	rec := b.post("/devices/dev-a/edit", url.Values{"label": {"Reception iPhone"}, "user": {"251"}})
+	if rec.Code != 303 || rec.Header().Get("Location") != "/devices/dev-a" {
+		t.Fatalf("update: %d → %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if api.devices[0].Label != "Reception iPhone" || api.devices[0].User != "251" {
+		t.Fatalf("not updated: %+v", api.devices[0].Device)
+	}
+	if page := b.get("/devices/dev-a").Body.String(); !strings.Contains(page, "Reception iPhone") || !strings.Contains(page, "Extension 251") {
+		t.Fatal("device page does not show the new name")
+	}
+	if rec := b.post("/devices/dev-a/edit", url.Values{"label": {"x"}, "user": {""}}); rec.Code != 303 || api.devices[0].User != "251" {
+		t.Fatal("an empty extension must be refused before reaching the server")
 	}
 }
 

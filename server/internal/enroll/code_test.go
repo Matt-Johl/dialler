@@ -217,6 +217,42 @@ func TestEnrolHandler(t *testing.T) {
 	}
 }
 
+// Renaming a device keeps everything else about it.
+func TestUpdateKeepsTheCredential(t *testing.T) {
+	s, _ := Open("")
+	s.Realm = "dialler"
+	tok, _ := s.IssueToken("dev-a", "201", "tok_fixture_for_dev_a")
+	s.SetConfig("dev-a", []string{"Office"})
+	var issued []string
+	h := NewAdminHandler(s, "admin", Link{}, Hooks{OnIssue: func(d, u string) { issued = append(issued, d+"/"+u) }})
+	do := func(path, body string) (int, string) {
+		req := httptest.NewRequest("PUT", path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer admin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	code, body := do("/v1/admin/devices/dev-a", `{"user":"251","label":"Matt's new iPhone"}`)
+	if code != 200 || !strings.Contains(body, `"label":"Matt's new iPhone"`) || !strings.Contains(body, `"user":"251"`) {
+		t.Fatalf("update: %d %s", code, body)
+	}
+	if ok, _ := s.Authenticate(context.Background(), "dev-a", tok); !ok {
+		t.Fatal("the credential must survive a rename")
+	}
+	if c := s.Config("dev-a"); c == nil || c.SSIDs[0] != "Office" {
+		t.Fatal("the settings must survive a rename")
+	}
+	if len(issued) != 1 || issued[0] != "dev-a/251" {
+		t.Fatalf("the registry must be re-bound to the new extension: %v", issued)
+	}
+	if code, _ := do("/v1/admin/devices/dev-a", `{"user":"","label":"x"}`); code != 400 {
+		t.Fatalf("empty user: %d", code)
+	}
+	if code, _ := do("/v1/admin/devices/nope", `{"user":"1","label":"x"}`); code != 404 {
+		t.Fatalf("unknown device: %d", code)
+	}
+}
+
 // Revoke keeps the record for a later code; purge removes it, and the
 // hooks tell the two apart.
 func TestRevokeVersusPurge(t *testing.T) {

@@ -117,6 +117,14 @@ func (c *Client) CreateDevice(ctx context.Context, user, label string) (Created,
 	return out, err
 }
 
+// UpdateDevice changes a device's extension and label; its credential,
+// code and settings stay.
+func (c *Client) UpdateDevice(ctx context.Context, deviceID, user, label string) (enroll.Device, error) {
+	var out enroll.Device
+	err := c.do(ctx, http.MethodPut, "/v1/admin/devices/"+url.PathEscape(deviceID), map[string]string{"user": user, "label": label}, &out)
+	return out, err
+}
+
 // Code is a freshly minted enrolment code.
 type Code struct {
 	Code      string    `json:"code"`

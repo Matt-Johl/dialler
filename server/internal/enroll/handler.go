@@ -64,6 +64,7 @@ type codeResponse struct {
 //	POST   /v1/admin/devices                  {"user"[,"device_id","label","token"]}
 //	                                          → 201 {"device_id","user","label","code","expires_at","url"[,"token"]}
 //	GET    /v1/admin/devices                  → [Device]
+//	PUT    /v1/admin/devices/{id}             {"user","label"} → Device (credential kept)
 //	DELETE /v1/admin/devices/{id}             → 204 (revoke; ?purge=1 deletes the device outright)
 //	POST   /v1/admin/devices/{id}/enrol-code  → {"code","expires_at","url"}
 //	GET    /v1/admin/devices/{id}/config      → {"version","ssids"} (404 until set)
@@ -132,6 +133,36 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 
 	mux.HandleFunc("GET /v1/admin/devices", guard(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, store.Devices())
+	}))
+
+	mux.HandleFunc("PUT /v1/admin/devices/{id}", guard(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			User  string `json:"user"`
+			Label string `json:"label"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		id := r.PathValue("id")
+		if _, known := store.UserFor(id); !known && !store.exists(id) {
+			http.NotFound(w, r)
+			return
+		}
+		if err := store.Update(id, in.User, in.Label); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if hooks.OnIssue != nil {
+			hooks.OnIssue(id, in.User) // re-binds the registry to the (possibly new) extension
+		}
+		for _, d := range store.Devices() {
+			if d.DeviceID == id {
+				writeJSON(w, http.StatusOK, d)
+				return
+			}
+		}
+		http.NotFound(w, r)
 	}))
 
 	mux.HandleFunc("DELETE /v1/admin/devices/{id}", guard(func(w http.ResponseWriter, r *http.Request) {

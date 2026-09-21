@@ -10,10 +10,13 @@
       <span class="sep">·</span> {{if .Device.Registered}}Registered{{else}}Not registered{{end}}
     </p>
   </div>
-  <form method="post" action="/devices/{{.Device.DeviceID}}/code">
-    <input type="hidden" name="_csrf" value="{{.CSRF}}">
-    <button type="submit" class="primary">New enrolment code</button>
-  </form>
+  <div class="page-actions">
+    <a class="button ghost" href="/devices/{{.Device.DeviceID}}/edit">Edit</a>
+    <form method="post" action="/devices/{{.Device.DeviceID}}/code">
+      <input type="hidden" name="_csrf" value="{{.CSRF}}">
+      <button type="submit" class="primary">New enrolment code</button>
+    </form>
+  </div>
 </header>
 
 <section class="card">

@@ -690,7 +690,11 @@ final class AppModel: ObservableObject {
     func syncDirectory() async {
         do {
             let had = book.version
-            let reset = try await directoryClient.sync(&book)
+            // A local copy: an actor-isolated property cannot be passed
+            // inout across an await.
+            var synced = book
+            let reset = try await directoryClient.sync(&synced)
+            book = synced
             publishBook()
             append(reset
                 ? "directory: server is behind our cursor v\(had) (reset or re-provisioned); re-synced in full to v\(book.version), \(contacts.count) contacts"

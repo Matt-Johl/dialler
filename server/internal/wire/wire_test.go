@@ -32,6 +32,8 @@ func bodyFor(t Type) any {
 		return &WakeCancel{}
 	case TypeDirectoryChanged:
 		return &DirectoryChanged{}
+	case TypeConfig:
+		return &DeviceConfig{}
 	case TypeError:
 		return &Error{}
 	case TypePing, TypePong:

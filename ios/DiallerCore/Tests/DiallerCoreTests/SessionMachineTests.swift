@@ -101,6 +101,8 @@ final class SessionMachineTests: XCTestCase {
         let c = WakeCancel(callID: "c1", reason: .callerHangup)
         XCTAssertEqual(m.received(env(.wakeCancel(c))), [.emit(.wakeCancel(c))])
         XCTAssertEqual(m.received(env(.directoryChanged(DirectoryChanged(version: 9)))), [.emit(.directoryChanged(9))])
+        let cfg = DeviceConfig(version: 2, ssids: ["Office"])
+        XCTAssertEqual(m.received(env(.config(cfg))), [.emit(.config(cfg))])
     }
 
     func testWakeExpiryIsRebasedOntoLocalClock() {

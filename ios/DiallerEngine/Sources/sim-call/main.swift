@@ -401,7 +401,7 @@ let eventTask = Task {
         case .wake, .wakeCancel: controller.handle(ev)
         case .protocolError(let e): out("gateway error \(e.code.rawValue) \(e.message ?? "")")
         case .disconnected(let r): out("gateway disconnected: \(r)")
-        case .directoryChanged: break
+        case .directoryChanged, .config: break
         }
     }
 }

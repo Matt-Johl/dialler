@@ -31,13 +31,14 @@ const (
 	TypeWake             Type = "wake"
 	TypeWakeCancel       Type = "wake_cancel"
 	TypeDirectoryChanged Type = "directory_changed"
+	TypeConfig           Type = "config"
 	TypeError            Type = "error"
 )
 
 var knownTypes = map[Type]bool{
 	TypeHello: true, TypePing: true, TypeWakeAck: true,
 	TypeWelcome: true, TypePong: true, TypeWake: true, TypeWakeCancel: true,
-	TypeDirectoryChanged: true, TypeError: true,
+	TypeDirectoryChanged: true, TypeConfig: true, TypeError: true,
 }
 
 // Known reports whether t is a message type defined by protocol v1.
@@ -129,13 +130,24 @@ type SIPAccount struct {
 	Transport string `json:"transport"` // always "tls" in v1
 }
 
+// DeviceConfig is the device's server-managed settings (SPEC §6 item 8b):
+// today the Wi-Fi SSIDs its Local Push provider runs on. Carried in
+// Welcome (additive, absent until an admin has set anything) and pushed as
+// a `config` message on change, to that device only. The app applies it;
+// Version rises with every change.
+type DeviceConfig struct {
+	Version int64    `json:"version"`
+	SSIDs   []string `json:"ssids"`
+}
+
 // Welcome acknowledges a successful Hello.
 type Welcome struct {
-	SessionID        string      `json:"session_id"`
-	HeartbeatSeconds int         `json:"heartbeat_seconds"`
-	ServerTime       time.Time   `json:"server_time"`
-	DirectoryVersion int64       `json:"directory_version"`
-	SIP              *SIPAccount `json:"sip,omitempty"`
+	SessionID        string        `json:"session_id"`
+	HeartbeatSeconds int           `json:"heartbeat_seconds"`
+	ServerTime       time.Time     `json:"server_time"`
+	DirectoryVersion int64         `json:"directory_version"`
+	SIP              *SIPAccount   `json:"sip,omitempty"`
+	Config           *DeviceConfig `json:"config,omitempty"`
 }
 
 // Party names one end of a call.

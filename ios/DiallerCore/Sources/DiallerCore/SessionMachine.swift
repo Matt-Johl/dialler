@@ -124,6 +124,9 @@ public struct SessionMachine: Equatable {
         case (.live, .directoryChanged(let d)):
             return [.emit(.directoryChanged(d.version))]
 
+        case (.live, .config(let c)):
+            return [.emit(.config(c))]
+
         case (.live, .error(let e)):
             // A fatal error is a drop: the server closes right after it, and
             // the close is what the keeper acts on. Until 2026-09-13 only

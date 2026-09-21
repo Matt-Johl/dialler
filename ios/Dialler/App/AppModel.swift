@@ -56,8 +56,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var backgroundCalls = "unknown"
     /// The SSIDs of the saved Local Push configuration, as loaded from
     /// the framework's preferences (the source of truth; the app persists
-    /// nothing of its own). Settings prefills its field from this.
+    /// nothing of its own).
     @Published private(set) var localPushSSIDs: [String] = []
+    /// The SSIDs the server manages for this device (SPEC §6 item 8b), as
+    /// last received; nil until an administrator has set any. Settings
+    /// shows them read-only.
+    @Published private(set) var serverSSIDs: [String]?
 
     /// The call in progress, for the in-call screen. Nil while idle or
     /// merely ringing (ringing is CallKit's UI alone).
@@ -698,12 +702,16 @@ final class AppModel: ObservableObject {
                 controller.setAccount(user: "\(sip.user)@\(sip.domain)",
                                       sip: SIPTarget(host: sip.host, port: sip.port, transport: sip.transport))
             }
+            if let cfg = w.config { apply(deviceConfig: cfg) }
             if w.directoryVersion != book.version { await syncDirectory() }
         case .wake, .wakeCancel:
             controller.handle(ev)
         case .directoryChanged(let v):
             append("directory changed → v\(v)")
             await syncDirectory()
+        case .config(let cfg):
+            append("settings changed → v\(cfg.version)")
+            apply(deviceConfig: cfg)
         case .protocolError(let e):
             append("gateway error \(e.code.rawValue): \(e.message ?? "")")
             if e.fatal { status = "rejected: \(e.code.rawValue)" }
@@ -846,6 +854,35 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Local Push Connectivity (device only; SPEC §2)
+
+    /// The server's settings for this device arrived (in the welcome, or
+    /// pushed on change): bring the Local Push configuration into line.
+    /// `LocalPushPolicy` decides — and leaves an identical configuration
+    /// alone, since re-saving one can restart the provider (SPEC §6 item 8b).
+    private func apply(deviceConfig cfg: DeviceConfig) {
+        serverSSIDs = cfg.ssids
+        NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.append("settings v\(cfg.version): Local Push load failed: \(error.localizedDescription)")
+                    return
+                }
+                let current = managers?.first
+                let action = LocalPushPolicy.plan(received: cfg, current: current?.matchSSIDs, enabled: current?.isEnabled ?? false)
+                switch action {
+                case .leave:
+                    self.append("settings v\(cfg.version): Local Push already matches \(cfg.ssids)")
+                case .save(let list):
+                    self.append("settings v\(cfg.version): applying SSIDs \(list) to Local Push")
+                    self.configureLocalPush(ssids: list)
+                case .remove:
+                    self.append("settings v\(cfg.version): no SSIDs; removing the Local Push configuration")
+                    self.removeLocalPush()
+                }
+            }
+        }
+    }
 
     /// Saves the provider configuration for `ssids` (already parsed, see
     /// `SSIDList`): iOS runs the extension whenever the phone is joined to

@@ -102,7 +102,7 @@ lets ~everything be validated with no device (see §7).
 | Wire framing | **Length-prefixed JSON over TLS 1.3** (port 7443) for every signal transport: foreground LAN socket, LPC extension socket, public edge. No WebSocket — raw TLS is the natural `NWConnection` fit for the extension. Frozen in [protocol/PROTOCOL.md](protocol/PROTOCOL.md) with golden fixtures shared by Go and Swift |
 | Server language | **Go**, standard library only (no external modules) |
 | Coverage | **Wi-Fi-only (LPC).** Remote app users (cellular / home Wi-Fi) are **unscheduled** (§6 "Much later"). The wake transport stays abstracted so an APNS sibling could be added without a rework, but none is planned |
-| Distribution | **Public App Store**, in-app LPC configuration |
+| Distribution | **Public App Store**; the LPC configuration (the office SSIDs) is **set by the administrator per device and pushed to the app** (§6 item 8b), no longer typed into it |
 | Directory ownership | **One directory per device.** The server is the source of truth for contacts; the admin (CSV) and the user (in-app) edit the same list, favourites included. No shared or global list (§6 item 7) |
 | Management plane | **Separate process, `dialler-admin`** (Go, stdlib, server-rendered HTML, embedded assets) speaking only to the call server's admin API. The call server gains additive JSON endpoints and nothing else; an admin action never interrupts a call and affects only the device it names (§4.8). Call history is device-local — the server keeps no call records |
 | Device onboarding | **Short-lived enrolment code**, delivered as a QR (`dialler://enrol…`) or typed with the server address; the claim rotates the device credential and pins the server certificate (§4.8, §6 item 8) |
@@ -1090,6 +1090,41 @@ on by config — see §7.4.
      proven by minting a code, restarting the container and minting
      again: one fingerprint. A production `-tls-cert` was never affected.
 
+  8b. **Server-managed device settings: the office SSIDs (decided
+     2026-09-21).** The Wi-Fi networks a phone wakes on were typed into
+     the app; they are now set per device by the administrator, stored on
+     the server, pushed to the app, and pushed again on every change.
+     *Server:* the device record carries `ssids` and a `config_version`
+     that rises with each write; `GET`/`PUT /v1/admin/devices/{id}/config`
+     (§4.8), 404 for an unknown device or until set. *Wire:* the welcome
+     gains an optional `config{version, ssids[]}` and a `config` message
+     carries the same body on change, to that device's sessions only —
+     both additive, no bump (PROTOCOL.md, golden fixtures on both sides).
+     *App:* `LocalPushPolicy` (DiallerCore, tested) turns the received
+     settings and the provider's saved list into leave / save / remove,
+     and the model performs it on `NEAppPushManager`. Three rules: a
+     phone the administrator has never configured is **left alone** (no
+     `config` in its welcome), so existing phones keep working across
+     the upgrade; a configuration is saved **only when the list differs**
+     from what the provider holds, because re-saving an identical one can
+     restart the provider and drop its connection; an empty list at
+     version ≥ 1 **removes** the configuration — no background wakes. Only
+     the app can save the provider, so the extension ignores the message
+     and a phone whose app is not running picks the change up at its next
+     launch, from the welcome. Enrolment now finishes the job: a fresh
+     phone connects, receives its list, and has background calls with no
+     Settings visit. Settings shows the list read-only; typing SSIDs by
+     hand survives on the Status page for a server with no settings for
+     the device (the harness). `harness/provision.sh` takes
+     `DEV_A_SSIDS="Office,Office-5G"`. *Harness check:* set dev-hb's list
+     through the admin route while `fake-app` holds its connection and
+     see the `config` frame arrive there and not on another device.
+     *Built 2026-09-21 (branch `feature/device-config`, awaiting
+     approval):* as above; `PUT` and `POST` both set (busybox wget has no
+     PUT). Tests: store versioning, persistence and isolation; the admin
+     routes; welcome and push in the gateway to one device; the policy
+     table; the session machine; both golden suites.
+
   9. **`dialler-admin` (new process; needs item 7 and the routes of
      §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib
      only, templates and CSS through `embed`. Flags: `-listen`, `-server`,
@@ -1340,6 +1375,10 @@ handlers; nothing that exists changes shape:
   here; that path's write verbs become the device's own (§6 item 7).
 - `DELETE /v1/admin/devices/{id}` stays a revoke; `?purge=1` also deletes
   the record and the directory.
+- `GET` / `PUT /v1/admin/devices/{id}/config` — the device's server-managed
+  settings, `{"ssids": […]}` today (§6 item 8b): versioned on the device
+  record, 404 until set, and pushed to that device's live sessions as a
+  `config` message on every write (the same body rides in its welcome).
 
 CSV lives in `dialler-admin`, not in the call server:
 `display_name,uri,mode,favourite` with a header row, UTF-8, RFC 4180

@@ -71,6 +71,17 @@ curl -sk -H 'Content-Type: application/json' -d '{"code":"A7K2-M9PX"}' https://<
 A miss answers 404 after half a second, and a source address gets five
 attempts a minute. `cert_sha256` (also in the link) is what the app pins.
 
+A device's office Wi-Fi list is server-managed too (SPEC §6 item 8b):
+
+```sh
+curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' -X PUT \
+     -d '{"ssids":["Office","Office-5G"]}' https://127.0.0.1:8080/v1/admin/devices/dev-a/config
+```
+
+The app receives it in its welcome and as a `config` push on every change,
+and applies it to Local Push itself. Until an administrator has set a list
+the phone keeps whatever it has.
+
 ### The SIP domain
 
 Users are SIP addresses like `sip:201@dialler`; the part after the `@` is

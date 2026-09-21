@@ -62,6 +62,16 @@ post /v1/admin/devices "{\"device_id\":\"dev-hb\",\"user\":\"212\",\"token\":\"$
 # The simulator harness (sim_call.sh) and the Mac engine probe: 203 → dev-s.
 post /v1/admin/devices "{\"device_id\":\"dev-s\",\"user\":\"203\",\"token\":\"${DEV_S_TOKEN:-tok_dev_s_harness_fixed}\"}"
 
+# Server-managed settings (SPEC §6 item 8b): DEV_A_SSIDS="Office,Office-5G"
+# gives the real app's device its office Wi-Fi list, which the app applies
+# to Local Push on its next welcome. Unset, dev-a is left as the phone has
+# it; the harness phones need none.
+if [ -n "${DEV_A_SSIDS:-}" ]; then
+  echo "# settings"
+  list="$(printf '%s' "$DEV_A_SSIDS" | awk -F, '{for (i=1;i<=NF;i++) {gsub(/^ +| +$/,"",$i); printf "%s\"%s\"", (i>1?",":""), $i}}')"
+  post /v1/admin/devices/dev-a/config "{\"ssids\":[$list]}"
+fi
+
 echo "# directories (one per device, SPEC §6 item 7; the same seed for each)"
 # POST per contact rather than the replace-all PUT: this also runs under
 # busybox wget (innet.sh), which has no PUT. Upsert-by-URI keeps a re-seed

@@ -38,6 +38,9 @@ type Config struct {
 	// SIPAccountFor returns the SIP account a device should register, or
 	// nil when it has none. nil func → never included.
 	SIPAccountFor func(deviceID string) *wire.SIPAccount
+	// DeviceConfigFor returns the device's server-managed settings for the
+	// welcome, or nil when none have been set. nil func → never included.
+	DeviceConfigFor func(deviceID string) *wire.DeviceConfig
 }
 
 func (c Config) withDefaults() Config {
@@ -258,6 +261,17 @@ func (g *Gateway) Disconnect(deviceID string) {
 	}
 }
 
+// NotifyConfig sends the device's server-managed settings to every live
+// connection of deviceID and to no other device (SPEC §6 item 8b).
+func (g *Gateway) NotifyConfig(deviceID string, cfg wire.DeviceConfig) {
+	g.mu.Lock()
+	all := g.snapshotLocked(deviceID)
+	g.mu.Unlock()
+	for _, s := range all {
+		_ = s.send(wire.TypeConfig, cfg)
+	}
+}
+
 // NotifyDirectory sends a directory_changed to every live connection of
 // deviceID — and to no other device: directories are per device (SPEC §6
 // item 7), so nobody else has anything to sync.
@@ -466,6 +480,9 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 	}
 	if g.cfg.SIPAccountFor != nil {
 		welcome.SIP = g.cfg.SIPAccountFor(s.deviceID)
+	}
+	if g.cfg.DeviceConfigFor != nil {
+		welcome.Config = g.cfg.DeviceConfigFor(s.deviceID)
 	}
 	if err := s.send(wire.TypeWelcome, welcome); err != nil {
 		return

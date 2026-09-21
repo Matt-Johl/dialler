@@ -495,6 +495,36 @@ func TestDirectoryChangeReachesOnlyItsDevice(t *testing.T) {
 	other.expectSilence()
 }
 
+// The welcome carries the device's settings when it has some, and a change
+// reaches only that device's sessions (SPEC §6 item 8b).
+func TestDeviceConfigInWelcomeAndOnChange(t *testing.T) {
+	h := start(t, Config{
+		DeviceConfigFor: func(d string) *wire.DeviceConfig {
+			if d == "dev1" {
+				return &wire.DeviceConfig{Version: 1, SSIDs: []string{"Office"}}
+			}
+			return nil
+		},
+	})
+	a := h.dial(t)
+	w := a.hello(wire.ClientApp)
+	if w.Config == nil || w.Config.Version != 1 || len(w.Config.SSIDs) != 1 {
+		t.Fatalf("welcome config: %+v", w.Config)
+	}
+	other := h.dial(t)
+	if w2 := other.helloAs("dev2", "tok2", wire.ClientExtension); w2.Config != nil {
+		t.Fatalf("dev2 has no settings, welcome must carry none: %+v", w2.Config)
+	}
+	h.g.NotifyConfig("dev1", wire.DeviceConfig{Version: 2, SSIDs: []string{"Office", "Office-5G"}})
+	e := a.expect(wire.TypeConfig)
+	var c wire.DeviceConfig
+	_ = e.DecodeBody(&c)
+	if c.Version != 2 || len(c.SSIDs) != 2 {
+		t.Fatalf("config push: %+v", c)
+	}
+	other.expectSilence()
+}
+
 // A rotated credential drops that device's sessions with unauthorized and
 // leaves another device's alone (SPEC §4.8 isolation).
 func TestDisconnectClosesOnlyThatDevice(t *testing.T) {

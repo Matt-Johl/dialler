@@ -20,6 +20,7 @@ public enum Message: Equatable, Sendable {
     case wakeAck(WakeAck)
     case wakeCancel(WakeCancel)
     case directoryChanged(DirectoryChanged)
+    case config(DeviceConfig)
     case error(ProtocolError)
     case unknown(type: String)
 
@@ -34,6 +35,7 @@ public enum Message: Equatable, Sendable {
         case .wakeAck: return "wake_ack"
         case .wakeCancel: return "wake_cancel"
         case .directoryChanged: return "directory_changed"
+        case .config: return "config"
         case .error: return "error"
         case .unknown(let t): return t
         }
@@ -75,6 +77,7 @@ public struct Envelope: Codable, Equatable, Sendable {
         case "wake_ack": message = .wakeAck(try c.decode(WakeAck.self, forKey: .body))
         case "wake_cancel": message = .wakeCancel(try c.decode(WakeCancel.self, forKey: .body))
         case "directory_changed": message = .directoryChanged(try c.decode(DirectoryChanged.self, forKey: .body))
+        case "config": message = .config(try c.decode(DeviceConfig.self, forKey: .body))
         case "error": message = .error(try c.decode(ProtocolError.self, forKey: .body))
         default: message = .unknown(type: type)
         }
@@ -93,6 +96,7 @@ public struct Envelope: Codable, Equatable, Sendable {
         case .wakeAck(let b): try c.encode(b, forKey: .body)
         case .wakeCancel(let b): try c.encode(b, forKey: .body)
         case .directoryChanged(let b): try c.encode(b, forKey: .body)
+        case .config(let b): try c.encode(b, forKey: .body)
         case .error(let b): try c.encode(b, forKey: .body)
         case .ping, .pong, .unknown: break
         }

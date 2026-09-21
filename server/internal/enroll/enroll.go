@@ -38,6 +38,8 @@ type Device struct {
 	Enrolled bool `json:"enrolled"`
 	// CodePending is whether an unexpired enrolment code is outstanding.
 	CodePending bool `json:"code_pending,omitempty"`
+	// Config is the device's server-managed settings; nil until set.
+	Config *DeviceConfig `json:"config,omitempty"`
 }
 
 type record struct {
@@ -56,6 +58,18 @@ type record struct {
 	// sha256, and when it stops being claimable.
 	CodeHash    string    `json:"code_hash,omitempty"`
 	CodeExpires time.Time `json:"code_expires,omitempty"`
+	// Server-managed settings (SPEC §6 item 8b): the Wi-Fi SSIDs the
+	// device's Local Push provider runs on. ConfigVersion is 0 until an
+	// administrator has set anything, and the app then keeps its own.
+	SSIDs         []string `json:"ssids,omitempty"`
+	ConfigVersion int64    `json:"config_version,omitempty"`
+}
+
+// DeviceConfig is the device's server-managed settings as the admin API
+// and the wire protocol carry them.
+type DeviceConfig struct {
+	Version int64    `json:"version"`
+	SSIDs   []string `json:"ssids"`
 }
 
 // CodeTTL is how long an enrolment code can be claimed.
@@ -241,6 +255,47 @@ func (s *Store) Claim(code string) (Claimed, error) {
 	return Claimed{DeviceID: id, User: rec.User, Token: tok}, nil
 }
 
+// Config returns deviceID's server-managed settings, or nil when none
+// have been set (the app then keeps its own).
+func (s *Store) Config(deviceID string) *DeviceConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.devices[deviceID]
+	if !ok || r.ConfigVersion == 0 {
+		return nil
+	}
+	return &DeviceConfig{Version: r.ConfigVersion, SSIDs: append([]string{}, r.SSIDs...)}
+}
+
+// SetConfig replaces deviceID's SSID list (trimmed, empties and repeats
+// dropped, order kept) and bumps its config version — even for the same
+// list, so an administrator's "apply" always reaches the phone. Returns
+// the new settings; ErrInvalid for an unknown device.
+func (s *Store) SetConfig(deviceID string, ssids []string) (DeviceConfig, error) {
+	clean := make([]string, 0, len(ssids))
+	seen := map[string]bool{}
+	for _, ss := range ssids {
+		ss = strings.TrimSpace(ss)
+		if ss == "" || seen[ss] {
+			continue
+		}
+		seen[ss] = true
+		clean = append(clean, ss)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.devices[deviceID]
+	if !ok {
+		return DeviceConfig{}, ErrInvalid
+	}
+	r.SSIDs = clean
+	r.ConfigVersion++
+	if err := s.saveLocked(); err != nil {
+		return DeviceConfig{}, err
+	}
+	return DeviceConfig{Version: r.ConfigVersion, SSIDs: append([]string{}, clean...)}, nil
+}
+
 // NormalizeCode makes a typed code comparable: upper case, separators
 // dropped, and the letters the alphabet leaves out mapped to the digits
 // they are mistaken for (I and L → 1, O → 0).
@@ -325,11 +380,15 @@ func (s *Store) Devices() []Device {
 	out := make([]Device, 0, len(s.devices))
 	now := s.now()
 	for id, r := range s.devices {
-		out = append(out, Device{
+		d := Device{
 			DeviceID: id, User: r.User, Label: r.Label, IssuedAt: r.IssuedAt, Revoked: r.Revoked,
 			Enrolled:    r.TokenHash != "",
 			CodePending: r.CodeHash != "" && now.Before(r.CodeExpires),
-		})
+		}
+		if r.ConfigVersion > 0 {
+			d.Config = &DeviceConfig{Version: r.ConfigVersion, SSIDs: append([]string{}, r.SSIDs...)}
+		}
+		out = append(out, d)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DeviceID < out[j].DeviceID })
 	return out

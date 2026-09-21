@@ -113,6 +113,8 @@ func main() {
 			return
 		case wire.TypeWakeCancel:
 			log.Warn("wake cancelled before we could act", "body", string(e.Body))
+		case wire.TypeConfig:
+			log.Info("config received", "body", string(e.Body)) // the harness asserts on this
 		case wire.TypeError:
 			log.Error("gateway error", "body", string(e.Body))
 			os.Exit(1)

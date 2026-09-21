@@ -1,0 +1,11 @@
+{{define "content"}}
+<section class="narrow">
+  <h1>{{.Heading}}</h1>
+  <p>{{.Message}}</p>
+  <form method="post" action="{{.Action}}" class="row">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="danger">{{.Button}}</button>
+    <a class="button" href="{{.Back}}">Cancel</a>
+  </form>
+</section>
+{{end}}

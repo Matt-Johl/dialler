@@ -84,6 +84,33 @@ services:
       - "${DIALLER_HTTP_HOSTPORT:-8080}:8080" # directory + admin API; reachable from devices on the LAN (token-protected)
       - "${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}:${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}/udp" # relayed media, so phones (and containers via the host address) reach it
 
+  # The operator's web UI (SPEC §6 item 9): a separate process from the same
+  # image, talking only to the call server's admin API. Password
+  # "harness-admin" (harness/admin/password); `--profile admin`.
+  admin:
+    profiles: [admin]
+    build:
+      context: ..
+      dockerfile: harness/dialler/Dockerfile
+    entrypoint: ["/dialler-admin"]
+    command:
+      - -listen=:8443
+      - -server=https://dialler:8080
+      - -admin-token=harness
+      # The call server's dev certificate is self-signed and lives on its
+      # own volume, out of this container's reach; verification is what a
+      # deployment gets with -server-ca.
+      - -insecure
+      - -password-file=/admin/password
+      - -data-dir=/data
+      - -host=${DIALLER_PUBLIC_HOST:-dialler}
+    volumes:
+      - ./admin:/admin:ro
+      - admin-data:/data
+    ports:
+      - "${DIALLER_ADMIN_HOSTPORT:-8443}:8443"
+    depends_on: [dialler]
+
   asterisk:
     build:
       context: ./asterisk
@@ -199,6 +226,7 @@ services:
 
 volumes:
   dialler-data: {}
+  admin-data: {}
 
 # Fixed addresses: Asterisk identifies the light server as its trunk peer
 # by source address (pjsip.conf `match=`), which it resolves only at load,

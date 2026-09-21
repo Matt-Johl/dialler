@@ -1,0 +1,752 @@
+package adminui
+
+import (
+	"bytes"
+	"context"
+	"embed"
+	"errors"
+	"fmt"
+	"html/template"
+	"io"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+
+	"dialler/server/internal/csvdir"
+	"dialler/server/internal/directory"
+	"dialler/server/internal/enroll"
+	"dialler/server/internal/qr"
+	"dialler/server/internal/status"
+)
+
+//go:embed templates/*.html static/*
+var assets embed.FS
+
+// Config is what the app needs to run.
+type Config struct {
+	Client *Client
+	// PasswordHash is the operator's password as HashPassword stores it.
+	PasswordHash string
+	// Secure marks the session cookie Secure: true when served over TLS.
+	Secure bool
+	Now    func() time.Time
+	Logger *slog.Logger
+}
+
+// App is the web interface. It is an http.Handler.
+type App struct {
+	cfg      Config
+	sessions *sessions
+	logins   *loginLimiter
+	pages    map[string]*template.Template
+	mux      *http.ServeMux
+}
+
+// New builds the app; templates are parsed once, so a broken one fails
+// here rather than on a page.
+func New(cfg Config) (*App, error) {
+	if cfg.Client == nil {
+		return nil, errors.New("adminui: a client is required")
+	}
+	if cfg.PasswordHash == "" {
+		return nil, errors.New("adminui: a password hash is required")
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	a := &App{cfg: cfg, sessions: newSessions(cfg.Now), logins: &loginLimiter{now: cfg.Now, seen: map[string][]time.Time{}}, pages: map[string]*template.Template{}}
+	pages, err := fs.Glob(assets, "templates/*.html")
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range pages {
+		if strings.HasSuffix(p, "layout.html") {
+			continue
+		}
+		t, err := template.New("layout.html").Funcs(a.funcs()).ParseFS(assets, "templates/layout.html", p)
+		if err != nil {
+			return nil, fmt.Errorf("adminui: %s: %w", p, err)
+		}
+		a.pages[strings.TrimPrefix(p, "templates/")] = t
+	}
+	a.routes()
+	return a, nil
+}
+
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) { a.mux.ServeHTTP(w, r) }
+
+func (a *App) routes() {
+	m := http.NewServeMux()
+	a.mux = m
+	static, _ := fs.Sub(assets, "static")
+	m.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
+	m.HandleFunc("GET /login", a.loginPage)
+	m.HandleFunc("POST /login", a.login)
+	m.HandleFunc("POST /logout", a.signedIn(a.logout))
+
+	m.HandleFunc("GET /{$}", a.signedIn(a.devices))
+	m.HandleFunc("POST /devices", a.signedIn(a.createDevice))
+	m.HandleFunc("GET /devices/{id}", a.signedIn(a.device))
+	m.HandleFunc("GET /devices/{id}/code", a.signedIn(a.codePage))
+	m.HandleFunc("POST /devices/{id}/code", a.signedIn(a.newCode))
+	m.HandleFunc("GET /devices/{id}/revoke", a.signedIn(a.revokePage))
+	m.HandleFunc("POST /devices/{id}/revoke", a.signedIn(a.revoke))
+	m.HandleFunc("POST /devices/{id}/config", a.signedIn(a.setConfig))
+	m.HandleFunc("POST /devices/{id}/contacts", a.signedIn(a.saveContact))
+	m.HandleFunc("POST /devices/{id}/contacts/{cid}", a.signedIn(a.saveContact))
+	m.HandleFunc("POST /devices/{id}/contacts/{cid}/delete", a.signedIn(a.deleteContact))
+	m.HandleFunc("GET /devices/{id}/directory.csv", a.signedIn(a.downloadCSV))
+	m.HandleFunc("POST /devices/{id}/directory/upload", a.signedIn(a.uploadCSV))
+	m.HandleFunc("POST /devices/{id}/directory/apply", a.signedIn(a.applyCSV))
+	m.HandleFunc("POST /devices/{id}/directory/copy", a.signedIn(a.copyDirectory))
+	m.HandleFunc("GET /server", a.signedIn(a.server))
+}
+
+// MARK: sessions
+
+type handler func(w http.ResponseWriter, r *http.Request, sess *session)
+
+// signedIn requires a live session, and on every POST a CSRF token that
+// matches it.
+func (a *App) signedIn(h handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess := a.session(r)
+		if sess == nil {
+			next := url.QueryEscape(r.URL.RequestURI())
+			http.Redirect(w, r, "/login?next="+next, http.StatusSeeOther)
+			return
+		}
+		if r.Method == http.MethodPost && r.FormValue("_csrf") != a.sessions.csrf(sess) {
+			a.fail(w, r, http.StatusForbidden, "That form was not from this session. Go back and try again.")
+			return
+		}
+		h(w, r, sess)
+	}
+}
+
+func (a *App) session(r *http.Request) *session {
+	c, err := r.Cookie(sessionCookie)
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	return a.sessions.get(c.Value)
+}
+
+func (a *App) setSessionCookie(w http.ResponseWriter, id string, maxAge int) {
+	http.SetCookie(w, &http.Cookie{
+		Name: sessionCookie, Value: id, Path: "/", HttpOnly: true, Secure: a.cfg.Secure,
+		SameSite: http.SameSiteStrictMode, MaxAge: maxAge,
+	})
+}
+
+// MARK: pages
+
+type base struct {
+	Title  string
+	CSRF   string
+	Notice string
+	Error  string
+	Path   string
+	// SignedIn hides the navigation on the login page.
+	SignedIn bool
+}
+
+func (a *App) render(w http.ResponseWriter, r *http.Request, sess *session, page string, data any) {
+	t, ok := a.pages[page]
+	if !ok {
+		a.fail(w, r, http.StatusInternalServerError, "missing page "+page)
+		return
+	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "layout.html", data); err != nil {
+		a.cfg.Logger.Error("render", "page", page, "err", err)
+		a.fail(w, r, http.StatusInternalServerError, "The page could not be rendered.")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "same-origin")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'")
+	_, _ = buf.WriteTo(w)
+}
+
+func (a *App) base(sess *session, title, path string) base {
+	b := base{Title: title, Path: path, SignedIn: sess != nil}
+	if sess != nil {
+		b.CSRF = a.sessions.csrf(sess)
+		if n, ok := a.sessions.takeFlash(sess, "notice").(string); ok {
+			b.Notice = n
+		}
+		if e, ok := a.sessions.takeFlash(sess, "error").(string); ok {
+			b.Error = e
+		}
+	}
+	return b
+}
+
+// fail shows the error page.
+func (a *App) fail(w http.ResponseWriter, r *http.Request, code int, msg string) {
+	t := a.pages["error.html"]
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
+	sess := a.session(r)
+	data := struct {
+		base
+		Status  int
+		Message string
+	}{a.base(sess, "Something went wrong", r.URL.Path), code, msg}
+	if t != nil {
+		_ = t.ExecuteTemplate(w, "layout.html", data)
+	} else {
+		_, _ = io.WriteString(w, msg)
+	}
+}
+
+// apiFailed turns a call-server error into a flash and a redirect back.
+func (a *App) apiFailed(w http.ResponseWriter, r *http.Request, sess *session, back string, err error) {
+	a.cfg.Logger.Warn("call server", "path", r.URL.Path, "err", err)
+	a.sessions.setFlash(sess, "error", err.Error())
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+func (a *App) funcs() template.FuncMap {
+	return template.FuncMap{
+		"grouped": func(code string) string { // A7K2M9PX → A7K2-M9PX
+			if len(code) == 8 {
+				return code[:4] + "-" + code[4:]
+			}
+			return code
+		},
+		"when": func(t time.Time) string {
+			if t.IsZero() {
+				return "—"
+			}
+			return t.Local().Format("2 Jan 2006, 15:04")
+		},
+		"since": func(t time.Time) string {
+			if t.IsZero() {
+				return "—"
+			}
+			d := a.cfg.Now().Sub(t).Round(time.Minute)
+			switch {
+			case d < time.Minute:
+				return "just now"
+			case d < time.Hour:
+				return fmt.Sprintf("%d min ago", int(d.Minutes()))
+			case d < 48*time.Hour:
+				return fmt.Sprintf("%d h ago", int(d.Hours()))
+			default:
+				return fmt.Sprintf("%d days ago", int(d.Hours()/24))
+			}
+		},
+		"minutesLeft": func(t time.Time) int {
+			return int(t.Sub(a.cfg.Now()).Minutes())
+		},
+		"join":  strings.Join,
+		"lower": strings.ToLower,
+	}
+}
+
+// MARK: login
+
+type loginView struct {
+	base
+	Next string
+}
+
+func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
+	if a.session(r) != nil {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	a.render(w, r, nil, "login.html", loginView{base: a.base(nil, "Sign in", "/login"), Next: safeNext(r.URL.Query().Get("next"))})
+}
+
+func (a *App) login(w http.ResponseWriter, r *http.Request) {
+	if !a.logins.allow(sourceOf(r)) {
+		v := loginView{base: a.base(nil, "Sign in", "/login"), Next: safeNext(r.FormValue("next"))}
+		v.Error = "Too many attempts. Wait a minute and try again."
+		w.WriteHeader(http.StatusTooManyRequests)
+		a.render(w, r, nil, "login.html", v)
+		return
+	}
+	if !VerifyPassword(a.cfg.PasswordHash, r.FormValue("password")) {
+		v := loginView{base: a.base(nil, "Sign in", "/login"), Next: safeNext(r.FormValue("next"))}
+		v.Error = "That password is not right."
+		w.WriteHeader(http.StatusUnauthorized)
+		a.render(w, r, nil, "login.html", v)
+		return
+	}
+	id, _ := a.sessions.start()
+	a.setSessionCookie(w, id, int(sessionIdle.Seconds()))
+	http.Redirect(w, r, safeNext(r.FormValue("next")), http.StatusSeeOther)
+}
+
+func (a *App) logout(w http.ResponseWriter, r *http.Request, _ *session) {
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		a.sessions.end(c.Value)
+	}
+	a.setSessionCookie(w, "", -1)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// safeNext keeps a post-login redirect on this site.
+func safeNext(next string) string {
+	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
+		return "/"
+	}
+	return next
+}
+
+// MARK: devices
+
+// deviceRow is one device as the list and the device page show it.
+type deviceRow struct {
+	status.Device
+	// State is one word for the enrolment column.
+	State string
+	// Presence is the connection kinds held, or "offline".
+	Presence string
+}
+
+func toRow(d status.Device) deviceRow {
+	row := deviceRow{Device: d}
+	switch {
+	case d.Revoked:
+		row.State = "revoked"
+	case !d.Enrolled && d.CodePending:
+		row.State = "code issued"
+	case !d.Enrolled:
+		row.State = "not enrolled"
+	default:
+		row.State = "enrolled"
+	}
+	if len(d.Online) == 0 {
+		row.Presence = "offline"
+	} else {
+		kinds := make([]string, len(d.Online))
+		for i, k := range d.Online {
+			kinds[i] = string(k)
+		}
+		row.Presence = strings.Join(kinds, " · ")
+	}
+	return row
+}
+
+type devicesView struct {
+	base
+	Server  status.Server
+	Devices []deviceRow
+	Now     time.Time
+}
+
+func (a *App) devices(w http.ResponseWriter, r *http.Request, sess *session) {
+	st, err := a.cfg.Client.Status(r.Context())
+	v := devicesView{base: a.base(sess, "Devices", "/"), Server: st.Server, Now: st.Now}
+	if err != nil {
+		v.Error = err.Error()
+	}
+	for _, d := range st.Devices {
+		v.Devices = append(v.Devices, toRow(d))
+	}
+	sort.SliceStable(v.Devices, func(i, j int) bool {
+		if v.Devices[i].Revoked != v.Devices[j].Revoked {
+			return !v.Devices[i].Revoked
+		}
+		return v.Devices[i].User < v.Devices[j].User
+	})
+	a.render(w, r, sess, "devices.html", v)
+}
+
+func (a *App) createDevice(w http.ResponseWriter, r *http.Request, sess *session) {
+	user := strings.TrimSpace(r.FormValue("user"))
+	label := strings.TrimSpace(r.FormValue("label"))
+	if user == "" {
+		a.sessions.setFlash(sess, "error", "A device needs an extension (the SIP user it answers as).")
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	created, err := a.cfg.Client.CreateDevice(r.Context(), user, label)
+	if err != nil {
+		a.apiFailed(w, r, sess, "/", err)
+		return
+	}
+	a.sessions.setFlash(sess, "code:"+created.DeviceID, Code{Code: created.Code, ExpiresAt: created.ExpiresAt, URL: created.URL})
+	http.Redirect(w, r, "/devices/"+url.PathEscape(created.DeviceID)+"/code", http.StatusSeeOther)
+}
+
+// find returns one device's status row, or an error when it is unknown.
+func (a *App) find(ctx context.Context, id string) (deviceRow, status.Response, error) {
+	st, err := a.cfg.Client.Status(ctx)
+	if err != nil {
+		return deviceRow{}, st, err
+	}
+	for _, d := range st.Devices {
+		if d.DeviceID == id {
+			return toRow(d), st, nil
+		}
+	}
+	return deviceRow{}, st, &APIError{Status: http.StatusNotFound, Body: "no such device"}
+}
+
+type deviceView struct {
+	base
+	Device    deviceRow
+	Server    status.Server
+	Contacts  []directory.Contact
+	Version   int64
+	Config    *enroll.DeviceConfig
+	SSIDs     string
+	Others    []deviceRow
+	CSVColumn string
+}
+
+func (a *App) device(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	row, st, err := a.find(r.Context(), id)
+	if err != nil {
+		if IsNotFound(err) {
+			a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+			return
+		}
+		a.fail(w, r, http.StatusBadGateway, err.Error())
+		return
+	}
+	v := deviceView{base: a.base(sess, row.Label, "/devices/"+id), Device: row, Server: st.Server, CSVColumn: strings.Join(csvdir.Columns, ",")}
+	if v.Title == "" {
+		v.Title = "Extension " + row.User
+	}
+	dir, err := a.cfg.Client.Directory(r.Context(), id)
+	if err != nil {
+		v.Error = err.Error()
+	}
+	v.Contacts, v.Version = dir.Contacts, dir.Version
+	sort.SliceStable(v.Contacts, func(i, j int) bool {
+		return strings.ToLower(v.Contacts[i].DisplayName) < strings.ToLower(v.Contacts[j].DisplayName)
+	})
+	if cfg, err := a.cfg.Client.Config(r.Context(), id); err == nil && cfg != nil {
+		v.Config = cfg
+		v.SSIDs = strings.Join(cfg.SSIDs, "\n")
+	}
+	for _, d := range st.Devices {
+		if d.DeviceID != id && !d.Revoked {
+			v.Others = append(v.Others, toRow(d))
+		}
+	}
+	a.render(w, r, sess, "device.html", v)
+}
+
+// MARK: enrolment codes
+
+type codeView struct {
+	base
+	Device deviceRow
+	Code   *Code
+	QR     template.HTML
+}
+
+func (a *App) codePage(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	row, _, err := a.find(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+		return
+	}
+	v := codeView{base: a.base(sess, "Enrol "+deviceName(row), "/devices/"+id+"/code"), Device: row}
+	if c, ok := a.sessions.takeFlash(sess, "code:"+id).(Code); ok {
+		v.Code = &c
+		if sym, err := qr.Encode([]byte(c.URL)); err == nil {
+			v.QR = template.HTML(sym.SVG()) //nolint:gosec // our own SVG, from our own encoder
+		}
+	}
+	a.render(w, r, sess, "code.html", v)
+}
+
+func (a *App) newCode(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	c, err := a.cfg.Client.NewCode(r.Context(), id)
+	if err != nil {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
+		return
+	}
+	a.sessions.setFlash(sess, "code:"+id, c)
+	http.Redirect(w, r, "/devices/"+url.PathEscape(id)+"/code", http.StatusSeeOther)
+}
+
+func deviceName(d deviceRow) string {
+	if d.Label != "" {
+		return d.Label
+	}
+	return "extension " + d.User
+}
+
+// MARK: revoke
+
+type confirmView struct {
+	base
+	Heading string
+	Message string
+	Action  string
+	Button  string
+	Back    string
+}
+
+func (a *App) revokePage(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	row, _, err := a.find(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, http.StatusNotFound, "There is no device "+id+".")
+		return
+	}
+	a.render(w, r, sess, "confirm.html", confirmView{
+		base:    a.base(sess, "Revoke "+deviceName(row), "/devices/"+id+"/revoke"),
+		Heading: "Revoke " + deviceName(row) + "?",
+		Message: "Its credential stops working at once: the phone is disconnected and can no longer register or make calls. Its directory is kept, and a new enrolment code brings it back.",
+		Action:  "/devices/" + url.PathEscape(id) + "/revoke",
+		Button:  "Revoke",
+		Back:    "/devices/" + url.PathEscape(id),
+	})
+}
+
+func (a *App) revoke(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	if err := a.cfg.Client.Revoke(r.Context(), id); err != nil {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", "Revoked. A new enrolment code will bring the device back.")
+	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
+}
+
+// MARK: settings
+
+func (a *App) setConfig(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	var ssids []string
+	for _, line := range strings.FieldsFunc(r.FormValue("ssids"), func(c rune) bool { return c == '\n' || c == ',' }) {
+		if s := strings.TrimSpace(line); s != "" {
+			ssids = append(ssids, s)
+		}
+	}
+	if ssids == nil {
+		ssids = []string{}
+	}
+	if _, err := a.cfg.Client.SetConfig(r.Context(), id, ssids); err != nil {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
+		return
+	}
+	if len(ssids) == 0 {
+		a.sessions.setFlash(sess, "notice", "No networks: background calls are off for this phone.")
+	} else {
+		a.sessions.setFlash(sess, "notice", "Networks saved and sent to the phone.")
+	}
+	http.Redirect(w, r, "/devices/"+url.PathEscape(id), http.StatusSeeOther)
+}
+
+// MARK: contacts
+
+func (a *App) saveContact(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	back := "/devices/" + url.PathEscape(id)
+	c := directory.Contact{
+		ID:          r.PathValue("cid"),
+		DisplayName: strings.TrimSpace(r.FormValue("display_name")),
+		URI:         csvdir.NormalizeURI(r.FormValue("uri"), a.sipDomain(r.Context())),
+		Mode:        directory.Mode(r.FormValue("mode")),
+		Favourite:   r.FormValue("favourite") != "",
+	}
+	if c.DisplayName == "" || c.URI == "" {
+		a.sessions.setFlash(sess, "error", "A contact needs a name and a number.")
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	if _, err := a.cfg.Client.UpsertContact(r.Context(), id, c); err != nil {
+		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+func (a *App) deleteContact(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	back := "/devices/" + url.PathEscape(id)
+	if err := a.cfg.Client.DeleteContact(r.Context(), id, r.PathValue("cid")); err != nil && !IsNotFound(err) {
+		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// sipDomain is what completes a bare number; "" if the server is unreachable.
+func (a *App) sipDomain(ctx context.Context) string {
+	st, err := a.cfg.Client.Status(ctx)
+	if err != nil {
+		return ""
+	}
+	return st.Server.SIPDomain
+}
+
+// MARK: CSV
+
+func (a *App) downloadCSV(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	dir, err := a.cfg.Client.Directory(r.Context(), id)
+	if err != nil {
+		a.apiFailed(w, r, sess, "/devices/"+url.PathEscape(id), err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-directory.csv"`, id))
+	_, _ = w.Write(csvdir.Encode(dir.Contacts))
+}
+
+// pendingUpload is a parsed CSV waiting for the operator's confirmation.
+type pendingUpload struct {
+	Contacts []directory.Contact
+	FileName string
+}
+
+type previewView struct {
+	base
+	Device                  deviceRow
+	FileName                string
+	Added, Changed, Removed []directory.Contact
+	Unchanged               int
+	Total                   int
+}
+
+// uploadCSV parses the file and shows what applying it would do; nothing
+// is written until the operator confirms.
+func (a *App) uploadCSV(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	back := "/devices/" + url.PathEscape(id)
+	row, st, err := a.find(r.Context(), id)
+	if err != nil {
+		a.apiFailed(w, r, sess, "/", err)
+		return
+	}
+	f, hdr, err := r.FormFile("file")
+	if err != nil {
+		a.sessions.setFlash(sess, "error", "Choose a CSV file to upload.")
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	defer f.Close()
+	contacts, err := csvdir.Decode(io.LimitReader(f, 4<<20), st.Server.SIPDomain)
+	if err != nil {
+		a.sessions.setFlash(sess, "error", err.Error())
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	current, err := a.cfg.Client.Directory(r.Context(), id)
+	if err != nil {
+		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	v := previewView{base: a.base(sess, "Replace the directory", back+"/directory/upload"), Device: row, FileName: hdr.Filename, Total: len(contacts)}
+	byURI := map[string]directory.Contact{}
+	for _, c := range current.Contacts {
+		byURI[strings.ToLower(c.URI)] = c
+	}
+	seen := map[string]bool{}
+	for _, c := range contacts {
+		key := strings.ToLower(c.URI)
+		seen[key] = true
+		old, ok := byURI[key]
+		switch {
+		case !ok:
+			v.Added = append(v.Added, c)
+		case old.DisplayName != c.DisplayName || old.Mode != c.Mode || old.Favourite != c.Favourite:
+			v.Changed = append(v.Changed, c)
+		default:
+			v.Unchanged++
+		}
+	}
+	for _, c := range current.Contacts {
+		if !seen[strings.ToLower(c.URI)] {
+			v.Removed = append(v.Removed, c)
+		}
+	}
+	a.sessions.setFlash(sess, "upload:"+id, pendingUpload{Contacts: contacts, FileName: hdr.Filename})
+	a.render(w, r, sess, "preview.html", v)
+}
+
+func (a *App) applyCSV(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	back := "/devices/" + url.PathEscape(id)
+	pending, ok := a.sessions.takeFlash(sess, "upload:"+id).(pendingUpload)
+	if !ok {
+		a.sessions.setFlash(sess, "error", "Nothing is waiting to be applied. Upload the file again.")
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	res, err := a.cfg.Client.ReplaceDirectory(r.Context(), id, pending.Contacts)
+	if err != nil {
+		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	a.sessions.setFlash(sess, "notice", fmt.Sprintf("Directory replaced from %s: %d added, %d changed, %d removed.", pending.FileName, res.Added, res.Changed, res.Removed))
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// copyDirectory gives the chosen devices this device's live list.
+func (a *App) copyDirectory(w http.ResponseWriter, r *http.Request, sess *session) {
+	id := r.PathValue("id")
+	back := "/devices/" + url.PathEscape(id)
+	targets := r.Form["to"]
+	if len(targets) == 0 {
+		a.sessions.setFlash(sess, "error", "Choose at least one device to copy to.")
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	dir, err := a.cfg.Client.Directory(r.Context(), id)
+	if err != nil {
+		a.apiFailed(w, r, sess, back, err)
+		return
+	}
+	var done []string
+	for _, t := range targets {
+		if t == id {
+			continue
+		}
+		if _, err := a.cfg.Client.ReplaceDirectory(r.Context(), t, dir.Contacts); err != nil {
+			a.apiFailed(w, r, sess, back, fmt.Errorf("copying to %s: %w", t, err))
+			return
+		}
+		done = append(done, t)
+	}
+	a.sessions.setFlash(sess, "notice", fmt.Sprintf("Directory copied to %d device(s).", len(done)))
+	http.Redirect(w, r, back, http.StatusSeeOther)
+}
+
+// MARK: server
+
+type serverView struct {
+	base
+	Server  status.Server
+	Devices int
+	Online  int
+	Now     time.Time
+}
+
+func (a *App) server(w http.ResponseWriter, r *http.Request, sess *session) {
+	st, err := a.cfg.Client.Status(r.Context())
+	v := serverView{base: a.base(sess, "Server", "/server"), Server: st.Server, Devices: len(st.Devices), Now: st.Now}
+	if err != nil {
+		v.Error = err.Error()
+	}
+	for _, d := range st.Devices {
+		if len(d.Online) > 0 {
+			v.Online++
+		}
+	}
+	a.render(w, r, sess, "server.html", v)
+}

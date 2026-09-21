@@ -1163,6 +1163,32 @@ on by config — see §7.4.
      revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
      call's audio continues, and neither dev-ha nor dev-hb sees a session
      close, a re-INVITE or a `directory_changed`.
+     *Built 2026-09-21 (branch `feature/admin-ui`, awaiting approval):*
+     `server/cmd/dialler-admin` on `internal/adminui`, stdlib only, in
+     four packages that each carry their own tests. `internal/qr` is the
+     encoder: byte mode, level M, versions 1–10; its Reed–Solomon, format
+     and version words are pinned to the specification's vectors, its
+     function patterns to the exact data-module count of every version,
+     and its version-10 symbol matches segno module for module; the
+     rendered link scanned on an iPhone and opened the app. `internal/
+     csvdir` is the codec, forgiving on input (a spreadsheet's BOM,
+     spaces, mixed case, yes/no) and strict on errors (the whole file
+     refused, with the line). `internal/status` is `GET /v1/admin/status`,
+     the one addition to the call server. `adminui` holds the API client,
+     a PBKDF2 password (`crypto/pbkdf2`, 600k iterations), in-memory
+     sessions with a CSRF token on every form and five login attempts a
+     minute, and the pages: devices (label, extension, state, connected,
+     registered; add), device (code, revoke behind a confirmation, office
+     Wi-Fi, the directory as an editable table, CSV down and up with a
+     preview of added / changed / removed before anything is written,
+     copy to other devices), the enrolment code page (shown once, the QR
+     inline as SVG), and server. One stylesheet, no scripting, light and
+     dark. `make dev-admin` beside the native server; `make
+     harness-admin-up` beside the docker one (`harness/admin/password`,
+     "harness-admin"). Decided in the building: the code is carried to
+     its page through the session, so a reload cannot show it twice; the
+     admin verifies the call server with `-server-ca`, for which the
+     server's kept self-signed certificate serves directly.
 
 ### Much later (not scheduled)
 

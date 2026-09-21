@@ -1,0 +1,26 @@
+{{define "content"}}
+<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+{{if .Code}}
+<section class="enrol">
+  <h1>Enrol {{if .Device.Label}}{{.Device.Label}}{{else}}extension {{.Device.User}}{{end}}</h1>
+  <p class="lede">Scan with the phone's camera, or type the code into the app.</p>
+  <div class="qr">{{.QR}}</div>
+  <p class="code">{{grouped .Code.Code}}</p>
+  <p class="hint">Valid for {{minutesLeft .Code.ExpiresAt}} more minutes, once. This page will not show it again.</p>
+  <details>
+    <summary>The link the QR carries</summary>
+    <p class="mono small">{{.Code.URL}}</p>
+  </details>
+  <p><a class="button" href="/devices/{{.Device.DeviceID}}">Done</a></p>
+</section>
+{{else}}
+<section class="narrow">
+  <h1>No code to show</h1>
+  <p>An enrolment code is shown once, right after it is minted.</p>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/code">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="primary">Mint a new code</button>
+  </form>
+</section>
+{{end}}
+{{end}}

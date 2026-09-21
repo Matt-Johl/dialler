@@ -1,0 +1,27 @@
+{{define "content"}}
+<p class="crumb"><a href="/">Devices</a> › <a href="/devices/{{.Device.DeviceID}}">{{if .Device.Label}}{{.Device.Label}}{{else}}Extension {{.Device.User}}{{end}}</a></p>
+<h1>Replace the directory?</h1>
+<p class="lede">{{.FileName}} has {{.Total}} contact{{if ne .Total 1}}s{{end}}. Applying it would make these changes.</p>
+
+<section class="card diff">
+  <div>
+    <h3>Added <span class="count">{{len .Added}}</span></h3>
+    {{if .Added}}<ul>{{range .Added}}<li>{{.DisplayName}} <span class="mono dim">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="dim">none</p>{{end}}
+  </div>
+  <div>
+    <h3>Changed <span class="count">{{len .Changed}}</span></h3>
+    {{if .Changed}}<ul>{{range .Changed}}<li>{{.DisplayName}} <span class="mono dim">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="dim">none</p>{{end}}
+  </div>
+  <div>
+    <h3>Removed <span class="count">{{len .Removed}}</span></h3>
+    {{if .Removed}}<ul>{{range .Removed}}<li>{{.DisplayName}} <span class="mono dim">{{.URI}}</span></li>{{end}}</ul>{{else}}<p class="dim">none</p>{{end}}
+  </div>
+</section>
+<p class="hint">{{.Unchanged}} unchanged. The phone receives the whole change as one update.</p>
+
+<form method="post" action="/devices/{{.Device.DeviceID}}/directory/apply" class="row">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <button type="submit" class="primary">Apply</button>
+  <a class="button" href="/devices/{{.Device.DeviceID}}">Cancel</a>
+</form>
+{{end}}

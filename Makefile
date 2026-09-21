@@ -20,6 +20,17 @@ server:
 	cd server && go build -o ../bin/dialler-server ./cmd/dialler-server
 
 # Dev run: self-signed TLS, data in ./data, admin token printed in the log.
+admin:
+	cd server && go build -o ../bin/dialler-admin ./cmd/dialler-admin
+
+# The operator's UI (SPEC §6 item 9) against the native `make dev-server`,
+# on https://127.0.0.1:8443. Set the password once:
+#   echo 'yourpassword' | ./bin/dialler-admin set-password -password-file data/admin/password
+dev-admin: admin
+	@test -f data/admin/password || { echo "no data/admin/password — run: echo 'yourpassword' | ./bin/dialler-admin set-password -password-file data/admin/password"; exit 1; }
+	./bin/dialler-admin -server https://127.0.0.1:8080 -admin-token harness -server-ca data/tls/self-signed.pem \
+	  -password-file data/admin/password -data-dir data/admin
+
 run: server
 	./bin/dialler-server -data-dir ./data -admin-token dev
 
@@ -39,8 +50,13 @@ harness-up: tone
 harness-test:
 	docker compose -f harness/docker-compose.yml --profile test run --rm --build sipp
 
+# The operator's UI beside the docker server: https://localhost:8443,
+# password "harness-admin".
+harness-admin-up:
+	docker compose -f harness/docker-compose.yml --profile admin up --build -d admin
+
 harness-down:
-	docker compose -f harness/docker-compose.yml --profile test down -v
+	docker compose -f harness/docker-compose.yml --profile test --profile admin down -v
 
 # Headless app↔app call through the real server (registrar + wake path +
 # diago bridge), asserted on the callee's recorded audio.

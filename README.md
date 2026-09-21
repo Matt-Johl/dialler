@@ -82,6 +82,28 @@ The app receives it in its welcome and as a `config` push on every change,
 and applies it to Local Push itself. Until an administrator has set a list
 the phone keeps whatever it has.
 
+## The admin UI
+
+`dialler-admin` (SPEC §6 item 9) is the operator's web interface: a
+separate process that holds the admin token and a password of its own,
+speaks only to the call server's admin API, and renders plain HTML with no
+scripting. Devices with their live state, add a device and show its
+enrolment QR, revoke, new code, each device's office Wi-Fi list, and its
+directory as an editable table with CSV download, CSV upload (previewed,
+then applied as one change) and copy-to-other-devices.
+
+```sh
+make admin
+echo 'yourpassword' | ./bin/dialler-admin set-password -password-file data/admin/password
+make dev-admin        # https://127.0.0.1:8443 against make dev-server
+```
+
+It verifies the call server with `-server-ca` (the server's kept
+self-signed certificate, `data/tls/self-signed.pem`, works as one) and
+serves its own pages over TLS with a certificate it keeps under
+`data/admin/tls`. In the docker harness, `make harness-admin-up` runs it on
+https://localhost:8443 with the password `harness-admin`.
+
 ### The SIP domain
 
 Users are SIP addresses like `sip:201@dialler`; the part after the `@` is
@@ -108,6 +130,11 @@ re-enrol devices after a rename. There is no reason to change it.
 
 ```
 cmd/dialler-server     wiring + flags
+cmd/dialler-admin      the operator's web UI (internal/adminui), a separate process
+internal/adminui       admin UI: API client, login, pages, embedded templates + stylesheet
+internal/status        GET /v1/admin/status: the server and every device's live state
+internal/csvdir        directory ↔ CSV
+internal/qr            QR encoder for the enrolment link
 internal/wire          protocol envelope, bodies, framing        (golden tests)
 internal/gateway       TLS signal gateway: hello/welcome, wake fan-out, replay, supersede, idle
 internal/enroll        device credentials, enrolment codes + the claim route, admin API, device-auth middleware

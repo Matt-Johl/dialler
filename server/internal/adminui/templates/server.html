@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Server</h1>
+<section class="card">
+  <dl class="facts">
+    <dt>Address</dt><dd class="mono">{{.Server.PublicHost}}</dd>
+    <dt>SIP domain</dt><dd class="mono">{{.Server.SIPDomain}}</dd>
+    <dt>Ports</dt><dd class="mono">signal {{.Server.SignalPort}} · SIP {{.Server.SIPPort}} · HTTPS {{.Server.HTTPSPort}}</dd>
+    <dt>PBX trunk</dt><dd class="mono">{{if .Server.Trunk}}{{.Server.Trunk}}{{else}}<span class="dim">none — app-to-app only</span>{{end}}</dd>
+    <dt>Certificate</dt><dd class="mono small">{{.Server.CertSHA256}}</dd>
+    <dt>Running since</dt><dd>{{when .Server.StartedAt}} <span class="dim">({{since .Server.StartedAt}})</span></dd>
+    <dt>Devices</dt><dd>{{.Devices}} <span class="dim">· {{.Online}} connected</span></dd>
+  </dl>
+</section>
+<p class="hint">The certificate fingerprint is what every enrolled phone pins; it travels in each enrolment QR.</p>
+{{end}}

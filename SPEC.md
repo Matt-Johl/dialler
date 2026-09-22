@@ -889,12 +889,19 @@ on by config — see §7.4.
      unregistered and a "forward on unregistered" rule will never fire.
      Forward-on-no-answer is unaffected — CUCM's timer fires well inside
      our 30 s ring.
-     *Caller ID on the trunk stays as it is.* Every outbound trunk INVITE
-     today goes out as `From: sip:dialler@<host>`, which is wrong and
-     which lines mode has to fix for itself. It is **not** fixed for trunk
-     mode here: that is a behaviour change to a working path covered by
-     four harness gates, and it belongs on its own branch with its own
-     bench run (`-trunk-caller-id=peer|caller`, unscheduled).
+     *Caller ID on the trunk is left exactly as it is*, and it is worth
+     saying precisely what that is, because it is not uniform. A bridged
+     call to the PBX already carries the **app caller's own From** —
+     diago copies the originator's header — so an ordinary trunk call
+     goes out as `sip:<extension>@<our SIP domain>`, with our domain as
+     the host rather than the PBX's. A **transfer** dialled towards the
+     trunk has no originator and falls back to the user agent's own name,
+     `sip:dialler@<external host>`. Lines mode replaces both with the
+     line's DN at the PBX domain, because the exchange will not accept
+     anything else. Trunk mode keeps both, because they work and four
+     harness gates cover them; making the trunk's identity configurable
+     (`-trunk-caller-id=peer|caller`) is its own change, its own branch
+     and its own bench run, and is unscheduled.
      *Validation — Asterisk is the bench; there is no CUCM.* Asterisk
      proves the substance: registering N lines with digest, refresh,
      re-registration after the PBX restarts, a PBX-originated call to a

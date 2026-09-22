@@ -104,6 +104,55 @@ development this is invisible (`harness/provision.sh` re-issues the fixed
 dev credentials on every start); in production keep the domain fixed, or
 re-enrol devices after a rename. There is no reason to change it.
 
+### Reaching a PBX: trunk or registered lines
+
+`-trunk` names the PBX. `-pbx-mode` says how this server presents itself to
+it, and the choice is made once, per deployment:
+
+| `-pbx-mode` | what the exchange sees |
+|---|---|
+| `trunk` (default) | one SIP peer, trusted by address. Nothing is registered; every call rides a trunk the exchange identifies by our IP. |
+| `lines` | one **third-party SIP device per device** — a directory number, a digest credential and a registration this server holds around the clock (SPEC §6 item 3c). |
+
+Lines mode exists because a trunk cannot make an app user a thing the
+exchange knows about: no per-user class of service, call forwarding,
+voicemail, hunt-group membership, CDR by user or corporate-directory entry,
+and identity by source address — which is also why most CUCM teams decline
+to route an internal number range to an unauthenticated peer.
+
+**The server registers; the app never does, and never holds a PBX
+credential.** A phone holding one would be the registered endpoint, and the
+exchange would send its INVITE to a contact that stops existing the moment
+iOS suspends the app — which is the problem this product exists to solve.
+The app leg is identical in both modes.
+
+**Never both at once.** An exchange matches inbound SIP against its trunk
+devices by source address and port, so a trunk pointing at this server would
+swallow the calls its registered lines place. `-pbx-mode=lines` with no
+`-trunk` is refused at start-up.
+
+Provisioning a line is one admin call per device; the secret is write-only
+and no read returns it:
+
+```sh
+curl -sSk -X POST https://127.0.0.1:8080/v1/admin/devices/dev-a/pbx-line \
+  -H 'Authorization: Bearer <admin token>' \
+  -d '{"digest_user":"<the exchange End User>","secret":"<its digest credential>"}'
+# → {"dn":"","digest_user":"…","configured":true}   ("" dn = the device's own extension)
+```
+
+It is stored sealed under `<data-dir>/pbx.key` (see `internal/secrets` for
+what that does and does not protect). Other flags: `-pbx-registrar` if
+REGISTERs go somewhere other than the trunk peer, `-pbx-domain` for the host
+part of each line's address of record, `-pbx-peers` for the other nodes of a
+cluster (a call from an unnamed node is challenged like an app's and fails),
+`-pbx-default-line` and `-pbx-register-expiry`.
+
+`make harness-pbx-lines` runs the bench: registration, a call each way, and
+a wrong credential that must latch refused. Asterisk stands in for CUCM —
+what it can and cannot prove is in SPEC §6 item 3c, and the CUCM-only
+checklist is §7.3 item 10.
+
 ## Server packages
 
 ```
@@ -116,6 +165,8 @@ internal/routing       local | trunk | unknown decision
 internal/b2bua         app-leg SIP element on sipgo + diago: TLS registrar, wake-then-bridge, media proxy
 internal/directory     one address book per device (data/directories/<id>.json) with delta sync, favourites, replace-all + REST (device and admin)
 internal/pbx           PBXAdapter seam (None only so far)
+internal/pbxline       one registration per device on a PBX that expects third-party SIP devices (-pbx-mode=lines)
+internal/secrets       seals the few credentials this server must replay rather than merely verify
 internal/tlsutil       cert loading / self-signed dev cert
 internal/sip           hand-written SIP parser/registrar — fallback and reference, not on the call path
 internal/relay         hand-written UDP relay — fallback and reference; diago's bridge proxies media
@@ -130,6 +181,8 @@ make harness-call      # 201 dials 202 through dialler-server; asserts the calle
 make harness-wake      # callee asleep: gateway wake → fake app registers it → bridge → audio
 make harness-up        # server + Asterisk, provisioned
 make harness-test      # SIPp: TLS register, offline → 480, unknown → 404, unregister, plain TCP refused
+make harness-pbx-lines # the server registers lines to the PBX instead of trunking to it
+make harness-regression # every trunk-mode test: the gate for anything touching the PBX leg
 ```
 
 `cmd/fake-app` is the headless stand-in for the app's background wake path:

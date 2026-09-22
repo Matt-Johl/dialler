@@ -97,7 +97,7 @@ lets ~everything be validated with no device (see §7).
 |---|---|
 | SIP + media stack | **baresip / libre / librem** (BSD-3), **Opus** (BSD) app↔app; **G.722** (public-domain implementation, WebRTC's copy — §8) and **G.711** on PBX calls — fully permissive, commercializable, no license fee |
 | PBX target | **Asterisk** for dev/test; compatible with **Cisco CUCM** and general SIP exchanges → server is a standard SIP element, PBX-agnostic. **PBX is optional** — the server also routes app↔app calls directly with no PBX present |
-| Exchange model | **Own exchange.** The light server is the call controller. Any PBX is a SIP trunk peer only. The app never registers to a PBX, in dev or prod (§4.4) |
+| Exchange model | **Own exchange.** The light server is the call controller. A PBX is reached one of two ways, chosen per deployment at start-up (`-pbx-mode`, §6 item 3c): as a **SIP trunk peer** trusted by address, or as a **registrar the server registers to on behalf of devices** — one third-party SIP line per device, credentials held by the server. Never both at once. **The app never registers to a PBX, in dev or prod** (§4.4 rule 1), and never holds a PBX credential |
 | App↔server leg | **SIP (baresip) under a strict private profile** (§4.4). This is the long-term design (§4.5); the `CallEngine` seam remains as ordinary structure, no replacement is scheduled |
 | Wire framing | **Length-prefixed JSON over TLS 1.3** (port 7443) for every signal transport: foreground LAN socket, LPC extension socket, public edge. No WebSocket — raw TLS is the natural `NWConnection` fit for the extension. Frozen in [protocol/PROTOCOL.md](protocol/PROTOCOL.md) with golden fixtures shared by Go and Swift |
 | Server language | **Go**, standard library only (no external modules) |
@@ -244,8 +244,11 @@ are already implemented — do not remove them because remote reach is deferred.
    on the trunk leg) so the PBX completes it and this server leaves the
    media path; if the PBX refuses, the server completes the transfer
    itself. The app's leg is unaffected either way.
-7. The `PBXAdapter` speaks **trunk SIP and nothing else**. AMI/ESL remain
-   dev-only.
+7. The `PBXAdapter` speaks **standard SIP towards the PBX and nothing
+   else** — trunk peering, or the line registrations of item 3c. AMI/ESL
+   remain dev-only. Widened 2026-09-22 from "trunk SIP and nothing else":
+   registering as a third-party SIP device is still ordinary SIP a
+   standard exchange understands, and it stays behind this seam.
 6a. **A blind transfer hands over the moment the target rings**
    (2026-09-15). The referrer is released on the target's first 18x — not
    on its answer — so pressing Transfer frees them immediately instead of
@@ -796,6 +799,150 @@ on by config — see §7.4.
      from `harness/tls/gen_certs.sh`, generated and gitignored;
      `TRUNK_TLS=1 harness/asterisk-native/install-ubuntu.sh` sets the same
      thing up on the LAN box.
+  3c. **Registering to the PBX as third-party SIP lines (planned
+     2026-09-22; before item 9).** A trunk carries calls, but it cannot
+     make an app user a *thing the exchange knows about*: on a trunk our
+     extensions are route patterns pointing at an IP peer, so there is no
+     per-user CSS or partition, no call-forward configuration, no
+     voicemail or MWI, no hunt-group or shared-line membership, no CDR
+     attributed to a user, and no corporate-directory entry. Identity is
+     by source address, which is also why most CUCM teams will not route
+     an internal DN range to an unauthenticated peer. So a deployment may
+     instead present each device to the PBX as a **third-party SIP
+     device**: a line (DN) that REGISTERs and answers a digest challenge —
+     CUCM's "Third-party SIP Device (Basic/Advanced)", an End User with
+     Digest Credentials named as the device's Digest User. Each such
+     device consumes a CUCM licence; that cost is known and accepted.
+     **The server registers, never the app.** This is §4.4 rule 1 and it
+     is load-bearing: a phone holding the PBX credential would be the
+     registered endpoint, so the PBX would send its INVITE to a contact
+     that does not exist the moment iOS suspends the app — exactly the
+     problem this product exists to solve — and it would put a PBX
+     credential inside a public App Store binary. From the exchange's
+     point of view this server is therefore a fleet of third-party SIP
+     devices, one registration per device, **held around the clock**
+     whether the phone is awake, asleep or in a drawer. The INVITE always
+     lands somewhere alive and the wake path is unchanged. **The app leg
+     does not change at all**: same enrolment digest, same welcome, same
+     `sip{user,domain,…}`, no new wire field, no protocol bump, no app
+     release. Nothing about the PBX credential is ever pushed to a device.
+     *Mode is exclusive and chosen at start-up*, `-pbx-mode=trunk|lines`
+     (default `trunk`). `-trunk` still names the peer — host, port,
+     transport — and `-pbx-mode` says how we present ourselves to it:
+     empty `-trunk` with `trunk` is standalone; `-trunk` with `trunk` is
+     today's IP-trusted peer, unchanged; `-trunk` with `lines` registers;
+     and empty `-trunk` with `lines` is a start-up error. Never both at
+     once, which is not tidiness: CUCM matches inbound SIP against trunk
+     devices by source IP **and incoming port**, so a cluster with a trunk
+     pointing at us would treat our line INVITEs as trunk traffic and
+     bypass the registration entirely. One mode per deployment removes
+     that class of fault instead of working around it. In `trunk` mode the
+     line manager is never constructed and every call path that consults
+     it is `nil`-guarded, so the existing trunk is untouched by
+     construction rather than by care.
+     *Server.* A new `internal/pbxline` holds one `Line{user, dn,
+     digest_user, secret}` per configured device, each with its own
+     registration state machine: register → refresh at 0.75 × the granted
+     expiry → jittered backoff on a transient failure → **latch "refused"
+     after a 401/403 retry**, so a wrong password logs once instead of
+     hammering the exchange, and start-up is jittered so fifty lines do
+     not stampede one node. The SIP send is an injected seam, as
+     `trunkQualifier`'s probe is, so the whole machine unit-tests with no
+     SIP stack. The REGISTER client is ours (sipgo's client plus the
+     vendored `icholy/digest`) rather than diago's `RegisterTransaction`,
+     which cannot set a per-line From/To/Contact user, mutates its
+     `Origin` on unregister, and gives up on 401 — about 150 lines against
+     a vendor patch, with `internal/sip/registrar.go` as the precedent.
+     Lines can be added, changed and removed at runtime: §4.8's rule
+     holds, an admin edit never restarts anything.
+     *Data.* The device record gains `pbx_line{dn, digest_user,
+     secret_enc}`, `dn` defaulting to the device's user — one user, one
+     device, one line (§4.8) — with an override for a deployment whose
+     CUCM DN differs from the extension the app dials as. The secret is
+     AES-256-GCM at rest under `<data-dir>/pbx.key` (0600, minted on first
+     use, std lib). That protects a copied `devices.json` — a backup, an
+     export, a support bundle — and not someone who can read the whole
+     data directory; it is worth saying which of the two it is. Storing
+     only HA1 (`MD5(user:realm:pass)`) would be stronger still, and is
+     deliberately deferred: it pins us to MD5 and needs the realm known
+     before the first challenge. `GET`/`PUT`/`DELETE
+     /v1/admin/devices/{id}/pbx-line` (§4.8), 404 for an unknown device or
+     until set, and the secret is **never returned** — `GET` answers
+     `{dn, digest_user, configured}`. This is the route item 9's Device
+     page needs, and the reason 3c is ordered before it: shipping the
+     admin UI first means reopening it immediately.
+     *Calls.* Inbound is unchanged — the INVITE arrives on the same
+     listener at our registered Contact with the DN in `To`, `routing`
+     resolves it to the local user, and a sleeping phone is woken exactly
+     as today. Outbound in lines mode sends `From: sip:<caller's
+     DN>@<pbx-domain>` and answers a 401/407 on the INVITE with that
+     line's credentials (sipgo's `AnswerOptions` already does this; no
+     vendor patch). A caller with no line — a transfer target, an echo leg
+     — uses `-pbx-default-line`, or the call is refused if none is set.
+     App↔app calls **stay local**: both parties resolve to `Local` and
+     this server bridges them, so the PBX sees no call and applies no
+     forwarding, recording or CDR to it. That is the "own exchange"
+     decision of §3 and it keeps app↔app working through a PBX outage;
+     hairpinning them through the exchange is a future option, not a
+     default. One consequence to state rather than discover: a line is
+     registered around the clock, so the exchange never sees it
+     unregistered and a "forward on unregistered" rule will never fire.
+     Forward-on-no-answer is unaffected — CUCM's timer fires well inside
+     our 30 s ring.
+     *Caller ID on the trunk stays as it is.* Every outbound trunk INVITE
+     today goes out as `From: sip:dialler@<host>`, which is wrong and
+     which lines mode has to fix for itself. It is **not** fixed for trunk
+     mode here: that is a behaviour change to a working path covered by
+     four harness gates, and it belongs on its own branch with its own
+     bench run (`-trunk-caller-id=peer|caller`, unscheduled).
+     *Validation — Asterisk is the bench; there is no CUCM.* Asterisk
+     proves the substance: registering N lines with digest, refresh,
+     re-registration after the PBX restarts, a PBX-originated call to a
+     registered line reaching the right device through the wake, an
+     outbound call **challenged on the INVITE** (an endpoint with `auth=`
+     challenges us, the same exchange CUCM makes) arriving as the right
+     identity, a wrong password latching refused, and one line failing
+     without disturbing another's call. `make harness-pbx-lines`.
+     What it cannot prove, and what therefore stays open until a CUCM
+     exists: that CUCM matches a registration to a third-party device by
+     digest user and DN; its realm and challenge shape; line-side early
+     offer (which, if it holds, retires the Early Offer checkbox of item 3
+     for inbound calls); whether it ticks *MTP Required* and what that
+     does to DTMF (we offer `telephone-event/8000` at PT 101 on both legs
+     and the relay copies payload verbatim, so a PT mismatch across the
+     bridge is the thing to watch); whether it accepts REFER from a
+     third-party device (if not, the server completes the transfer itself
+     — the fallback already exists); and cluster nodes as INVITE sources.
+     Two things keep that from being merely a list of unknowns. **Nothing
+     CUCM-specific is hard-coded** — the realm comes from the challenge,
+     the From/To/Contact forms are configuration, the trusted peers are a
+     list (`-pbx-peers`, which also widens the TLS source check that today
+     compares against a single trunk host) — so adapting should be
+     configuration, not a rewrite. And the parts Asterisk will not
+     exercise get **table-driven tests against synthetic CUCM-shaped
+     challenges**: `qop=auth` with and without cnonce, MD5, 401 against
+     407, `Expires` as a header against a Contact parameter, a realm that
+     is not the peer host. The bench checklist for the day a CUCM appears
+     is §7.3 item 10, written now rather than reconstructed later.
+     *The trunk must not move.* `make harness-regression` is the merge
+     gate and must be green at every commit on the branch:
+     `harness-test`, `harness-call`, `harness-wake`, `harness-qos`,
+     `harness-trunk` (plus `NARROWBAND=1` and `DIRECTION=xfer-app`),
+     `harness-trunk-srtp`, `-tls`, `-secure`, `-stall`,
+     `harness-pbx-hold`, `harness-pbx-unavailable`, `harness-hold-music`
+     and `harness-cancel-before-answer`. Under it, a golden test on the
+     outbound trunk INVITE (start line, From, To, Contact, transport) so
+     an accidental identity change fails a unit test long before the
+     harness, and a test that `-pbx-mode=trunk` constructs no line manager
+     and emits no REGISTER.
+  3d. **Registration failover across a CUCM cluster** (follow-on to 3c,
+     unscheduled). A third-party SIP device gets no TFTP configuration, so
+     the CM group has to be given to us: register to the primary, fall
+     back on failure, come back when it returns. Deliberately not in 3c —
+     it cannot be verified on Asterisk, and it is better designed against
+     the real cluster's behaviour than guessed at. Secure lines (TLS and
+     SRTP on a *line*, which needs a per-device certificate on CUCM rather
+     than the trunk's single one, item 3b) are a second follow-on.
   4. Before release: third-party acknowledgements screen and the App Store
      export-compliance declaration (see `ios/README.md`).
   4a. **Volume and tone balancing.** Every level in the app was chosen by
@@ -902,7 +1049,9 @@ on by config — see §7.4.
   first, and that is also the build order: the app-only work lands before
   anything touches the server, and the one real server change (per-device
   directories, item 7) lands before the process that depends on it (item
-  9). Decisions behind them are in §3 (directory ownership, management
+  9). *Amended 2026-09-22:* **item 3c lands before item 9** for the same
+  reason — it gives a device a PBX line, and the admin UI's Device page
+  would otherwise ship without anywhere to set one. Decisions behind them are in §3 (directory ownership, management
   plane, device onboarding) and the mechanism in §4.8. The governing rule
   throughout: **the existing call server stays stable** — everything that
   can live outside `dialler-server` does, and what must go in is additive.
@@ -1389,6 +1538,12 @@ handlers; nothing that exists changes shape:
   settings, `{"ssids": […]}` today (§6 item 8b): versioned on the device
   record, 404 until set, and pushed to that device's live sessions as a
   `config` message on every write (the same body rides in its welcome).
+- `GET` / `PUT` / `DELETE /v1/admin/devices/{id}/pbx-line` — the device's
+  line on the PBX when the server registers on its behalf (§6 item 3c):
+  `{dn, digest_user, secret}` in, `{dn, digest_user, configured}` out.
+  The secret is write-only and never leaves the server — it is not pushed
+  to the device, and no read returns it. 404 for an unknown device or
+  until set; a write re-registers that one line and touches no other.
 
 CSV lives in `dialler-admin`, not in the call server:
 `display_name,uri,mode,favourite` with a header row, UTF-8, RFC 4180
@@ -1502,6 +1657,25 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    own included — returns to that tab with Status closed, and coming back
    to Settings finds it closed.
 
+10. **CUCM lines, the day a CUCM exists (§6 item 3c).** Written now so it
+    is not reconstructed later; nothing here can be staged on Asterisk.
+    Provision one End User with Digest Credentials, one Third-party SIP
+    Device (Basic) naming that user as its Digest User, and one DN
+    matching the device's extension. Then, with `-pbx-mode=lines`:
+    (a) the line reaches **Registered** on the CUCM device page, and
+    survives a re-registration cycle; (b) a CUCM phone calls it — the app
+    rings through the wake, with the caller's name from CUCM; (c) the app
+    calls that phone — it arrives as the DN, not as "dialler", and CUCM's
+    INVITE challenge is answered; (d) **DTMF both ways** (the digits reach
+    an IVR or a phone's display), noting whether CUCM inserted an MTP;
+    (e) hold and blind transfer to a CUCM extension — if REFER is refused,
+    the server must complete it and the call must survive; (f) whether
+    CUCM's inbound INVITE carries SDP (early offer), which decides whether
+    item 3's Early Offer checkbox is still needed; (g) a deliberately
+    wrong digest password — the line latches refused, logs once, and no
+    other line is disturbed; (h) if the cluster has more than one node,
+    which node the INVITEs arrive from, which is the input to item 3d.
+
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".
 
@@ -1554,6 +1728,13 @@ it is neither linked nor redistributed.
 4. **CUCM SIP interop** quirks vs. Asterisk (third-party SIP device
    provisioning, registration behaviour) — isolate behind `PBXAdapter`. Now on
    the core path: the PBX leg is the product, not an edge case.
+   *2026-09-22:* the provisioning half is now scheduled work, not an
+   unknown — §6 item 3c builds line registration behind that seam and
+   proves it on Asterisk. The residual risk is precisely the part no
+   Asterisk can stand in for, and it is enumerated rather than left
+   vague: 3c's "what it cannot prove" list, with the bench checklist in
+   §7.3 item 10. Nothing CUCM-specific is hard-coded, so the expected
+   cost of a surprise there is configuration, not a rewrite.
 5. **baresip ↔ CallKit ↔ AVAudioSession** lifecycle on answer (cold launch from
    extension) — resolved on device 2026-09-07 via the vendored audiounit
    patches (§4.5); the residual risk is keeping those patches working across

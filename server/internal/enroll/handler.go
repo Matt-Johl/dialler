@@ -25,6 +25,9 @@ type Hooks struct {
 	OnClaim func(deviceID, user string)
 	// OnConfig: the admin changed a device's settings; push them to it.
 	OnConfig func(deviceID string, cfg DeviceConfig)
+	// OnPBXLine: the admin set or removed a device's PBX line (nil =
+	// removed). The registrar re-registers that one line and no other.
+	OnPBXLine func(deviceID string, line *PBXCredential)
 }
 
 // Link is what a phone needs to find the server, folded into the QR URL
@@ -65,6 +68,12 @@ type codeResponse struct {
 //	POST   /v1/admin/devices/{id}/enrol-code  → {"code","expires_at","url"}
 //	GET    /v1/admin/devices/{id}/config      → {"version","ssids"} (404 until set)
 //	PUT    /v1/admin/devices/{id}/config      {"ssids":[…]} → {"version","ssids"}   (POST accepted too)
+//	GET    /v1/admin/devices/{id}/pbx-line    → {"dn","digest_user","configured"}  (404 until set)
+//	PUT    /v1/admin/devices/{id}/pbx-line    {"digest_user","secret"[,"dn"]} → the same view (POST too)
+//	DELETE /v1/admin/devices/{id}/pbx-line    → 204
+//
+// The PBX line's secret is write-only: it goes in, and nothing — no read, no
+// device, no log — gets it back out (SPEC §6 item 3c).
 //
 // Adding a device mints its enrolment code; a "token" in the request (the
 // harness's fixed fixtures) also issues that credential at once.
@@ -200,6 +209,78 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 	mux.HandleFunc("PUT /v1/admin/devices/{id}/config", setConfig)
 	// busybox wget (the harness's in-network helper) has no PUT.
 	mux.HandleFunc("POST /v1/admin/devices/{id}/config", setConfig)
+
+	mux.HandleFunc("GET /v1/admin/devices/{id}/pbx-line", guard(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, ok := store.UserFor(id); !ok {
+			http.NotFound(w, r)
+			return
+		}
+		line, ok := store.PBXLine(id)
+		if !ok {
+			http.Error(w, "no PBX line set for this device", http.StatusNotFound)
+			return
+		}
+		// Deliberately the view type: there is no query parameter, no
+		// header and no debug mode that returns the secret.
+		writeJSON(w, http.StatusOK, line)
+	}))
+	setLine := guard(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			DN         string `json:"dn"`
+			DigestUser string `json:"digest_user"`
+			Secret     string `json:"secret"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+			http.Error(w, `bad json: want {"digest_user":"…","secret":"…"[,"dn":"…"]}`, http.StatusBadRequest)
+			return
+		}
+		id := r.PathValue("id")
+		if _, ok := store.UserFor(id); !ok {
+			http.NotFound(w, r)
+			return
+		}
+		line, err := store.SetPBXLine(id, in.DN, in.DigestUser, in.Secret)
+		switch {
+		case errors.Is(err, ErrInvalid):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		case errors.Is(err, ErrNoSecretKey):
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		case err != nil:
+			http.Error(w, "enrolment store: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if hooks.OnPBXLine != nil {
+			cred, ok, err := store.PBXCredential(id)
+			if err != nil || !ok {
+				http.Error(w, "enrolment store: the line was saved but cannot be read back", http.StatusInternalServerError)
+				return
+			}
+			hooks.OnPBXLine(id, &cred)
+		}
+		writeJSON(w, http.StatusOK, line)
+	})
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/pbx-line", setLine)
+	mux.HandleFunc("POST /v1/admin/devices/{id}/pbx-line", setLine)
+
+	mux.HandleFunc("DELETE /v1/admin/devices/{id}/pbx-line", guard(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		ok, err := store.DeletePBXLine(id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if hooks.OnPBXLine != nil {
+			hooks.OnPBXLine(id, nil)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
 	return mux
 }
 

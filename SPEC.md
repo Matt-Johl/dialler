@@ -942,79 +942,6 @@ on by config — see §7.4.
      an accidental identity change fails a unit test long before the
      harness, and a test that `-pbx-mode=trunk` constructs no line manager
      and emits no REGISTER.
-  3d. **Registration failover across a CUCM cluster** (follow-on to 3c,
-     unscheduled). A third-party SIP device gets no TFTP configuration, so
-     the CM group has to be given to us: register to the primary, fall
-     back on failure, come back when it returns. Deliberately not in 3c —
-     it cannot be verified on Asterisk, and it is better designed against
-     the real cluster's behaviour than guessed at.
-  3e. **Encryption on the line leg** (follow-on to 3c, unscheduled;
-     researched 2026-09-22, not yet built). *The app leg is unaffected
-     and always encrypted* — TLS 1.3 and mandatory SRTP, rules 2 and 4 —
-     in either PBX mode. This item is only about the leg between this
-     server and the exchange, which in lines mode is plain UDP today and
-     is refused the trunk's TLS/SRTP flags rather than left to look
-     secure without being tested.
-     *What the exchange expects, from Cisco's own documentation.* The
-     ordinary configuration for a **Third-Party SIP Device
-     (Basic/Advanced)** is the **Standard SIP Non-Secure Profile with
-     Digest Authentication** — digest is the authentication mechanism
-     available to that device type, and it is independent of transport
-     security. So 3c as built is the mainstream CUCM configuration for
-     third-party devices, not a compromise we are getting away with, and
-     UDP plus digest is what most deployments will ask for.
-     *The question that decided this item's shape* was whether a
-     certificate must be per **device**, which for one server holding N
-     lines would mean one connection per line — N transports, N source
-     ports (our Contact has to name where each line is reachable), N
-     certificates — rather than the single pooled connection everything
-     uses now. It does not. Cisco documents **two** modes for secure
-     third-party phones: a **per-device certificate**, and a **shared
-     certificate** — one certificate for many phones, carrying a
-     **DNS-type Subject Alternative Name**, where *the Phone Security
-     Profile's name must match that SAN exactly or security is not
-     enabled*. The shared mode is precisely our shape, so **one
-     connection carrying many registrations is a configuration Cisco
-     anticipated**, and per-line transports stay a fallback for a
-     deployment that insists on per-device certificates rather than the
-     expected design.
-     That one connection carries many identities is also the ordinary
-     industry pattern, not a shortcut: an SBC registering a site's
-     accounts towards a core does the same, because SIP binds identity to
-     the credential in each transaction, not to the socket. It is worth
-     stating plainly because it reads like the trunk it is not — the
-     exchange still holds N device records, N credentials and N
-     registrations, and authenticates every INVITE against the line that
-     sent it (3c's bench asserts each of those).
-     *The real constraint is the device type, not the certificate.* The
-     shared-certificate mechanism is documented for **Secure Preferred
-     Vendor** phones, which are third-party types added to the CUCM
-     database through a **COP file** — a Cisco partner onboarding step,
-     not something a deployment can simply switch on. The generic
-     Third-Party SIP Device profile is limited by comparison, and the
-     device type Cisco documents as supporting TLS and SRTP is the
-     **Third-Party AS-SIP Endpoint**. So the routes to an encrypted line
-     leg, in the order they should be tried: AS-SIP endpoint; preferred
-     vendor with a shared certificate; or stay non-secure to the exchange
-     and rely on the app leg's encryption, which is the one every
-     deployment can have today.
-     *What this server would need.* Probably very little: the registrar
-     already sends through the trunk transport's client and takes its
-     Contact and registrar URIs from `-trunk`, so `transport=tls` with
-     the existing `-trunk-tls-*` flags should carry the REGISTERs and
-     INVITEs, and `-trunk-srtp=sdes` should encrypt the media the same
-     way it does on a trunk. **None of that has been run**, which is why
-     the flags are refused together with lines mode. Moving TLS on a line
-     also makes `-pbx-peers` load-bearing rather than optional: the
-     source check in `isTrunkSource` only applies over TLS, so every node
-     that originates calls must be named or its INVITEs are challenged
-     like an app's and fail.
-     *First step when this is picked up:* prove our half on Asterisk,
-     which can require TLS with a client certificate on a line endpoint
-     and do SDES — registration, challenged INVITE and media all
-     encrypted, many lines over one connection
-     (`make harness-pbx-lines-secure`). That leaves CUCM's device-type
-     policy as the only open question rather than our code.
   4. Before release: third-party acknowledgements screen and the App Store
      export-compliance declaration (see `ios/README.md`).
   4a. **Volume and tone balancing.** Every level in the app was chosen by
@@ -1424,6 +1351,86 @@ old phase labels still resolve. None of this is on the roadmap.
   the transport reset the shim calls `call_modify()` so baresip re-INVITEs
   with the new media address; the server's media update already
   re-targets the relay.
+- **Registration failover across a CUCM cluster (was item 3d; moved here
+  2026-09-22).** A third-party SIP device gets no TFTP configuration, so the
+  CM group has to be given to us: register to the primary, fall back on
+  failure, come back when it returns. Deliberately never in 3c — it cannot
+  be verified on Asterisk, and it is better designed against a real
+  cluster's behaviour than guessed at. §7.3 item 10 asks which node an
+  INVITE arrives from, which is the input to it.
+- **Encryption on the line leg (was item 3e; moved here 2026-09-22).**
+  *The app leg is unaffected and always encrypted* — TLS 1.3 and mandatory
+  SRTP, rules 2 and 4 — in either PBX mode. This is only about the leg
+  between this server and the exchange, which in lines mode is plain UDP
+  and is refused the trunk's TLS/SRTP flags rather than left to look secure
+  without having been tested.
+  It sits here rather than on the roadmap because the research says it is
+  not needed for an ordinary deployment: the documented configuration for a
+  **Third-Party SIP Device (Basic/Advanced)** is the **Standard SIP
+  Non-Secure Profile with Digest Authentication**, so item 3c as built is
+  the mainstream CUCM setup for that device type rather than something we
+  are getting away with. The unencrypted hop is inside the customer's own
+  data centre, alongside the non-secure SIP their desk phones already
+  speak, and the leg carrying a user's voice to their phone is encrypted
+  regardless.
+  *The question that shaped this* was whether a certificate must be per
+  **device**, which for one server holding N lines would mean a connection
+  per line — N transports, N source ports (our Contact has to name where
+  each line is reachable), N certificates — instead of the single pooled
+  connection everything uses now. It does not. Cisco documents **two**
+  modes for secure third-party phones: a per-device certificate, and a
+  **shared certificate** — one certificate for many phones, carrying a
+  **DNS-type Subject Alternative Name**, where *the Phone Security
+  Profile's name must match that SAN exactly or security is not enabled*.
+  The shared mode is precisely our shape, so one connection carrying many
+  registrations is a configuration Cisco anticipated, and per-line
+  transports are a fallback for a deployment that insists on per-device
+  certificates rather than the expected design. It is also the ordinary
+  industry pattern — an SBC registering a site's accounts towards a core
+  does the same — because SIP binds identity to the credential in each
+  transaction, not to the socket.
+  *The real constraint is the device type.* The shared-certificate
+  mechanism is documented for **Secure Preferred Vendor** phones, which
+  reach the CUCM database through a **COP file** — a Cisco partner
+  onboarding step, not something a deployment switches on. The generic
+  third-party profile is limited by comparison, and the type Cisco
+  documents as supporting TLS and SRTP is the **Third-Party AS-SIP
+  Endpoint** (below).
+  *What this server would need is probably little*: the registrar already
+  sends through the trunk transport's client and takes its Contact and
+  registrar URIs from `-trunk`, so `transport=tls` with the existing
+  `-trunk-tls-*` flags should carry the REGISTERs and INVITEs, and
+  `-trunk-srtp=sdes` should encrypt the media as it does on a trunk. None
+  of that has been run. Moving a line to TLS also makes `-pbx-peers`
+  load-bearing rather than optional: the source check in `isTrunkSource`
+  only applies over TLS, so every node that originates calls must be named
+  or its INVITEs are challenged like an app's and fail. If it is ever
+  picked up, the first step is to prove our half on Asterisk, which can
+  require TLS with a client certificate on a line endpoint and do SDES —
+  registration, challenged INVITE and media all encrypted, many lines over
+  one connection — leaving CUCM's device-type policy as the only open
+  question rather than our code.
+- **AS-SIP as the device type (researched 2026-09-22, not scheduled).**
+  **Third-Party AS-SIP Endpoint** is the one third-party device type Cisco
+  documents as supporting TLS and SRTP without the preferred-vendor COP
+  file, so it is the route to an encrypted line leg if one is ever
+  required. AS-SIP (Assured Services SIP) is the US government's UCR
+  profile of SIP: endpoints are expected to be "compliant with MLPP, DSCP,
+  TLS/SRTP, and IPv6 requirements", plus V.150.1 modem relay and a
+  conference factory. We already do the DSCP half (rule 5a) and TLS/SRTP
+  on the app leg; MLPP precedence, IPv6-only and the rest we do not, and
+  **whether a cluster will register an AS-SIP endpoint that never sends a
+  Resource-Priority header is the thing to test** — nothing in the public
+  documentation says it will, and precedence is used per call rather than
+  at registration, so it is plausible rather than known.
+  One finding from it applies to item 3c as built, and is the reason to
+  keep this note whether or not AS-SIP is ever used: **"You can assign
+  each user ID to only one third-party phone. If the same user ID is
+  assigned as the Digest User for multiple phones, the third-party phones
+  to which they are assigned will not successfully register."** So a
+  single shared service account for the whole fleet is not merely untidy,
+  it does not work. One End User with its own digest credential per
+  device, which is what the per-device `pbx-line` already provides.
 - **Remote users (was Phase 4b).** Staff away from the site, on cellular or
   home Wi-Fi. Each item maps to an existing seam; none changes the call logic:
   - *Wake:* `APNSTransport` (PushKit VoIP push) via the `SignalTransport`
@@ -1746,7 +1753,8 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
     item 3's Early Offer checkbox is still needed; (g) a deliberately
     wrong digest password — the line latches refused, logs once, and no
     other line is disturbed; (h) if the cluster has more than one node,
-    which node the INVITEs arrive from, which is the input to item 3d.
+    which node the INVITEs arrive from, which is the input to the
+    cluster-failover item under §6 "Much later".
 
 Each is a short checklist backed by structured os_log/signpost output — not an
 open-ended "test the app".

@@ -104,8 +104,13 @@ Going back to the trunk is the two commands at the top of this file
 inbound request by source address before it looks at the From user, so a
 trunk identify would swallow the calls a registered line places.
 
-Lines mode here is plain UDP. A secure *line* needs a per-device certificate
-on the exchange, which is a follow-on (SPEC §6 item 3d); `TRUNK_TLS` and
+Lines mode here is plain UDP, and that is the ordinary shape: Cisco's
+documented configuration for a third-party SIP device is the Standard SIP
+Non-Secure Profile with digest authentication. The leg carrying a user's
+voice to their phone is encrypted either way (TLS 1.3 + SRTP on the app
+leg). Encrypting the leg to the exchange is unscheduled — see SPEC §6
+"Much later", *Encryption on the line leg*, for what it would take and why
+one shared connection is the right shape for it. `TRUNK_TLS` and
 `TRUNK_SRTP` configure the trunk and are refused alongside `LINES=1`.
 
 ## Transfers

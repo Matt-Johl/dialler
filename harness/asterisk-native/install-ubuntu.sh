@@ -41,7 +41,7 @@ if [ "$LINES" != 1 ]; then
   [ -n "${DIALLER_HOST:-}" ] || { echo "set DIALLER_HOST=<light server address>"; exit 1; }
 fi
 if [ "$LINES" = 1 ] && { [ "$TRUNK_TLS" = 1 ] || [ "$TRUNK_SRTP" = 1 ]; }; then
-  echo "LINES=1 is plain UDP for now: a secure LINE needs a per-device certificate on the exchange, which is a follow-on (SPEC §6 item 3d). The TLS/SRTP options here configure the TRUNK." >&2
+  echo "LINES=1 is plain UDP: encryption on the line leg is unscheduled (SPEC §6 'Much later', encryption on the line leg) — the documented CUCM setup for a third-party SIP device is non-secure with digest, and the app leg is encrypted either way. The TLS/SRTP options here configure the TRUNK." >&2
   exit 2
 fi
 KEYS=/etc/asterisk/keys

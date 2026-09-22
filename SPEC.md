@@ -1267,7 +1267,14 @@ on by config — see §7.4.
      never answered out of a browser's cache: an earlier restyle looked
      like it had changed nothing because the embedded files carry no
      modification time, leaving the response with no validator and no
-     cache directive at all. Behaviour (in-place editing,
+     cache directive at all. A contact's number reaches the row editor in
+     a `data-` attribute, which must not be named `data-uri`:
+     `html/template` reads any attribute whose name holds "uri", "url" or
+     "src" as a URL and rewrites anything outside http, https and mailto
+     to `ZgotmplZ`, so a `sip:` address came back into the editor as that
+     marker and was saved over the real number. It is `data-number`, with
+     the reason recorded beside it and a test that fails on `ZgotmplZ`
+     anywhere on the page. Behaviour (in-place editing,
      dialogs, motion, plain-form fallback) unchanged. Then: the device id
      is chosen on the Add device form (validated, refused when taken)
      and leads every list, title and confirmation; the record's `label`

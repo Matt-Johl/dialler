@@ -780,3 +780,20 @@ func TestAssetsAreFingerprinted(t *testing.T) {
 		t.Fatalf("unknown asset: %d", missing.Code)
 	}
 }
+
+// A contact's number reaches the row editor through a data attribute, so
+// it has to survive the template intact. html/template reads any
+// attribute whose name holds "uri", "url" or "src" as a URL and replaces
+// anything outside http, https and mailto with ZgotmplZ, which would put
+// that marker in the editor and save it over the real number.
+func TestContactNumberSurvivesTheRowAttributes(t *testing.T) {
+	_, _, b := setup(t)
+	signIn(t, b)
+	body := b.get("/devices/dev-a").Body.String()
+	if strings.Contains(body, "ZgotmplZ") {
+		t.Error("a value was rejected as a URL somewhere on the device page")
+	}
+	if !strings.Contains(body, `"sip:100@asterisk"`) {
+		t.Error("the row should carry the contact's number as an attribute")
+	}
+}

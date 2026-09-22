@@ -116,7 +116,7 @@
   // A row's two faces: the read view, and the editor with a Save and a
   // Cancel (and Delete for an existing contact).
   const readView = (tr, c) => {
-    tr.dataset.id = c.id; tr.dataset.name = c.display_name; tr.dataset.uri = c.uri; tr.dataset.mode = c.mode; tr.dataset.favourite = c.favourite ? "1" : "";
+    tr.dataset.id = c.id; tr.dataset.name = c.display_name; tr.dataset.number = c.uri; tr.dataset.mode = c.mode; tr.dataset.favourite = c.favourite ? "1" : "";
     tr.innerHTML =
       `<td data-cell="name">${escape(c.display_name)}</td>` +
       `<td data-cell="uri" class="mono">${escape(c.uri)}</td>` +
@@ -210,7 +210,9 @@
     }
   };
 
-  const fromRow = (tr) => ({ id: tr.dataset.id, display_name: tr.dataset.name, uri: tr.dataset.uri, mode: tr.dataset.mode, favourite: tr.dataset.favourite === "1" });
+  // data-number holds the contact's address; see the note in device.html
+  // for why it is not called data-uri.
+  const fromRow = (tr) => ({ id: tr.dataset.id, display_name: tr.dataset.name, uri: tr.dataset.number, mode: tr.dataset.mode, favourite: tr.dataset.favourite === "1" });
 
   const wire = (tr) => {
     if (tr.dataset.wired) return;

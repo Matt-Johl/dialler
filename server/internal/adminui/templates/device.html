@@ -86,7 +86,12 @@
     <thead><tr><th>Name</th><th>Number</th><th>Via</th><th class="c">★</th><th class="r"></th></tr></thead>
     <tbody data-rows>
     {{range .Contacts}}
-      <tr data-contact data-id="{{.ID}}" data-name="{{.DisplayName}}" data-uri="{{.URI}}" data-mode="{{.Mode}}" data-favourite="{{if .Favourite}}1{{end}}">
+      {{/* data-number, not data-uri: html/template reads an attribute
+           whose name holds "uri", "url" or "src" as a URL and replaces
+           anything outside http, https and mailto — a sip: address, say
+           — with ZgotmplZ, which the row editor would then save over the
+           real number. */}}
+      <tr data-contact data-id="{{.ID}}" data-name="{{.DisplayName}}" data-number="{{.URI}}" data-mode="{{.Mode}}" data-favourite="{{if .Favourite}}1{{end}}">
         <td data-cell="name">{{.DisplayName}}</td>
         <td data-cell="uri" class="mono">{{.URI}}</td>
         <td data-cell="mode" class="muted">{{if eq .Mode "trunk"}}PBX{{else}}This server{{end}}</td>

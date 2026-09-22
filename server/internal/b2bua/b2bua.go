@@ -510,6 +510,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			"trunk_transport", s.cfg.Trunk.Transport, "trunk_srtp", s.cfg.TrunkSRTP)
 	}
 	s.startTrunkQualify(ctx)
+	s.startLines(ctx)
 	err := s.dg.Serve(ctx, s.serveDialog)
 	if ctx.Err() != nil {
 		return nil

@@ -1,6 +1,7 @@
 package b2bua
 
 import (
+	"context"
 	"strings"
 
 	"github.com/emiago/sipgo"
@@ -133,6 +134,27 @@ func (s *Server) calleeInvite(callID string, calleeTrunk bool, onBehalfOf string
 
 // linesMode reports whether the PBX leg presents registered lines.
 func (s *Server) linesMode() bool { return s.cfg.Lines != nil }
+
+// linesStarter is the part of the registry that runs its own registration
+// loops. Optional: a test's stand-in registry implements Lines and nothing
+// else, and never registers anything.
+type linesStarter interface{ Start(ctx context.Context) }
+
+// startLines begins the registrations, from Serve and alongside the trunk
+// qualifier, so the loops share the server's lifetime.
+//
+// It runs before the listeners are actually up, as the qualifier does. That
+// needs no synchronising: a REGISTER sent a moment too early fails like any
+// other, and the loop retries it on its ordinary backoff — the same path
+// that covers the far more common case of a PBX which is not up yet when
+// this server boots.
+func (s *Server) startLines(ctx context.Context) {
+	st, ok := s.cfg.Lines.(linesStarter)
+	if !ok {
+		return
+	}
+	st.Start(ctx)
+}
 
 // uriUser is the user part of a SIP URI, empty if it will not parse. A
 // name-addr ("Matt" <sip:201@…>) is unwrapped first: the parser takes bare

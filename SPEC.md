@@ -1295,8 +1295,13 @@ on by config — see §7.4.
      table with inline add / edit / delete and a favourite star,
      **Download CSV**, **Upload CSV** (replace-all, with the counts of
      rows added, changed and removed shown before it applies), and **Copy
-     directory to…** other devices. **Server** — healthz, version, trunk
-     qualify state. *CSV format* is in §4.8. *QR:* an in-tree encoder
+     directory to…** other devices; and, in `lines` mode, **the device's
+     PBX line** — DN, digest user and a write-only secret field, with the
+     registration's live state beside it (item 3c). **Server** — healthz,
+     version, trunk qualify state, and the fleet's line registrations at
+     a glance, since one refused line is the failure an operator needs
+     to see without reading a log.
+     *CSV format* is in §4.8. *QR:* an in-tree encoder
      (`internal/qr`: byte mode, error-correction M, versions 1–10)
      rendered as inline SVG, so the binary stays stdlib-only and builds
      offline; golden tests plus one scan on a phone. If that proves slow
@@ -1311,6 +1316,14 @@ on by config — see §7.4.
      revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
      call's audio continues, and neither dev-ha nor dev-hb sees a session
      close, a re-INVITE or a `directory_changed`.
+     *Inherited from item 3c, and easy to miss:* `GET /v1/admin/status`
+     is part of this item and does not exist yet, and the line half of
+     its payload is already written —
+     `pbxline.Manager.Statuses()` returns each line's state, realm,
+     expiry and last error, is unit-tested, and **has no caller until
+     this endpoint is built**. 3c stopped there deliberately rather than
+     add a second status endpoint that would only have to be folded into
+     this one. Wiring it up is a handler, not a design.
 
 ### Much later (not scheduled)
 
@@ -1601,9 +1614,19 @@ sheet only (§6 item 8).
 handlers; nothing that exists changes shape:
 
 - `GET /v1/admin/status` — per device: label, user, revoked, app and
-  extension sessions online, SIP registered and contact expiry; trunk
-  qualify state. Read-only views of what `gateway`, `registry` and `pbx`
-  already hold in memory.
+  extension sessions online, SIP registered and contact expiry; **the
+  device's line on the PBX when the server registers on its behalf** —
+  its state (pending, registered, retrying, refused), the realm the
+  exchange challenged with, when the binding lapses, and why it last
+  failed, never the secret; trunk qualify state. Read-only views of what
+  `gateway`, `registry`, `pbx` and `pbxline` already hold in memory.
+  The line half is `pbxline.Manager.Statuses()`, which is written and
+  unit-tested but **has no route until this endpoint is built**: §6 item
+  3c left it that way on purpose rather than adding a second status
+  endpoint that would have to be folded into this one later. Until then a
+  line's state is visible only in the server log, which is the gap this
+  endpoint closes — an operator whose line will not register should be
+  able to ask, not grep.
 - `POST /v1/admin/devices/{id}/enrol-code` → `{code, expires_at, url}`.
 - `GET /v1/admin/devices/{id}/directory` (the full list) and `PUT`
   (replace-all: the server reconciles by URI — upsert what changed,

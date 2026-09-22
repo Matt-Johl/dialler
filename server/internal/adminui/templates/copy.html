@@ -9,7 +9,7 @@
   {{if .Others}}
   <div class="choices">
   {{range .Others}}
-    <label class="choice"><input type="checkbox" name="to" value="{{.DeviceID}}"> <span class="mono">{{.DeviceID}}</span> <span class="muted">ext {{.User}}{{if .Label}} · {{.Label}}{{end}}</span></label>
+    <label class="choice"><input type="checkbox" name="to" value="{{.DeviceID}}"> <span class="mono">{{.DeviceID}}</span> <span class="muted">ext {{.User}}</span></label>
   {{end}}
   </div>
   <div class="form-actions">

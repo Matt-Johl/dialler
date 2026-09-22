@@ -1164,7 +1164,7 @@ on by config — see §7.4.
      only, templates and CSS through `embed`. Flags: `-listen`, `-server`,
      `-admin-token`, `-server-ca` or `-insecure`, `-password-file`,
      `-tls-cert`/`-tls-key` (self-signed when absent); `make admin` and
-     `make dev-admin`. *Pages:* **Devices** — id, user, label, app and
+     `make dev-admin`. *Pages:* **Devices** — id, user, app and
      extension online, SIP registered, revoked; add a device (id, chosen
      or generated, + user + optional label) and be shown its code, expiry
      and QR; per row: revoke, new code. **Device** — the directory as a
@@ -1255,9 +1255,11 @@ on by config — see §7.4.
      Save affordance in the page header, hidden until something changes;
      light and dark palettes both tuned. Behaviour (in-place editing,
      dialogs, motion, plain-form fallback) unchanged. Then: the device id
-     is chosen on the Add device form (validated, refused when taken),
-     leads every list, title and confirmation, and the label is a
-     secondary note; adding a device lands on its page with **no code
+     is chosen on the Add device form (validated, refused when taken)
+     and leads every list, title and confirmation; the record's `label`
+     is the operator's optional **description**, shown only on the
+     device's own form (the filter box still matches it) and never as a
+     column; adding a device lands on its page with **no code
      minted** (`"code": false`), because the settings must be in before
      enrolment is worth anything, and the code is asked for from the
      page header when the device is ready.
@@ -1439,8 +1441,10 @@ letters, digits, dots, dashes or underscores, checked by `enroll.ValidDeviceID`
 since it is also a file name under the data directory); left blank, the
 server generates one (`dev_` + six base32 characters). It cannot be changed
 afterwards. The console leads with the id everywhere — list, page title,
-confirmations — and the device record carries an optional human `label`
-("Matt's iPhone") as a secondary note. The **contact
+confirmations. The device record carries an optional free-text `label`,
+shown as the **description** on the device's own form ("Reception desk,
+ground floor"): a note for the operator, never sent to the phone and
+never a column in the device list. The **contact
 id** (`ct_…`) is the server's stable key for one directory entry, so a
 rename is an update rather than a delete and an add, and a tombstone can name
 what went; the app never shows it and CSV omits it (the reconcile matches on

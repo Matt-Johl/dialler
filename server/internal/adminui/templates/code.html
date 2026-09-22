@@ -3,7 +3,7 @@
 {{if .Code}}
 <section class="enrol">
   <h1>Enrol <span class="mono" style="font-size:inherit">{{.Device.DeviceID}}</span></h1>
-  <p class="sub">Extension {{.Device.User}}{{if .Device.Label}} · {{.Device.Label}}{{end}}. Scan with the phone's camera, or type the code into the app.</p>
+  <p class="sub">Extension {{.Device.User}}. Scan with the phone's camera, or type the code into the app.</p>
   <div class="qr">{{.QR}}</div>
   <p class="code">{{grouped .Code.Code}}</p>
   <p class="hint">Works once, for {{minutesLeft .Code.ExpiresAt}} more minutes. It won't be shown again.</p>

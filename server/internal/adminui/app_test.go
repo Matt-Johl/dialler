@@ -379,10 +379,17 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 	_, _, b := setup(t)
 	signIn(t, b)
 	body := b.get("/").Body.String()
-	for _, want := range []string{"dev-a", "Matt&#39;s iPhone", ">201<", "app · extension", "Enrolled", "Code issued", "dev-b", ">202<"} {
+	for _, want := range []string{"dev-a", ">201<", "app · extension", "Enrolled", "Code issued", "dev-b", ">202<"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("devices page lacks %q", want)
 		}
+	}
+	// The description is not a column, but the filter can still find it.
+	if strings.Contains(body, ">Matt&#39;s iPhone<") {
+		t.Fatal("the description must not be a column in the list")
+	}
+	if !strings.Contains(body, `data-text="dev-a 201 Matt&#39;s iPhone"`) {
+		t.Fatal("the filter should still match a description")
 	}
 	if !strings.Contains(b.get("/devices/new").Body.String(), "Add a device") {
 		t.Fatal("add-device page")
@@ -392,7 +399,9 @@ func TestDevicesListAndDevicePage(t *testing.T) {
 		t.Fatalf("device page: %d", page.Code)
 	}
 	body = page.Body.String()
-	for _, want := range []string{"sip:100@asterisk", "Matt</td>", "★", "Download CSV", "Danger zone", "Nothing set yet: the phone keeps", "/contacts/ct_1/edit", `data-confirm="Revoke`} {
+	for _, want := range []string{"sip:100@asterisk", "Matt</td>", "★", "Download CSV", "Danger zone", "Nothing set yet: the phone keeps", "/contacts/ct_1/edit", `data-confirm="Revoke`,
+		// The description lives here, on the device's own form.
+		">Description</label>", `name="label" value="Matt&#39;s iPhone"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("device page lacks %q", want)
 		}
@@ -436,7 +445,7 @@ func TestAddDeviceShowsTheCodeOnce(t *testing.T) {
 		t.Fatalf("mint: %d", rec.Code)
 	}
 	page := b.get("/devices/dev_NEW001/code").Body.String()
-	for _, want := range []string{"BFF6-GB4Z", "<svg", "Warehouse 3", "dialler://enrol?c=BFF6GB4Z"} {
+	for _, want := range []string{"BFF6-GB4Z", "<svg", "dev_NEW001", "dialler://enrol?c=BFF6GB4Z"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("code page lacks %q", want)
 		}

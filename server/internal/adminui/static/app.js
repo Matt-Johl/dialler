@@ -129,17 +129,16 @@
       `</td>`;
     const first = tr.querySelector("input[name=display_name]");
     first.focus();
-    tr.querySelector("[data-cancel]").addEventListener("click", () => {
+    tr.querySelector("[data-cancel]").addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Cancel writes nothing: the row goes back to the contact as it
+      // was when the editor opened.
       if (isNew) { tr.classList.add("leaving"); setTimeout(() => { tr.remove(); refresh(); }, reduced ? 0 : 180); }
       else readView(tr, c);
     });
-    tr.querySelector("[data-save]").addEventListener("click", () => save(tr, c, isNew));
-    tr.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && e.target.tagName !== "SELECT") { e.preventDefault(); save(tr, c, isNew); }
-      if (e.key === "Escape") tr.querySelector("[data-cancel]").click();
-    });
+    tr.querySelector("[data-save]").addEventListener("click", (e) => { e.stopPropagation(); save(tr, c, isNew); });
     const del = tr.querySelector("[data-delete]");
-    if (del) del.addEventListener("click", () => remove(tr, c));
+    if (del) del.addEventListener("click", (e) => { e.stopPropagation(); remove(tr, c); });
   };
 
   const request = async (path, body) => {
@@ -197,13 +196,20 @@
   const fromRow = (tr) => ({ id: tr.dataset.id, display_name: tr.dataset.name, uri: tr.dataset.uri, mode: tr.dataset.mode, favourite: tr.dataset.favourite === "1" });
 
   const wire = (tr) => {
-    const open = (e) => {
+    if (tr.dataset.wired) return;
+    tr.dataset.wired = "1";
+    tr.addEventListener("click", (e) => {
       if (tr.classList.contains("editing")) return;
-      if (e && e.target.closest("a, button, input, select")) e.preventDefault();
+      if (e.target.closest("[data-edit]")) e.preventDefault();
       editView(tr, fromRow(tr), false);
-    };
-    tr.addEventListener("click", open);
-    tr.querySelector("[data-edit]").addEventListener("click", (e) => { e.preventDefault(); open(); });
+    });
+    // Enter and Escape act through the editor's buttons, so they carry
+    // whichever contact that editor was opened with.
+    tr.addEventListener("keydown", (e) => {
+      if (!tr.classList.contains("editing")) return;
+      if (e.key === "Enter" && e.target.tagName !== "SELECT") { e.preventDefault(); tr.querySelector("[data-save]").click(); }
+      if (e.key === "Escape") tr.querySelector("[data-cancel]").click();
+    });
   };
   rows.querySelectorAll("tr[data-contact]").forEach(wire);
 
@@ -216,6 +222,7 @@
     tr.setAttribute("data-new", "");
     tr.classList.add("entering");
     rows.appendChild(tr);
+    wire(tr);
     editView(tr, { id: "", display_name: "", uri: "", mode: "local", favourite: false }, true);
     requestAnimationFrame(() => tr.classList.remove("entering"));
     empty.hidden = true;

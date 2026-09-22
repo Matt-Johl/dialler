@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -313,6 +314,47 @@ func TestStopDropsEveryBinding(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if f.count() != before {
 		t.Fatal("a line kept registering after Stop")
+	}
+	// And the binding must be dropped. Without it the exchange goes on
+	// sending calls to a contact nothing is listening on until the
+	// registration expires — up to an hour of callers ringing out.
+	un := f.unregistered()
+	if len(un) != 1 || un[0].User != "201" {
+		t.Fatalf("Stop left the line registered on the PBX: %+v", un)
+	}
+}
+
+// A manager that never started holds no bindings, so stopping it must not
+// send an unregister for one.
+func TestStopBeforeStartUnregistersNothing(t *testing.T) {
+	f := newFakeRegistrar(nil)
+	m := testManager(t, f)
+	m.Put(Line{User: "201", DigestUser: "a", Secret: "s"})
+	m.Stop()
+	if n := len(f.unregistered()); n != 0 {
+		t.Fatalf("unregistered %d lines that were never registered", n)
+	}
+}
+
+// A refusal a Registrar wrapped in context is still a refusal: unwrapped by
+// errors.As, not by type assertion, or it would be retried for ever against
+// an exchange that has already said no.
+func TestAWrappedRefusalStillLatches(t *testing.T) {
+	f := newFakeRegistrar(func(_ int, _ Line) (Registration, error) {
+		return Registration{}, fmt.Errorf("register sip:pbx: %w", &Refused{Status: 403, Reason: "forbidden"})
+	})
+	m := testManager(t, f)
+	m.Put(Line{User: "201", DigestUser: "a", Secret: "s"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+	defer m.Stop()
+
+	waitFor(t, "the wrapped refusal to latch", func() bool { return stateOf(t, m, "201") == StateRefused })
+	time.Sleep(30 * time.Millisecond)
+	if n := f.count(); n != 1 {
+		t.Fatalf("a wrapped refusal was retried %d times", n)
 	}
 }
 

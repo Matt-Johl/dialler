@@ -16,6 +16,7 @@ package pbxline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -237,14 +238,34 @@ func (m *Manager) Start(ctx context.Context) {
 // the way out so the PBX does not ring a line we have stopped serving.
 func (m *Manager) Stop() {
 	m.mu.Lock()
+	running := m.started
+	lines := make([]Line, 0, len(m.lines))
 	for _, l := range m.lines {
 		if l.cancel != nil {
 			l.cancel()
 		}
+		lines = append(lines, l.snapshot())
 	}
 	m.started = false
 	m.mu.Unlock()
 	m.wg.Wait()
+	if !running {
+		return
+	}
+	// Drop the bindings. Without this the exchange goes on sending calls to
+	// a contact nothing is listening on until the registration expires —
+	// up to an hour of callers ringing out for no reason. Concurrently and
+	// best effort: each is bounded, and a PBX that has itself gone away
+	// must not hold up the shutdown once per line.
+	var wg sync.WaitGroup
+	for _, l := range lines {
+		wg.Add(1)
+		go func(l Line) {
+			defer wg.Done()
+			m.unregister(l)
+		}(l)
+	}
+	wg.Wait()
 }
 
 // Set replaces the configured lines wholesale — the device store's view at
@@ -419,9 +440,14 @@ func (m *Manager) run(ctx context.Context, l *line) {
 			return
 		}
 
+		// errors.As rather than a type switch: a Registrar is free to wrap
+		// its refusal in context, and a refusal that went unrecognised
+		// would be retried for ever against an exchange that has already
+		// said no.
+		var refused *Refused
 		var wait time.Duration
-		switch e := err.(type) {
-		case nil:
+		switch {
+		case err == nil:
 			granted := reg.Expiry
 			if granted <= 0 {
 				granted = m.cfg.Expiry
@@ -434,10 +460,10 @@ func (m *Manager) run(ctx context.Context, l *line) {
 			attempt = 0
 			wait = refreshAfter(granted, m.cfg.MinRefresh)
 
-		case *Refused:
-			l.refused(m.cfg.Now(), e)
+		case errors.As(err, &refused):
+			l.refused(m.cfg.Now(), refused)
 			log.Warn("pbx line: refused; not retrying until the credential changes",
-				"dn", cur.DN, "digest_user", cur.DigestUser, "status", e.Status, "reason", e.Reason)
+				"dn", cur.DN, "digest_user", cur.DigestUser, "status", refused.Status, "reason", refused.Reason)
 			// Nothing but an administrator can help now. Park until the
 			// credential changes (Put signals) or the server stops.
 			if !m.waitForChange(ctx, l) {

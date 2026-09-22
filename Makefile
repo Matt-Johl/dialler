@@ -144,7 +144,11 @@ harness-pbx-lines:
 # to this server, not a change to it, and this is what says so.
 harness-regression:
 	@set -e; \
-	for t in harness-test harness-call harness-wake harness-qos \
+	echo "=== harness-test (SIPp conformance; needs the stack up, unlike the rest)"; \
+	$(MAKE) harness-up >/dev/null 2>&1; \
+	$(MAKE) harness-test || { $(MAKE) harness-down >/dev/null 2>&1; echo "REGRESSION FAILED: harness-test"; exit 1; }; \
+	$(MAKE) harness-down >/dev/null 2>&1; \
+	for t in harness-call harness-wake harness-qos \
 	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
 	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
 	         harness-hold-music harness-cancel-before-answer; do \

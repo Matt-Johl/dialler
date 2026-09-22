@@ -210,7 +210,123 @@ func validate(c Contact) error {
 	if c.URI == "" || (c.Mode != ModeLocal && c.Mode != ModeTrunk) {
 		return ErrInvalid
 	}
+	if !ValidURI(c.URI) {
+		return fmt.Errorf("%w: %q is not an address this exchange can dial", ErrInvalid, c.URI)
+	}
 	return nil
+}
+
+// ValidURI reports whether uri is a SIP or SIPS address with a user part
+// and a host, both built only from what RFC 3261 allows there. The gate
+// is here, in the store, rather than in a handler, so every way into a
+// directory — a phone, the admin API, a CSV upload — is held to it: a
+// number that cannot be dialled has no business being stored.
+func ValidURI(uri string) bool {
+	lower := strings.ToLower(uri)
+	switch {
+	case strings.HasPrefix(lower, "sip:"):
+		uri = uri[len("sip:"):]
+	case strings.HasPrefix(lower, "sips:"):
+		uri = uri[len("sips:"):]
+	default:
+		return false
+	}
+	user, host, ok := strings.Cut(uri, "@")
+	if !ok {
+		return false
+	}
+	// RFC 3261 allows a password after the user; it is not ours to check.
+	if u, _, has := strings.Cut(user, ":"); has {
+		user = u
+	}
+	// Parameters (";transport=tls") and headers ("?subject=…") follow the
+	// host and are likewise left alone.
+	if i := strings.IndexAny(host, ";?"); i >= 0 {
+		host = host[:i]
+	}
+	return validUser(user) && validHost(host)
+}
+
+// user = 1*( unreserved / escaped / user-unreserved ), RFC 3261 §25.1.
+func validUser(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("-_.!~*'()", c) >= 0: // mark
+		case strings.IndexByte("&=+$,;?/", c) >= 0: // user-unreserved
+		case c == '%': // escaped
+			if i+2 >= len(s) || !isHex(s[i+1]) || !isHex(s[i+2]) {
+				return false
+			}
+			i += 2
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validHost takes a hostname, an IPv4 address or a bracketed IPv6
+// reference, each with an optional port.
+func validHost(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.HasPrefix(s, "[") {
+		end := strings.IndexByte(s, ']')
+		if end < 2 || !validPort(s[end+1:]) {
+			return false
+		}
+		for i := 1; i < end; i++ {
+			if c := s[i]; c != ':' && c != '.' && !isHex(c) {
+				return false
+			}
+		}
+		return true
+	}
+	if h, p, has := strings.Cut(s, ":"); has {
+		if !validPort(":" + p) {
+			return false
+		}
+		s = h
+	}
+	// One or more labels of letters, digits and dashes.
+	for _, label := range strings.Split(s, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// validPort takes "" or ":" followed by digits.
+func validPort(s string) bool {
+	if s == "" {
+		return true
+	}
+	if s[0] != ':' || len(s) == 1 || len(s) > 6 {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 // upsertLocked writes c into st at version v (bumping v first when it is

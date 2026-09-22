@@ -101,6 +101,18 @@
     empty.hidden = n > 0;
   };
 
+  // Only one row is edited at a time. openRow is whichever holds the
+  // editor; closing it goes through its own Cancel button, so a half-typed
+  // row is reverted or dropped exactly as Cancel would leave it.
+  let openRow = null;
+  const closeOpenRow = (except) => {
+    const tr = openRow;
+    openRow = null;
+    if (!tr || tr === except || !tr.isConnected) return;
+    const cancel = tr.querySelector("[data-cancel]");
+    if (cancel) cancel.click();
+  };
+
   // A row's two faces: the read view, and the editor with a Save and a
   // Cancel (and Delete for an existing contact).
   const readView = (tr, c) => {
@@ -112,10 +124,13 @@
       `<td data-cell="fav" class="c">${c.favourite ? '<span class="star">★</span>' : ""}</td>` +
       `<td class="r"><a class="edit-link" href="/devices/${encodeURIComponent(device)}/contacts/${encodeURIComponent(c.id)}/edit" data-edit aria-label="Edit">${pencil}</a></td>`;
     tr.classList.remove("editing");
+    if (openRow === tr) openRow = null;
     wire(tr);
   };
 
   const editView = (tr, c, isNew) => {
+    closeOpenRow(tr);
+    openRow = tr;
     tr.classList.add("editing");
     tr.innerHTML =
       `<td><input name="display_name" value="${escape(c.display_name)}" placeholder="Name" required></td>` +
@@ -131,6 +146,7 @@
     first.focus();
     tr.querySelector("[data-cancel]").addEventListener("click", (e) => {
       e.stopPropagation();
+      if (openRow === tr) openRow = null;
       // Cancel writes nothing: the row goes back to the contact as it
       // was when the editor opened.
       if (isNew) { tr.classList.add("leaving"); setTimeout(() => { tr.remove(); refresh(); }, reduced ? 0 : 180); }
@@ -185,6 +201,7 @@
     tr.classList.add("busy");
     try {
       await request(`/devices/${encodeURIComponent(device)}/contacts/${encodeURIComponent(c.id)}/delete`, body);
+      if (openRow === tr) openRow = null;
       tr.classList.add("leaving");
       setTimeout(() => { tr.remove(); refresh(); }, reduced ? 0 : 180);
     } catch (err) {

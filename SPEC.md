@@ -1237,7 +1237,10 @@ on by config — see §7.4.
      wakes when something changes and a Save that applies only the
      groups that did; the directory is edited in place (click a row, it
      becomes an editor; Save writes through `fetch` and the row settles
-     back; Add opens a new row); revoke and delete confirm in a dialog.
+     back; Add opens a new row; one row is open at a time, and opening
+     another closes the first through its own Cancel, so the row left
+     behind is reverted and nothing is written); revoke and delete
+     confirm in a dialog.
      A small script (`static/app.js`) does this on top of the plain
      forms, which all still work without it — the contact routes answer
      JSON to a `fetch` and redirect to a form. Pages fade up, cards lift,

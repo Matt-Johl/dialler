@@ -1260,9 +1260,14 @@ on by config — see §7.4.
      measurements (`--label`, `--field`): a label's line box is exactly a
      control's height, so the two stay on one line however far the row
      grows, and a hint sits under its control rather than beside it.
-     Controls that read as one setting share a `.row`. The sign-in page
-     stacks, so a failed attempt is reported above the card instead of
-     beside it. Behaviour (in-place editing,
+     Controls that read as one setting share a `.row`. A failed sign-in
+     is reported under the password field, which is marked, rather than
+     as a banner. Static files are served at a URL carrying their own
+     content hash (the hash is the ETag too), so a rebuilt console is
+     never answered out of a browser's cache: an earlier restyle looked
+     like it had changed nothing because the embedded files carry no
+     modification time, leaving the response with no validator and no
+     cache directive at all. Behaviour (in-place editing,
      dialogs, motion, plain-form fallback) unchanged. Then: the device id
      is chosen on the Add device form (validated, refused when taken)
      and leads every list, title and confirmation; the record's `label`

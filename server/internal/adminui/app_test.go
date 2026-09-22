@@ -2,6 +2,8 @@ package adminui
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -340,7 +342,13 @@ func TestLoginGatesEverything(t *testing.T) {
 	if rec := b.get("/static/app.css"); rec.Code != 200 || !strings.Contains(rec.Header().Get("Content-Type"), "text/css") {
 		t.Fatalf("stylesheet must not need a session: %d", rec.Code)
 	}
-	if rec := b.post("/login", url.Values{"password": {"wrong"}}); rec.Code != 401 || !strings.Contains(rec.Body.String(), "not right") {
+	// The reason sits with the field it is about, not as a banner above
+	// the card.
+	if rec := b.post("/login", url.Values{"password": {"wrong"}}); rec.Code != 401 ||
+		!strings.Contains(rec.Body.String(), `<p class="field-error"`) ||
+		!strings.Contains(rec.Body.String(), `<div class="field bad">`) ||
+		strings.Contains(rec.Body.String(), `class="flash error"`) ||
+		!strings.Contains(rec.Body.String(), "not right") {
 		t.Fatalf("wrong password: %d", rec.Code)
 	}
 	for i := 0; i < 4; i++ {
@@ -729,5 +737,46 @@ func TestServerPageAndPBXSettings(t *testing.T) {
 	}
 	if !strings.Contains(page, "differ") {
 		t.Fatal("running trunk differs from the saved one: the page must say so")
+	}
+}
+
+// Every build serves its assets at a URL carrying their content hash, so
+// a rebuilt console can never be answered from a browser's cache.
+func TestAssetsAreFingerprinted(t *testing.T) {
+	app, _, b := setup(t)
+	page := b.get("/login").Body.String()
+	css := app.asset("app.css")
+	if !strings.Contains(css, "?v=") || !strings.Contains(page, `href="`+css+`"`) {
+		t.Fatalf("the page should link its stylesheet by hash: %q", css)
+	}
+	tag := strings.TrimPrefix(css, "/static/app.css?v=")
+
+	// The hash is the file's own: change the file and the URL moves.
+	raw, err := assets.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	if want := hex.EncodeToString(sum[:])[:10]; tag != want {
+		t.Fatalf("hash %q, want %q", tag, want)
+	}
+
+	hashed := b.get(css)
+	if hashed.Code != 200 || !strings.Contains(hashed.Header().Get("Cache-Control"), "immutable") {
+		t.Fatalf("a hashed URL should be kept: %d %q", hashed.Code, hashed.Header().Get("Cache-Control"))
+	}
+	bare := b.get("/static/app.css")
+	if bare.Code != 200 || bare.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("an unhashed URL must be revalidated: %d %q", bare.Code, bare.Header().Get("Cache-Control"))
+	}
+	if bare.Header().Get("ETag") != `"`+tag+`"` {
+		t.Fatalf("etag %q", bare.Header().Get("ETag"))
+	}
+	// A stale hash is still served, just not kept.
+	if stale := b.get("/static/app.css?v=0000000000"); stale.Code != 200 || stale.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("stale hash: %d %q", stale.Code, stale.Header().Get("Cache-Control"))
+	}
+	if missing := b.get("/static/nothing.css"); missing.Code != 404 {
+		t.Fatalf("unknown asset: %d", missing.Code)
 	}
 }

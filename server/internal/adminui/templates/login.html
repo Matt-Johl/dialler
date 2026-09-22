@@ -4,9 +4,10 @@
   <h1>Sign in</h1>
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{.Next}}">
-    <div class="field">
+    <div class="field{{if .Error}} bad{{end}}">
       <label for="password">Password</label>
-      <input id="password" type="password" name="password" autocomplete="current-password" autofocus required>
+      <input id="password" type="password" name="password" autocomplete="current-password" autofocus required{{if .Error}} aria-invalid="true" aria-describedby="password-error"{{end}}>
+      {{if .Error}}<p class="field-error" id="password-error" role="alert">{{.Error}}</p>{{end}}
     </div>
     <button type="submit" class="btn primary wide-btn">Continue</button>
   </form>

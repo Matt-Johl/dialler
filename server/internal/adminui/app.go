@@ -3,7 +3,9 @@ package adminui
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +48,9 @@ type App struct {
 	logins   *loginLimiter
 	pages    map[string]*template.Template
 	mux      *http.ServeMux
+	// assetTag is each static file's content hash, so its URL changes
+	// whenever the file does and a browser cannot serve an old one back.
+	assetTag map[string]string
 }
 
 // New builds the app; templates are parsed once, so a broken one fails
@@ -63,7 +68,19 @@ func New(cfg Config) (*App, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	a := &App{cfg: cfg, sessions: newSessions(cfg.Now), logins: &loginLimiter{now: cfg.Now, seen: map[string][]time.Time{}}, pages: map[string]*template.Template{}}
+	a := &App{cfg: cfg, sessions: newSessions(cfg.Now), logins: &loginLimiter{now: cfg.Now, seen: map[string][]time.Time{}}, pages: map[string]*template.Template{}, assetTag: map[string]string{}}
+	files, err := fs.Glob(assets, "static/*")
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range files {
+		raw, err := assets.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(raw)
+		a.assetTag[strings.TrimPrefix(f, "static/")] = hex.EncodeToString(sum[:])[:10]
+	}
 	pages, err := fs.Glob(assets, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -88,7 +105,26 @@ func (a *App) routes() {
 	m := http.NewServeMux()
 	a.mux = m
 	static, _ := fs.Sub(assets, "static")
-	m.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
+	files := http.StripPrefix("/static/", http.FileServerFS(static))
+	m.Handle("GET /static/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A URL carrying the file's own hash can be kept for good. Any
+		// other must be checked with us every time, or a rebuilt console
+		// goes on being served yesterday's stylesheet from the browser's
+		// cache. The tag is also the ETag, so a check that finds nothing
+		// new costs one empty response.
+		tag := a.assetTag[strings.TrimPrefix(r.URL.Path, "/static/")]
+		if tag == "" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("ETag", `"`+tag+`"`)
+		if r.URL.Query().Get("v") == tag {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		files.ServeHTTP(w, r)
+	}))
 	m.HandleFunc("GET /login", a.loginPage)
 	m.HandleFunc("POST /login", a.login)
 	m.HandleFunc("POST /logout", a.signedIn(a.logout))
@@ -167,6 +203,9 @@ type base struct {
 	Path   string
 	// SignedIn hides the navigation on the login page.
 	SignedIn bool
+	// CSS and JS are this build's asset URLs, each carrying the file's
+	// content hash.
+	CSS, JS string
 }
 
 func (a *App) render(w http.ResponseWriter, r *http.Request, sess *session, page string, data any) {
@@ -189,8 +228,16 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, sess *session, page
 	_, _ = buf.WriteTo(w)
 }
 
+// asset is a static file's URL for this build.
+func (a *App) asset(name string) string {
+	if tag := a.assetTag[name]; tag != "" {
+		return "/static/" + name + "?v=" + tag
+	}
+	return "/static/" + name
+}
+
 func (a *App) base(sess *session, title, path string) base {
-	b := base{Title: title, Path: path, SignedIn: sess != nil}
+	b := base{Title: title, Path: path, SignedIn: sess != nil, CSS: a.asset("app.css"), JS: a.asset("app.js")}
 	if sess != nil {
 		b.CSRF = a.sessions.csrf(sess)
 		if n, ok := a.sessions.takeFlash(sess, "notice").(string); ok {

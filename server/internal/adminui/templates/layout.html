@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{.Title}} · Dialler</title>
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/app.js" defer></script>
+<link rel="stylesheet" href="{{.CSS}}">
+<script src="{{.JS}}" defer></script>
 </head>
 <body class="{{if .SignedIn}}shell{{else}}bare{{end}}">
 {{if .SignedIn}}
@@ -23,8 +23,10 @@
 </header>
 {{end}}
 <main class="content">
+  {{if .SignedIn}}
   {{if .Notice}}<div class="flash notice" role="status">{{icon "check"}}{{.Notice}}</div>{{end}}
   {{if .Error}}<div class="flash error" role="alert">{{icon "warning"}}{{.Error}}</div>{{end}}
+  {{end}}
   {{template "content" .}}
 </main>
 </body>

@@ -237,3 +237,21 @@ func TestMinExpires(t *testing.T) {
 		t.Errorf("minExpires = %s %v", d, ok)
 	}
 }
+
+// Every registration must start unauthenticated. See clearAuth: a replayed
+// credential lets a password that has since changed go on working, and
+// repeats a nonce-count that a stricter exchange rejects.
+func TestEachRegistrationStartsFromAFreshChallenge(t *testing.T) {
+	req := sip.NewRequest(sip.REGISTER, sip.Uri{Scheme: "sip", Host: "pbx.example"})
+	req.AppendHeader(sip.NewHeader("Authorization", `Digest username="line211", nonce="stale"`))
+	req.AppendHeader(sip.NewHeader("Proxy-Authorization", `Digest username="line211", nonce="stale"`))
+
+	clearAuth(req)
+
+	if h := req.GetHeader("Authorization"); h != nil {
+		t.Errorf("Authorization survived: %s", h.Value())
+	}
+	if h := req.GetHeader("Proxy-Authorization"); h != nil {
+		t.Errorf("Proxy-Authorization survived: %s", h.Value())
+	}
+}

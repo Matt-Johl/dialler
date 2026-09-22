@@ -130,6 +130,30 @@ harness-trunk-tls:
 harness-trunk-secure:
 	TRUNK_TLS=1 TRUNK_SRTP=sdes sh harness/trunk_test.sh
 
+# PBX lines (SPEC §6 item 3c): the server registers one third-party SIP
+# line per device to the PBX instead of trunking to it — registration, a
+# call in to a registered line, a call out that is challenged and must
+# arrive as that line, and a wrong credential that must latch refused
+# without disturbing anything else. Asterisk stands in for CUCM; what it
+# cannot prove is §7.3 item 10.
+harness-pbx-lines:
+	sh harness/pbx_lines_test.sh
+
+# The merge gate for anything that touches the PBX leg: every trunk-mode
+# test, in the order they get cheaper to debug. Lines mode is an addition
+# to this server, not a change to it, and this is what says so.
+harness-regression:
+	@set -e; \
+	for t in harness-test harness-call harness-wake harness-qos \
+	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
+	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
+	         harness-hold-music harness-cancel-before-answer; do \
+	  echo "=== $$t"; $(MAKE) $$t || { echo "REGRESSION FAILED: $$t"; exit 1; }; \
+	done; \
+	echo "=== NARROWBAND=1 harness-trunk"; NARROWBAND=1 sh harness/trunk_test.sh || exit 1; \
+	echo "=== DIRECTION=xfer-app harness-trunk"; DIRECTION=xfer-app sh harness/trunk_test.sh || exit 1; \
+	echo "ALL TRUNK-MODE TESTS PASS"
+
 # Regenerate the harness CA and the two trunk certificates. Run by the TLS
 # trunk tests themselves; here for when they need replacing (FORCE=1) or a
 # PBX outside compose needs the CA.

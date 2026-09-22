@@ -80,6 +80,23 @@ post /v1/admin/devices "{\"device_id\":\"dev-hb\",\"user\":\"212\",\"token\":\"$
 # The simulator harness (sim_call.sh) and the Mac engine probe: 203 → dev-s.
 post /v1/admin/devices "{\"device_id\":\"dev-s\",\"user\":\"203\",\"token\":\"${DEV_S_TOKEN:-tok_dev_s_harness_fixed}\"}"
 
+# PBX lines (SPEC §6 item 3c): PBX_LINES=1 gives the two docker phones the
+# credentials harness/asterisk/pjsip-lines.conf expects, so the server can
+# register them as third-party SIP devices. Only meaningful against a PBX
+# built with ASTERISK_LINES=yes and a server run with -pbx-mode=lines; the
+# credentials are simply stored otherwise.
+#
+# The secret is write-only: nothing reads it back out of the server, here or
+# anywhere else, which is why it is repeated in the test rather than fetched.
+if [ "${PBX_LINES:-0}" = 1 ]; then
+  echo "# pbx lines"
+  post /v1/admin/devices/dev-ha/pbx-line \
+    "{\"digest_user\":\"${LINE_HA_USER:-line211}\",\"secret\":\"${LINE_HA_SECRET:-linepass-211}\"}" >/dev/null
+  post /v1/admin/devices/dev-hb/pbx-line \
+    "{\"digest_user\":\"${LINE_HB_USER:-line212}\",\"secret\":\"${LINE_HB_SECRET:-linepass-212}\"}" >/dev/null
+  echo "dev-ha: line 211, dev-hb: line 212"
+fi
+
 # Server-managed settings (SPEC §6 item 8b): DEV_A_SSIDS="Office,Office-5G"
 # gives the real app's device its office Wi-Fi list, which the app applies
 # to Local Push on its next welcome. Unset, dev-a is left as the phone has

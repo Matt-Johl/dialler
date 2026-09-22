@@ -81,6 +81,7 @@ func (r *SIPRegistrar) Unregister(ctx context.Context, l Line) error {
 
 func (r *SIPRegistrar) register(ctx context.Context, l Line, expiry time.Duration) (Registration, error) {
 	req := r.request(l)
+	clearAuth(req)
 	setExpires(req, expiry)
 
 	res, err := r.send(ctx, req)
@@ -183,6 +184,26 @@ func (r *SIPRegistrar) request(l Line) *sip.Request {
 }
 
 // ---- response reading -------------------------------------------------------
+
+// clearAuth drops the credential left on the request by the previous
+// registration, so every one starts from a fresh challenge.
+//
+// Replaying the old header is wrong twice over. The exchange may accept an
+// Authorization computed with a password that has since been changed — for
+// as long as it still honours that nonce — so a corrected or revoked
+// credential goes on working and nobody finds out until the refresh after
+// that. And repeating one nonce, nonce-count and cnonce is a replay, which a
+// stricter exchange rejects outright.
+//
+// Found on the Asterisk bench, and not by reasoning: a line whose password
+// had just been replaced with a wrong one carried on registering happily,
+// while the INVITEs it sent — which are challenged separately — were
+// refused (2026-09-22). The cost of the fix is one extra round trip per
+// refresh, which for a line is once an hour.
+func clearAuth(req *sip.Request) {
+	req.RemoveHeader("Authorization")
+	req.RemoveHeader("Proxy-Authorization")
+}
 
 func setExpires(req *sip.Request, d time.Duration) {
 	req.RemoveHeader("Expires")

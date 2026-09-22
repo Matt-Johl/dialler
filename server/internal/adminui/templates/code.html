@@ -2,7 +2,7 @@
 <a class="crumb" href="/devices/{{.Device.DeviceID}}">{{icon "back"}}{{.Device.DeviceID}}</a>
 {{if .Code}}
 <section class="enrol">
-  <h1>Enrol <span class="mono" style="font-size:inherit">{{.Device.DeviceID}}</span></h1>
+  <h1>Enrol <span class="mono">{{.Device.DeviceID}}</span></h1>
   <p class="sub">Extension {{.Device.User}}. Scan with the phone's camera, or type the code into the app.</p>
   <div class="qr">{{.QR}}</div>
   <p class="code">{{grouped .Code.Code}}</p>
@@ -17,7 +17,7 @@
 <section class="centred">
   <h1>No code to show</h1>
   <p class="sub">A code is shown once, right after it is made.</p>
-  <form method="post" action="/devices/{{.Device.DeviceID}}/code" class="form-actions" style="justify-content:center">
+  <form method="post" action="/devices/{{.Device.DeviceID}}/code" class="form-actions centre-actions">
     <input type="hidden" name="_csrf" value="{{.CSRF}}">
     <button type="submit" class="btn primary">Make a new code</button>
   </form>

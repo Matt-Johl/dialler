@@ -27,6 +27,9 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, .05);
   --shadow-2: 0 8px 28px rgba(0, 0, 0, .10), 0 1px 2px rgba(0, 0, 0, .06);
   --r: 6px;
+  /* the label column and the width a control settles at */
+  --label: 180px;
+  --field: 340px;
   --font: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
 }
@@ -87,6 +90,7 @@ h1, h2, h3, p, ul, dl { margin: 0; }
 .page { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
 .page h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 28px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .page h1 .mono { font-size: 13px; color: var(--ink-3); font-weight: 400; }
+.page h1 .title-id { font-size: 20px; color: inherit; font-weight: 600; letter-spacing: -0.01em; }
 .page .meta { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 4px; font-size: 12px; color: var(--ink-2); }
 .page .actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .sub { color: var(--ink-2); margin-top: 4px; }
@@ -100,28 +104,43 @@ h1, h2, h3, p, ul, dl { margin: 0; }
 
 /* ---------- sections */
 .section { margin-top: 32px; }
+.section.first { margin-top: 0; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
 .section-head h2 { font-size: 12px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--ink-3); display: flex; align-items: center; gap: 8px; }
 .section-head h2 .count { font-weight: 400; color: var(--ink-4); text-transform: none; letter-spacing: 0; }
 .toolbar { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
 .section-note { font-size: 12px; color: var(--ink-3); margin-top: 8px; }
+.section-note.lead { margin: 10px 0 2px; }
 .hint { font-size: 12px; color: var(--ink-3); }
+.hint.block { display: block; margin-top: 3px; }
 
-/* ---------- property list (label left, control right) */
-.props { display: grid; grid-template-columns: 200px 1fr; }
+/* ---------- property list: label left, control right, hint beneath it.
+   The label's line box is exactly a control's height, so the two stay on
+   the same line however tall the row grows. Controls that belong side by
+   side go in a .row; everything else stacks. */
+.props { display: grid; grid-template-columns: var(--label) minmax(0, 1fr); }
 .props > .prop { display: contents; }
-.prop > dt, .prop > dd { padding: 10px 0; border-bottom: 1px solid var(--line); margin: 0; min-height: 44px; display: flex; align-items: center; }
-.prop > dt { color: var(--ink-2); font-weight: 500; padding-right: 16px; }
-.prop > dd { color: var(--ink); gap: 10px; flex-wrap: wrap; }
-.prop > dd .hint { margin-left: 2px; }
+.prop > dt, .prop > dd { padding: 12px 0; border-bottom: 1px solid var(--line); margin: 0; }
+.prop > dt { color: var(--ink-2); font-weight: 500; padding-right: 24px; line-height: 32px; }
+.prop > dd { color: var(--ink); display: flex; flex-direction: column; align-items: flex-start; gap: 6px; line-height: 32px; min-width: 0; }
+.prop > dd .hint { line-height: 1.5; }
+/* A stack of options is shorter per line than a control, so it is nudged
+   down to put the first one on the label's line. */
+.prop > dd .choices { line-height: 1.5; gap: 10px; padding-top: 6px; }
+.prop > dd .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; line-height: 1.5; }
+.prop > dd > details { width: 100%; }
 .props .last > dt, .props .last > dd { border-bottom: 0; }
-@media (max-width: 720px) { .props { grid-template-columns: 1fr; } .prop > dt { padding-bottom: 0; border-bottom: 0; min-height: 0; } }
+@media (max-width: 720px) {
+  .props { grid-template-columns: 1fr; }
+  .prop > dt { padding: 12px 0 0; border-bottom: 0; line-height: 1.5; }
+  .prop > dd { padding-top: 6px; }
+}
 
 /* ---------- controls */
 input, select, textarea, button { font: inherit; color: inherit; }
 .input, .props input, .props select, .props textarea, .field input, .field select, .field textarea, .contacts input, .contacts select {
   height: 32px; padding: 0 10px; background: var(--panel); border: 1px solid var(--line-2); border-radius: var(--r); color: var(--ink);
-  width: 100%; max-width: 360px; transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+  width: 100%; max-width: var(--field); transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
 }
 textarea, .props textarea, .field textarea { height: auto; min-height: 72px; padding: 7px 10px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.6; }
 input:hover, select:hover, textarea:hover { border-color: var(--ink-4); }
@@ -130,8 +149,9 @@ input::placeholder, textarea::placeholder { color: var(--ink-4); }
 .props input[type="checkbox"], .props input[type="radio"], .field input[type="checkbox"], .contacts input[type="checkbox"], input[type="checkbox"], input[type="radio"] { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); padding: 0; }
 input[type="file"] { height: auto; border: 0; padding: 0; max-width: none; font-size: 12px; color: var(--ink-2); }
 select { appearance: none; -webkit-appearance: none; padding-right: 26px; background-image: linear-gradient(45deg, transparent 50%, var(--ink-3) 50%), linear-gradient(135deg, var(--ink-3) 50%, transparent 50%); background-position: calc(100% - 13px) 13px, calc(100% - 9px) 13px; background-size: 4px 4px; background-repeat: no-repeat; }
-.props .wide, .field .wide { max-width: 560px; }
-.props .narrow, .field .narrow { max-width: 140px; }
+.props .wide, .field .wide { max-width: 520px; }
+.props .mid, .field .mid { max-width: 200px; }
+.props .narrow, .field .narrow { max-width: 120px; }
 .choice { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 .choices { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
@@ -152,7 +172,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px; backgr
 .btn.sm { height: 26px; padding: 0 8px; font-size: 12px; }
 .btn[disabled], .btn[aria-disabled="true"] { opacity: .45; pointer-events: none; }
 .btn .i { margin-left: -2px; }
-.form-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
+.form-actions { display: flex; align-items: center; gap: 8px; margin-top: 20px; }
 .wide-btn { width: 100%; justify-content: center; }
 
 /* ---------- tables */
@@ -219,6 +239,7 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px; backgr
 /* ---------- code page */
 .enrol { max-width: 420px; margin: 24px auto 0; text-align: center; }
 .enrol h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+.enrol h1 .mono { font-size: inherit; }
 .enrol .sub { margin: 6px 0 24px; }
 .qr { width: 232px; margin: 0 auto; padding: 14px; background: #fff; color: #111; border: 1px solid var(--line-2); border-radius: var(--r); }
 .qr svg { display: block; width: 100%; height: auto; }
@@ -228,7 +249,8 @@ select { appearance: none; -webkit-appearance: none; padding-right: 26px; backgr
 .enrol details p { margin-top: 6px; word-break: break-all; }
 
 /* ---------- login */
-body.bare .content { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+body.bare .content { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; }
+body.bare .flash { width: 100%; max-width: 320px; margin-bottom: 14px; }
 .login { width: 100%; max-width: 320px; }
 .login .brand { padding: 0; margin: 0 0 28px; font-size: 15px; }
 .login h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 18px; }
@@ -242,8 +264,9 @@ body.bare .content { min-height: 100vh; display: flex; align-items: center; just
 .modal-form .sub { margin: 8px 0 18px; }
 
 /* ---------- confirm / preview / server */
-.narrow { max-width: 520px; }
+.pane { max-width: calc(var(--label) + var(--field)); }
 .centred { text-align: center; max-width: 400px; margin: 48px auto 0; }
+.centre-actions { justify-content: center; }
 .diff { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin: 8px 0 16px; }
 .diff h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; color: var(--ink-3); margin-bottom: 6px; }
 .diff h3 .count { font-weight: 400; color: var(--ink-4); text-transform: none; }
@@ -251,10 +274,15 @@ body.bare .content { min-height: 100vh; display: flex; align-items: center; just
 .diff li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 .diff li:last-child { border-bottom: 0; }
 @media (max-width: 720px) { .diff { grid-template-columns: 1fr; } }
-.facts { display: grid; grid-template-columns: 180px 1fr; }
-.facts dt, .facts dd { padding: 9px 0; border-bottom: 1px solid var(--line); }
-.facts dt { color: var(--ink-2); font-weight: 500; }
-.facts dd { margin: 0; }
+.facts { display: grid; grid-template-columns: var(--label) minmax(0, 1fr); }
+.facts dt, .facts dd { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.facts dt { color: var(--ink-2); font-weight: 500; padding-right: 24px; }
+.facts dd { margin: 0; min-width: 0; }
+@media (max-width: 720px) {
+  .facts { grid-template-columns: 1fr; }
+  .facts dt { padding: 10px 0 0; border-bottom: 0; }
+  .facts dd { padding-top: 2px; }
+}
 .facts dt:nth-last-of-type(1), .facts dd:last-of-type { border-bottom: 0; }
 .tls summary { cursor: pointer; font-size: 12px; color: var(--ink-2); font-weight: 500; padding: 8px 0; }
 .tls[open] summary { color: var(--ink); margin-bottom: 8px; }

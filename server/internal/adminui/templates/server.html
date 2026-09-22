@@ -3,7 +3,7 @@
   <div><h1>Server</h1></div>
 </header>
 
-<section class="section" style="margin-top:0">
+<section class="section first">
   <div class="section-head"><h2>This server</h2></div>
   <dl class="facts">
     <dt>Address</dt><dd class="mono">{{.Server.PublicHost}}</dd>
@@ -11,7 +11,7 @@
     <dt>Ports</dt><dd class="mono">signal {{.Server.SignalPort}} · SIP {{.Server.SIPPort}} · HTTPS {{.Server.HTTPSPort}}</dd>
     <dt>Running since</dt><dd>{{when .Server.StartedAt}} <span class="muted">({{since .Server.StartedAt}})</span></dd>
     <dt>Devices</dt><dd>{{.Devices}} <span class="muted">· {{.Online}} connected</span></dd>
-    <dt>Certificate</dt><dd class="mono break">{{.Server.CertSHA256}}<span class="hint" style="margin-left:8px">pinned by every enrolled phone</span></dd>
+    <dt>Certificate</dt><dd><span class="mono break">{{.Server.CertSHA256}}</span><span class="hint block">Pinned by every enrolled phone</span></dd>
   </dl>
 </section>
 
@@ -22,7 +22,7 @@
     <h2>PBX</h2>
     <span class="savebar" data-savebar><span class="savebar-note" data-savebar-note></span><button type="submit" class="btn primary sm" data-savebar-button>Save</button></span>
   </div>
-  <p class="section-note" style="margin:8px 0 4px">
+  <p class="section-note lead">
     {{if .Running}}Running now against <span class="mono">{{.Running}}</span>.{{else}}Running with no PBX: app-to-app calls only.{{end}}
     {{if .Restart}}<strong>The saved settings differ; they take effect when the call server next starts.</strong>{{else if .PBXSaved}}Saved settings apply at the call server's next start.{{end}}
   </p>
@@ -41,17 +41,19 @@
     <div class="prop">
       <dt><label for="port">Port · transport</label></dt>
       <dd>
+        <div class="row">
         <input id="port" name="port" value="{{.PBX.Port}}" inputmode="numeric" class="narrow">
         <select id="transport" name="transport" class="narrow">
           <option value="udp" {{if eq .PBX.Transport "udp"}}selected{{end}}>UDP</option>
           <option value="tcp" {{if eq .PBX.Transport "tcp"}}selected{{end}}>TCP</option>
           <option value="tls" {{if eq .PBX.Transport "tls"}}selected{{end}}>TLS</option>
         </select>
+        </div>
       </dd>
     </div>
     <div class="prop">
       <dt><label for="expiry_seconds">Registration expiry</label></dt>
-      <dd><input id="expiry_seconds" name="expiry_seconds" value="{{.PBX.ExpirySeconds}}" inputmode="numeric" class="narrow"><span class="hint">seconds</span></dd>
+      <dd><div class="row"><input id="expiry_seconds" name="expiry_seconds" value="{{.PBX.ExpirySeconds}}" inputmode="numeric" class="narrow"><span class="hint">seconds</span></div></dd>
     </div>
     <div class="prop">
       <dt><label for="codecs">Codecs</label></dt>
@@ -60,7 +62,7 @@
     <div class="prop">
       <dt><label for="srtp">Media encryption</label></dt>
       <dd>
-        <select id="srtp" name="srtp" class="narrow" style="max-width:200px">
+        <select id="srtp" name="srtp" class="mid">
           <option value="off" {{if ne .PBX.SRTP "sdes"}}selected{{end}}>Off</option>
           <option value="sdes" {{if eq .PBX.SRTP "sdes"}}selected{{end}}>SRTP (SDES)</option>
         </select>
@@ -68,11 +70,11 @@
     </div>
     <div class="prop">
       <dt><label for="qualify_seconds">Keep-alive</label></dt>
-      <dd><input id="qualify_seconds" name="qualify_seconds" value="{{.PBX.QualifySeconds}}" inputmode="numeric" class="narrow"><span class="hint">seconds · 0 = off</span></dd>
+      <dd><div class="row"><input id="qualify_seconds" name="qualify_seconds" value="{{.PBX.QualifySeconds}}" inputmode="numeric" class="narrow"><span class="hint">seconds · 0 turns it off</span></div></dd>
     </div>
     <div class="prop last">
       <dt>TLS</dt>
-      <dd style="display:block">
+      <dd>
         <details class="tls" {{if eq .PBX.Transport "tls"}}open{{end}}>
           <summary>Certificates for a TLS trunk</summary>
           <div class="field"><label for="tls_cert">Certificate <span class="optional">path on the server</span></label><input id="tls_cert" name="tls_cert" value="{{.PBX.TLSCert}}" class="mono wide"></div>

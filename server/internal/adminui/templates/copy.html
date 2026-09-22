@@ -4,7 +4,7 @@
   <div><h1>Copy the directory</h1><p class="sub">Each chosen device's list is replaced with this one's {{.Count}} contact{{if ne .Count 1}}s{{end}}.</p></div>
 </header>
 
-<form method="post" action="/devices/{{.Device.DeviceID}}/directory/copy" class="narrow">
+<form method="post" action="/devices/{{.Device.DeviceID}}/directory/copy" class="pane">
   <input type="hidden" name="_csrf" value="{{.CSRF}}">
   {{if .Others}}
   <div class="choices">

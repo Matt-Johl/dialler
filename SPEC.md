@@ -1256,13 +1256,20 @@ on by config — see §7.4.
      with row hover, a filter box on the device list and a chevron
      through to the device; small inline SVG icons (`icons.go`); the
      Save affordance in the page header, hidden until something changes;
-     light and dark palettes both tuned. Behaviour (in-place editing,
+     light and dark palettes both tuned. Forms are laid out from two
+     measurements (`--label`, `--field`): a label's line box is exactly a
+     control's height, so the two stay on one line however far the row
+     grows, and a hint sits under its control rather than beside it.
+     Controls that read as one setting share a `.row`. The sign-in page
+     stacks, so a failed attempt is reported above the card instead of
+     beside it. Behaviour (in-place editing,
      dialogs, motion, plain-form fallback) unchanged. Then: the device id
      is chosen on the Add device form (validated, refused when taken)
      and leads every list, title and confirmation; the record's `label`
      is the operator's optional **description**, shown only on the
-     device's own form (the filter box still matches it) and never as a
-     column; adding a device lands on its page with **no code
+     device's own form (the filter box still matches it), never as a
+     column and not on the Add device form, which asks for the id and
+     the extension alone; adding a device lands on its page with **no code
      minted** (`"code": false`), because the settings must be in before
      enrolment is worth anything, and the code is asked for from the
      page header when the device is ready.

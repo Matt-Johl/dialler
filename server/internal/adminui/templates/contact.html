@@ -4,7 +4,7 @@
   <div><h1>{{if .IsNew}}Add a contact{{else}}Edit contact{{end}}</h1></div>
 </header>
 
-<form method="post" action="{{.Action}}" class="narrow">
+<form method="post" action="{{.Action}}" class="pane">
   <input type="hidden" name="_csrf" value="{{.CSRF}}">
   <dl class="props">
     <div class="prop">
@@ -30,7 +30,6 @@
   <div class="form-actions">
     <button type="submit" class="btn primary">{{if .IsNew}}Add contact{{else}}Save{{end}}</button>
     <a class="btn ghost" href="/devices/{{.Device.DeviceID}}">Cancel</a>
-    {{if not .IsNew}}<span class="spacer" style="flex:1"></span>{{end}}
   </div>
 </form>
 {{if not .IsNew}}

@@ -4,7 +4,7 @@
 <input type="hidden" name="_csrf" value="{{.CSRF}}">
 <header class="page">
   <div>
-    <h1><span class="mono" style="font-size:20px;color:inherit;font-weight:600">{{.Device.DeviceID}}</span> <span class="mono">ext {{.Device.User}}</span></h1>
+    <h1><span class="mono title-id">{{.Device.DeviceID}}</span> <span class="mono">ext {{.Device.User}}</span></h1>
     <div class="meta">
       <span class="status"><span class="dot {{if eq .Device.StateKey "enrolled"}}ok{{else if eq .Device.StateKey "revoked"}}danger{{else}}warn{{end}}"></span>{{.Device.State}}</span>
       <span class="status">{{if eq .Device.Presence "offline"}}<span class="dot"></span>Offline{{else}}<span class="dot ok"></span>{{.Device.Presence}}{{end}}</span>

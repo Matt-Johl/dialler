@@ -43,6 +43,71 @@ endpoints` lists 101 as Avail once the phone has registered, and the
 `dialler` endpoint as Avail once `make dev-server` is up on the Mac (it is
 qualified every 10 s).
 
+## Registered lines instead of a trunk (SPEC §6 item 3c)
+
+The same bench, with the light server registering the app's extension to
+Asterisk as a third-party SIP device instead of trunking to it. The app is
+unchanged: same enrolment, same welcome, and it never sees a PBX credential.
+
+```sh
+# on the Ubuntu box — lines mode needs no DIALLER_HOST (a line is reached at
+# whatever its REGISTER advertised, not at a fixed address)
+ssh ubuntu-box 'sudo LINES=1 sh asterisk-native/install-ubuntu.sh'
+
+# on the Mac
+ASTERISK_HOST=<ubuntu-box address> PBX_MODE=lines make dev-server
+```
+
+`provision.sh` seeds dev-a (the app's device, user 201) with the credential
+`pjsip-lines.conf` expects, so there is nothing to type. Confirm both ends:
+
+```sh
+# the Mac's log
+#   "pbx mode: lines" … lines=1
+#   "pbx line: registered" line=201 dn=201 realm=asterisk
+ssh ubuntu-box "sudo asterisk -rx 'pjsip show contacts'"
+#   201/sip:201@<mac>:5062;transport=udp   Avail
+```
+
+`Avail` means Asterisk's OPTIONS keep-alive on the line is being answered —
+the registration is not just accepted but usable.
+
+Then, on the phone and in the app:
+
+| Try | Expect |
+|---|---|
+| phone 101 dials **201** | the app rings — through the wake if it is backgrounded or killed |
+| app dials **101** | the phone rings, showing **201** as the caller (not "dialler") |
+| app dials **600** | the PBX echo, as on the trunk |
+| kill the app, phone dials 201 | still rings: the line is registered by the server, not the phone |
+| `sudo asterisk -rvvv`, watch a call out | `PJSIP/201-…` in the dial plan, and a challenge the server answers |
+
+That fourth row is the point of the whole design: the exchange's INVITE
+arrives at a registration this server holds around the clock, so a suspended
+app is reachable.
+
+To prove the credential path rather than assume it, break it and watch both
+ends refuse:
+
+```sh
+curl -sSk -X POST https://127.0.0.1:8080/v1/admin/devices/dev-a/pbx-line \
+  -H 'Authorization: Bearer harness' \
+  -d '{"digest_user":"line201","secret":"wrong"}'
+# server log: "pbx line: refused" once, and no retry storm
+# an outbound call now fails; the Asterisk log says "Failed to authenticate"
+# put the right secret back and the line registers again within a second
+```
+
+Going back to the trunk is the two commands at the top of this file
+(`DIALLER_HOST=… sh install-ubuntu.sh`, then `make dev-server` without
+`PBX_MODE`). Run one mode or the other, never both: Asterisk matches an
+inbound request by source address before it looks at the From user, so a
+trunk identify would swallow the calls a registered line places.
+
+Lines mode here is plain UDP. A secure *line* needs a per-device certificate
+on the exchange, which is a follow-on (SPEC §6 item 3d); `TRUNK_TLS` and
+`TRUNK_SRTP` configure the trunk and are refused alongside `LINES=1`.
+
 ## Transfers
 
 When the app transfers a PBX phone to another PBX extension (say 101 is

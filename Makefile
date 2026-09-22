@@ -191,6 +191,7 @@ harness-ring-sim:
 # ASTERISK_HOST to trunk to it, or leave it unset for app-only testing.
 #   make dev-server                          # terminal 1 (Ctrl-C to stop)
 #   ASTERISK_HOST=10.18.0.50 make dev-server # trunked to the Ubuntu PBX
+#   ASTERISK_HOST=10.18.0.50 PBX_MODE=lines make dev-server  # registered to it instead
 #   make harness-ring-native                 # terminal 2: 212 (docker) dials the phone
 ASTERISK_HOST ?=
 # TRUNK_TLS=1 dials the PBX over SIP/TLS instead of UDP, using the LAN
@@ -203,12 +204,19 @@ TRUNK_TLS ?= 0
 TRUNK_SRTP ?=
 LAN_TLS = harness/tls/lan
 TRUNK_TLS_FLAGS = $(if $(filter 1,$(TRUNK_TLS)),-trunk "sip:$(ASTERISK_HOST):5061;transport=tls" -trunk-tls-cert $(LAN_TLS)/dialler.pem -trunk-tls-key $(LAN_TLS)/dialler.key -trunk-tls-ca $(LAN_TLS)/ca.pem,-trunk "sip:$(ASTERISK_HOST):5060;transport=udp")
-TRUNK_FLAGS = $(if $(ASTERISK_HOST),$(TRUNK_TLS_FLAGS) -trunk-addr :5062 -trunk-external-host $(DIALLER_PUBLIC_HOST) $(if $(TRUNK_SRTP),-trunk-srtp $(TRUNK_SRTP),),)
+# PBX_MODE=lines makes the server register a line per device to the PBX
+# instead of trunking to it (SPEC §6 item 3c). The PBX must have been
+# installed the same way (LINES=1 sh install-ubuntu.sh), and each device
+# needs its credential, which provision.sh seeds for dev-a under PBX_LINES=1.
+PBX_MODE ?= trunk
+PBX_MODE_FLAGS = $(if $(filter lines,$(PBX_MODE)),-pbx-mode=lines -pbx-domain=$(ASTERISK_HOST),)
+TRUNK_FLAGS = $(if $(ASTERISK_HOST),$(TRUNK_TLS_FLAGS) -trunk-addr :5062 -trunk-external-host $(DIALLER_PUBLIC_HOST) $(if $(TRUNK_SRTP),-trunk-srtp $(TRUNK_SRTP),) $(PBX_MODE_FLAGS),)
 dev-server: server tone
 	@echo "native server on $(DIALLER_PUBLIC_HOST); enrol the app with the dev-a code printed below (15 min), or the dev path: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed (fresh data dir only — an enrolled dev-a keeps its own token)"
-	@echo "trunk: $(if $(ASTERISK_HOST),Asterisk at $(ASTERISK_HOST):$(if $(filter 1,$(TRUNK_TLS)),5061 over TLS,5060 over UDP); trunk listener :5062$(if $(TRUNK_SRTP), ; media SRTP $(TRUNK_SRTP),),none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
+	@$(if $(filter lines,$(PBX_MODE)),$(if $(ASTERISK_HOST),true,{ echo "PBX_MODE=lines needs a PBX to register to: set ASTERISK_HOST=<ubuntu-ip>"; exit 1; }),true)
+	@echo "pbx: $(if $(ASTERISK_HOST),$(if $(filter lines,$(PBX_MODE)),LINES — registering 201 to Asterisk at $(ASTERISK_HOST):5060; the PBX must have LINES=1 too,trunk to Asterisk at $(ASTERISK_HOST):$(if $(filter 1,$(TRUNK_TLS)),5061 over TLS,5060 over UDP))$(if $(TRUNK_SRTP), ; media SRTP $(TRUNK_SRTP),); listener :5062,none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
 	@$(if $(filter 1,$(TRUNK_TLS)),test -f $(LAN_TLS)/dialler.pem || { echo "no $(LAN_TLS)/dialler.pem — run: OUT=lan DIALLER_IP=$(DIALLER_PUBLIC_HOST) ASTERISK_IP=$(ASTERISK_HOST) sh harness/tls/gen_certs.sh"; exit 1; },true)
-	( sleep 2 && DIALLER_API=https://127.0.0.1:8080 sh harness/provision.sh ) &
+	( sleep 2 && DIALLER_API=https://127.0.0.1:8080 PBX_LINES=$(if $(filter lines,$(PBX_MODE)),1,0) sh harness/provision.sh ) &
 	@mkdir -p data/logs
 	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
 	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS) \

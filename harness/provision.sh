@@ -90,11 +90,17 @@ post /v1/admin/devices "{\"device_id\":\"dev-s\",\"user\":\"203\",\"token\":\"${
 # anywhere else, which is why it is repeated in the test rather than fetched.
 if [ "${PBX_LINES:-0}" = 1 ]; then
   echo "# pbx lines"
+  # The real app's device, for a device test against the native PBX
+  # (harness/asterisk-native, installed with LINES=1). Its credentials are
+  # the ones in pjsip-lines.conf there.
+  post /v1/admin/devices/dev-a/pbx-line \
+    "{\"digest_user\":\"${LINE_A_USER:-line201}\",\"secret\":\"${LINE_A_SECRET:-dialler-line-201}\"}" >/dev/null
+  # The two docker harness phones, for pbx_lines_test.sh.
   post /v1/admin/devices/dev-ha/pbx-line \
     "{\"digest_user\":\"${LINE_HA_USER:-line211}\",\"secret\":\"${LINE_HA_SECRET:-linepass-211}\"}" >/dev/null
   post /v1/admin/devices/dev-hb/pbx-line \
     "{\"digest_user\":\"${LINE_HB_USER:-line212}\",\"secret\":\"${LINE_HB_SECRET:-linepass-212}\"}" >/dev/null
-  echo "dev-ha: line 211, dev-hb: line 212"
+  echo "dev-a: line 201, dev-ha: line 211, dev-hb: line 212"
 fi
 
 # Server-managed settings (SPEC §6 item 8b): DEV_A_SSIDS="Office,Office-5G"

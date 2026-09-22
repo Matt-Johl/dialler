@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"dialler/server/internal/secrets"
 	"dialler/server/internal/sipauth"
 )
 
@@ -40,6 +41,10 @@ type Device struct {
 	CodePending bool `json:"code_pending,omitempty"`
 	// Config is the device's server-managed settings; nil until set.
 	Config *DeviceConfig `json:"config,omitempty"`
+	// PBXLine is the device's line on the PBX when the server registers on
+	// its behalf (SPEC §6 item 3c); nil until set. Never carries the
+	// secret.
+	PBXLine *PBXLine `json:"pbx_line,omitempty"`
 }
 
 type record struct {
@@ -63,6 +68,42 @@ type record struct {
 	// administrator has set anything, and the app then keeps its own.
 	SSIDs         []string `json:"ssids,omitempty"`
 	ConfigVersion int64    `json:"config_version,omitempty"`
+	// PBXLine is the device's line on the PBX (SPEC §6 item 3c); nil until
+	// an administrator sets one.
+	PBXLine *lineRecord `json:"pbx_line,omitempty"`
+}
+
+// lineRecord is the stored form of a PBX line. The credential is sealed
+// (internal/secrets) rather than hashed: unlike everything else here, the
+// server has to replay it to the exchange on every registration.
+type lineRecord struct {
+	DN         string    `json:"dn,omitempty"`
+	DigestUser string    `json:"digest_user"`
+	SecretEnc  string    `json:"secret_enc"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// PBXLine is a device's line as the admin API reports it — never the
+// secret, which no read returns and which is not pushed to any device.
+type PBXLine struct {
+	// DN is the directory number on the PBX; empty means "the device's
+	// user", which is the usual case.
+	DN         string `json:"dn,omitempty"`
+	DigestUser string `json:"digest_user"`
+	// Configured is always true on a line that exists; it is here so a
+	// caller reading JSON does not have to infer presence from emptiness.
+	Configured bool      `json:"configured"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+}
+
+// PBXCredential is one line with its secret, for the registrar alone. It is
+// never serialised: nothing may put it in an HTTP body, a log or a welcome.
+type PBXCredential struct {
+	DeviceID   string
+	User       string
+	DN         string
+	DigestUser string
+	Secret     string
 }
 
 // DeviceConfig is the device's server-managed settings as the admin API
@@ -98,6 +139,10 @@ type Store struct {
 	// Realm is the SIP Digest realm (the server's SIP domain) that HA1 is
 	// computed for at issue time. Set it before issuing credentials.
 	Realm string
+	// Secrets seals the PBX line credentials (SPEC §6 item 3c), the only
+	// thing here the server must be able to replay rather than verify.
+	// Nil refuses to store one rather than writing a password in clear.
+	Secrets *secrets.Box
 }
 
 // ErrInvalid is returned for empty device ids or users.
@@ -387,6 +432,10 @@ func (s *Store) Devices() []Device {
 		}
 		if r.ConfigVersion > 0 {
 			d.Config = &DeviceConfig{Version: r.ConfigVersion, SSIDs: append([]string{}, r.SSIDs...)}
+		}
+		if r.PBXLine != nil {
+			line := r.PBXLine.view()
+			d.PBXLine = &line
 		}
 		out = append(out, d)
 	}

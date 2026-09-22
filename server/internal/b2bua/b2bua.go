@@ -137,6 +137,39 @@ type Config struct {
 	// other than the device's enrolled one (SPEC §4.4 rule 2). nil = no
 	// authentication (unit tests only).
 	Auth *sipauth.Authenticator
+
+	// Lines puts the server in "lines" mode: instead of presenting one
+	// trunk identity to the PBX, each call to it carries the calling
+	// device's own registered line (SPEC §6 item 3c). Nil — the default,
+	// and every trunk-mode deployment — leaves the PBX leg exactly as it
+	// was, which is what keeps this feature off the existing call path.
+	// Set through SetLines, since the registrar needs the SIP stack this
+	// server builds.
+	Lines Lines
+	// DefaultLine is the user whose line identifies a call to the PBX that
+	// has no line of its own — a transfer target dialled on behalf of a
+	// party that is itself on the PBX. Empty means such a call is refused
+	// rather than sent under someone else's number.
+	DefaultLine string
+	// PBXDomain is the host part of the address of record in lines mode
+	// (From towards the PBX). Empty = the trunk peer's host.
+	PBXDomain string
+	// TrunkPeers are further source hosts to trust as the PBX over TLS,
+	// beyond the one in Trunk. A CUCM cluster sends calls from whichever
+	// node handles them, not only the node we registered to, and a call
+	// from an untrusted source is challenged like an app's and fails.
+	TrunkPeers []string
+}
+
+// Lines is the registered-line registry the PBX leg consults in lines mode.
+// Satisfied by *pbxline.Manager; nil in trunk mode.
+type Lines interface {
+	// Credentials answers a PBX challenge for a call placed on this
+	// user's behalf.
+	Credentials(user string) (digestUser, secret string, ok bool)
+	// Number is the directory number a call from this user must present
+	// as its calling party.
+	Number(user string) (string, bool)
 }
 
 func (c Config) withDefaults() Config {
@@ -477,6 +510,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			"trunk_transport", s.cfg.Trunk.Transport, "trunk_srtp", s.cfg.TrunkSRTP)
 	}
 	s.startTrunkQualify(ctx)
+	s.startLines(ctx)
 	err := s.dg.Serve(ctx, s.serveDialog)
 	if ctx.Err() != nil {
 		return nil
@@ -608,7 +642,7 @@ func (s *Server) authorized(req *sip.Request, tx sip.ServerTransaction, enrolled
 func (s *Server) authMiddleware(next sipgo.RequestHandler) sipgo.RequestHandler {
 	return func(req *sip.Request, tx sip.ServerTransaction) {
 		if s.cfg.Auth != nil && req.Method == sip.INVITE && !inDialog(req) &&
-			!isTrunkSource(req.Transport(), req.Source(), s.cfg.Trunk) {
+			!isTrunkSource(req.Transport(), req.Source(), s.cfg.Trunk, s.cfg.TrunkPeers) {
 			sipUser := ""
 			if from := req.From(); from != nil {
 				sipUser = from.Address.User
@@ -1126,10 +1160,10 @@ func (s *Server) isTrunkLeg(in *diago.DialogServerSession) bool {
 	if s.cfg.Trunk == nil {
 		return false
 	}
-	return isTrunkSource(in.InviteRequest.Transport(), in.InviteRequest.Source(), s.cfg.Trunk)
+	return isTrunkSource(in.InviteRequest.Transport(), in.InviteRequest.Source(), s.cfg.Trunk, s.cfg.TrunkPeers)
 }
 
-func isTrunkSource(transport, source string, t *pbx.Trunk) bool {
+func isTrunkSource(transport, source string, t *pbx.Trunk, peers []string) bool {
 	if t == nil {
 		return false
 	}
@@ -1140,7 +1174,20 @@ func isTrunkSource(transport, source string, t *pbx.Trunk) bool {
 	if err != nil {
 		host = source
 	}
-	return strings.EqualFold(host, t.Host)
+	if strings.EqualFold(host, t.Host) {
+		return true
+	}
+	// A cluster answers and originates from whichever node handles the
+	// call, not only the one we registered to or send to. A call from an
+	// untrusted source is challenged like an app's, which a PBX cannot
+	// answer, so every node of the exchange has to be named here
+	// (-pbx-peers) or its calls simply fail.
+	for _, p := range peers {
+		if p != "" && strings.EqualFold(host, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // trunkBind parses the trunk listener address; an empty host is 0.0.0.0 and
@@ -1368,9 +1415,21 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 			s.untrackWait(callID)
 		}()
 	}
+	// Lines mode sends this call out as the calling device's own registered
+	// line; trunk mode adds nothing and the INVITE is built as it always
+	// has been.
+	headers, digestUser, digestSecret, identified := s.calleeInvite(callID, l.calleeTrunk, in.FromUser())
+	if !identified {
+		log.Warn("invite: no PBX line for the caller and no default line; refusing", "caller", in.FromUser())
+		_ = in.Respond(403, "Forbidden", nil)
+		out.Close()
+		return errors.New("no pbx line for the caller")
+	}
 	err = out.Invite(inviteCtx, diago.InviteClientOptions{
 		Originator: in,
-		Headers:    []sip.Header{sip.NewHeader(CallIDHeader, callID)},
+		Headers:    headers,
+		Username:   digestUser,
+		Password:   digestSecret,
 		OnResponse: onResp,
 		OnMediaUpdate: func(m *diago.DialogMedia) {
 			m.MediaSession().RTPNAT = calleeNAT

@@ -1,0 +1,174 @@
+package b2bua
+
+import (
+	"context"
+	"strings"
+
+	"github.com/emiago/sipgo"
+	"github.com/emiago/sipgo/sip"
+)
+
+// Lines mode: the PBX knows each device as a registered line of its own
+// rather than knowing this server as one trunk peer (SPEC §6 item 3c).
+//
+// Everything here is inert unless a deployment turned that mode on. The one
+// rule the whole feature rests on is that a call towards the PBX must
+// present the *calling device's* number and answer challenges with that
+// line's credential — an exchange rejects a From that is not the registered
+// line, and would attribute the call to the wrong user if it did not.
+
+// SetLines attaches the line registry, putting the PBX leg in lines mode.
+//
+// It must be called before Start: the registry is read from the call path
+// without a lock, and Start is what begins serving calls. It is a setter
+// rather than a Config field because the registrar registers over the SIP
+// stack this server builds, so the two cannot both be constructed first.
+func (s *Server) SetLines(l Lines) { s.cfg.Lines = l }
+
+// TrunkClient is the SIP client that sends out of the trunk-leg transport —
+// what the line registrar's REGISTERs must travel on, so the source address
+// the PBX records is the one it will send calls back to. Nil when no trunk
+// peer is configured.
+func (s *Server) TrunkClient() *sipgo.Client {
+	if s.cfg.Trunk == nil {
+		return nil
+	}
+	return s.dg.Client(transportTrunk)
+}
+
+// TrunkContact is the address a registration should ask the PBX to send
+// calls to: this server's trunk-leg listener as the PBX reaches it. The user
+// part is left empty for the registrar to fill with each line's number.
+func (s *Server) TrunkContact() (sip.Uri, bool) {
+	if s.cfg.Trunk == nil {
+		return sip.Uri{}, false
+	}
+	_, port, err := trunkBind(s.cfg.TrunkBind, s.cfg.Trunk)
+	if err != nil {
+		return sip.Uri{}, false
+	}
+	host := s.cfg.TrunkExternalHost
+	if host == "" {
+		host = firstIPv4()
+	}
+	u := sip.Uri{Scheme: "sip", Host: host, Port: port, UriParams: sip.NewParams()}
+	// Explicit transport, as the trunk leg's Contact carries elsewhere: a
+	// default would be read as UDP and an in-dialog request could fall back
+	// to a port nothing is listening on.
+	u.UriParams.Add("transport", strings.ToLower(s.cfg.Trunk.Transport))
+	return u, true
+}
+
+// pbxDomain is the host part of a line's address of record.
+func (s *Server) pbxDomain() string {
+	if s.cfg.PBXDomain != "" {
+		return s.cfg.PBXDomain
+	}
+	if s.cfg.Trunk != nil {
+		return s.cfg.Trunk.Host
+	}
+	return s.cfg.ExternalHost
+}
+
+// trunkIdentity is the calling identity a call to the PBX must carry on
+// behalf of localUser.
+//
+// In trunk mode it returns nothing and ok is true: the request is built
+// exactly as it always has been, which is the point — no trunk deployment
+// sees a header move because this feature exists.
+//
+// In lines mode ok is false when neither the caller nor the configured
+// default has a line. That refuses the call, deliberately: sending it under
+// another user's number would put the wrong name on someone's phone and the
+// wrong entry in the exchange's records, and sending it under no line at all
+// is rejected by the exchange anyway, several seconds later and with a worse
+// explanation.
+func (s *Server) trunkIdentity(localUser string) (from *sip.FromHeader, digestUser, secret string, ok bool) {
+	if s.cfg.Lines == nil {
+		return nil, "", "", true
+	}
+	user := localUser
+	dn, found := s.cfg.Lines.Number(user)
+	if !found && s.cfg.DefaultLine != "" {
+		user = s.cfg.DefaultLine
+		dn, found = s.cfg.Lines.Number(user)
+	}
+	if !found {
+		return nil, "", "", false
+	}
+	digestUser, secret, _ = s.cfg.Lines.Credentials(user)
+	// No tag: diago adds one to a From it did not build, and generating a
+	// second here would be the only tag in the dialog that is not its.
+	return &sip.FromHeader{
+		Address: sip.Uri{Scheme: "sip", User: dn, Host: s.pbxDomain(), UriParams: sip.NewParams()},
+		Params:  sip.NewParams(),
+	}, digestUser, secret, true
+}
+
+// calleeInvite is what a callee leg's INVITE carries beyond its SDP: the
+// wake's call-id header always, and — only when the callee is the PBX and
+// only in lines mode — the calling line's From and digest credential.
+//
+// In trunk mode the result is exactly what this server has always sent: the
+// one header, and no credentials, so diago builds the request as before
+// (with an Originator, that means the caller's own From). Both callers go
+// through here so there is one place to read, and one place a test can pin.
+//
+// ok is false only in lines mode, when neither the calling party nor the
+// configured default has a line — see trunkIdentity for why that refuses the
+// call rather than improvising one.
+func (s *Server) calleeInvite(callID string, calleeTrunk bool, onBehalfOf string) (headers []sip.Header, digestUser, secret string, ok bool) {
+	headers = []sip.Header{sip.NewHeader(CallIDHeader, callID)}
+	if !calleeTrunk {
+		return headers, "", "", true
+	}
+	from, du, sec, ok := s.trunkIdentity(onBehalfOf)
+	if !ok {
+		return nil, "", "", false
+	}
+	if from != nil {
+		headers = append(headers, from)
+	}
+	return headers, du, sec, true
+}
+
+// linesMode reports whether the PBX leg presents registered lines.
+func (s *Server) linesMode() bool { return s.cfg.Lines != nil }
+
+// linesStarter is the part of the registry that runs its own registration
+// loops. Optional: a test's stand-in registry implements Lines and nothing
+// else, and never registers anything.
+type linesStarter interface{ Start(ctx context.Context) }
+
+// startLines begins the registrations, from Serve and alongside the trunk
+// qualifier, so the loops share the server's lifetime.
+//
+// It runs before the listeners are actually up, as the qualifier does. That
+// needs no synchronising: a REGISTER sent a moment too early fails like any
+// other, and the loop retries it on its ordinary backoff — the same path
+// that covers the far more common case of a PBX which is not up yet when
+// this server boots.
+func (s *Server) startLines(ctx context.Context) {
+	st, ok := s.cfg.Lines.(linesStarter)
+	if !ok {
+		return
+	}
+	st.Start(ctx)
+}
+
+// uriUser is the user part of a SIP URI, empty if it will not parse. A
+// name-addr ("Matt" <sip:201@…>) is unwrapped first: the parser takes bare
+// URIs only, and the difference between the two decides whether a call finds
+// its line or is refused.
+func uriUser(uri string) string {
+	if i := strings.IndexByte(uri, '<'); i >= 0 {
+		if j := strings.IndexByte(uri[i:], '>'); j > 0 {
+			uri = uri[i+1 : i+j]
+		}
+	}
+	var u sip.Uri
+	if err := sip.ParseUri(uri, &u); err != nil {
+		return ""
+	}
+	return u.User
+}

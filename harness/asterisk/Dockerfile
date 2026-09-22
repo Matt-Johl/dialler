@@ -11,6 +11,22 @@ FROM alpine:3.20
 RUN apk add --no-cache asterisk asterisk-srtp asterisk-sample-config asterisk-sounds-en
 COPY pjsip.conf extensions.conf /etc/asterisk/
 COPY pjsip-tls.conf /etc/asterisk/pjsip-tls.conf
+COPY pjsip-lines.conf extensions-lines.conf /etc/asterisk/
+# ASTERISK_LINES=yes makes this a PBX that expects the light server to
+# REGISTER one third-party SIP line per device rather than to trunk to it
+# (SPEC §6 item 3c), for `make harness-pbx-lines`. The two configurations
+# replace each other rather than combining: the trunk's `type=identify`
+# would match our line INVITEs by source address before their From user was
+# ever looked at, which is the same collision that makes -pbx-mode one mode
+# or the other on a real exchange.
+ARG ASTERISK_LINES=no
+RUN if [ "$ASTERISK_LINES" = yes ]; then \
+      cp /etc/asterisk/pjsip-lines.conf /etc/asterisk/pjsip.conf \
+   && cp /etc/asterisk/extensions-lines.conf /etc/asterisk/extensions.conf \
+   && if grep -q "^type=identify" /etc/asterisk/pjsip.conf; then \
+        echo "the lines config still has an identify section; line INVITEs would be matched to it by source address"; exit 1; \
+      fi; \
+    fi
 # ASTERISK_CODECS: what every endpoint allows, in preference order (default
 # g722,ulaw,alaw). "ulaw,alaw" builds a narrowband-only PBX — the shape of
 # a customer exchange without G.722 — for `NARROWBAND=1 make harness-trunk`.

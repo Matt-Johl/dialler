@@ -61,6 +61,13 @@ services:
       - -trunk-tls-cert=${DIALLER_TRUNK_TLS_CERT:-}
       - -trunk-tls-key=${DIALLER_TRUNK_TLS_KEY:-}
       - -trunk-tls-ca=${DIALLER_TRUNK_TLS_CA:-}
+      # How the PBX leg presents itself (SPEC §6 item 3c): trunk (an
+      # IP-trusted peer, the default and what every other harness test
+      # uses) or lines (one registered third-party SIP device per
+      # configured device, harness/pbx_lines_test.sh). Never both.
+      - -pbx-mode=${DIALLER_PBX_MODE:-trunk}
+      - -pbx-domain=${DIALLER_PBX_DOMAIN:-}
+      - -pbx-register-expiry=${DIALLER_PBX_EXPIRY:-1h}
       # Off here on purpose: Docker Desktop's UDP port proxy rewrites a LAN
       # phone's RTP source, and replies to that rewritten source are not
       # delivered, so learning the source (symmetric RTP) silences the phone
@@ -91,6 +98,7 @@ services:
         ASTERISK_CODECS: ${ASTERISK_CODECS:-g722,ulaw,alaw} # ulaw,alaw = narrowband-only PBX
         ASTERISK_SRTP: ${ASTERISK_SRTP:-no}                  # yes = a PBX with a secure trunk profile
         ASTERISK_TLS: ${ASTERISK_TLS:-no}                    # yes = the trunk endpoint moves to SIP/TLS, mutually authenticated
+        ASTERISK_LINES: ${ASTERISK_LINES:-no}                # yes = a PBX the server REGISTERs lines to instead of trunking (SPEC §6 item 3c)
     depends_on: [dialler]
     volumes:
       - ./tls:/tls:ro # the PBX's own certificate and the shared CA, when ASTERISK_TLS=yes

@@ -362,8 +362,20 @@ func (c *bridgedCall) transfer(from *callLeg, referTo sip.Uri) error {
 		out.SetCodecs(codecs)
 		leg := &callLeg{name: "transfer", trunk: trunk, sess: out, party: wire.Party{URI: dst.String()}}
 		nat := c.s.legNAT(trunk)
+		// The remaining party is who ends up in this call, so in lines mode
+		// it is their line the PBX must see it come from — not the
+		// referrer's, who is about to be released.
+		headers, digestUser, digestSecret, identified := c.s.calleeInvite(c.callID, trunk, uriUser(other.party.URI))
+		if !identified {
+			log.Warn("transfer: no PBX line for the remaining party and no default line; refusing",
+				"party", other.party.URI)
+			out.Close()
+			return &sipgo403{}
+		}
 		err = out.Invite(ctx, diago.InviteClientOptions{
-			Headers:       []sip.Header{sip.NewHeader(CallIDHeader, c.callID)},
+			Headers:       headers,
+			Username:      digestUser,
+			Password:      digestSecret,
 			OnMediaUpdate: func(m *diago.DialogMedia) { m.MediaSession().RTPNAT = nat },
 			OnRefer:       c.onRefer(leg),
 			// The target alerting is the hand-off: the number exists and
@@ -763,9 +775,11 @@ func (c *bridgedCall) finishOffload(log *slog.Logger, from, remaining *callLeg, 
 }
 
 // Errors carrying a SIP status for diago's failure NOTIFY.
+type sipgo403 struct{}
 type sipgo404 struct{}
 type sipgo488 struct{}
 
+func (*sipgo403) Error() string { return "403 Forbidden" }
 func (*sipgo404) Error() string { return "404 Not Found" }
 func (*sipgo488) Error() string { return "488 Not Acceptable Here" }
 

@@ -31,9 +31,19 @@
 set -eu
 cd "$(dirname "$0")"
 [ "$(id -u)" = 0 ] || { echo "run as root (sudo)"; exit 1; }
-[ -n "${DIALLER_HOST:-}" ] || { echo "set DIALLER_HOST=<light server address>"; exit 1; }
 TRUNK_TLS="${TRUNK_TLS:-0}"
 TRUNK_SRTP="${TRUNK_SRTP:-0}"
+LINES="${LINES:-0}"
+# A trunk is trusted by address, so it has to be told ours. A line is
+# trusted by its credential and reached at whatever its REGISTER advertised,
+# so in lines mode there is nothing to substitute.
+if [ "$LINES" != 1 ]; then
+  [ -n "${DIALLER_HOST:-}" ] || { echo "set DIALLER_HOST=<light server address>"; exit 1; }
+fi
+if [ "$LINES" = 1 ] && { [ "$TRUNK_TLS" = 1 ] || [ "$TRUNK_SRTP" = 1 ]; }; then
+  echo "LINES=1 is plain UDP: encryption on the line leg is unscheduled (SPEC §6 'Much later', encryption on the line leg) — the documented CUCM setup for a third-party SIP device is non-secure with digest, and the app leg is encrypted either way. The TLS/SRTP options here configure the TRUNK." >&2
+  exit 2
+fi
 KEYS=/etc/asterisk/keys
 PBX_HOST="$(hostname -I | awk '{print $1}')"
 
@@ -63,9 +73,20 @@ fi
 
 ETC=/etc/asterisk
 [ -d "$ETC.dist" ] || cp -a "$ETC" "$ETC.dist"     # keep the package's originals once
-echo "== installing configs into $ETC (trunk peer $DIALLER_HOST)"
-sed -e "s|@DIALLER_HOST@|$DIALLER_HOST|g" pjsip.conf > "$ETC/pjsip.conf"
-for f in extensions.conf modules.conf rtp.conf logger.conf; do cp "$f" "$ETC/$f"; done
+if [ "$LINES" = 1 ]; then
+  # Lines mode: the light server registers a line per device instead of
+  # trunking (SPEC §6 item 3c). No @DIALLER_HOST@ substitution — the address
+  # we call it back on is whatever its REGISTER advertises — and no
+  # identify section, which is the point (see pjsip-lines.conf).
+  echo "== installing configs into $ETC (lines mode: the server registers to us)"
+  cp pjsip-lines.conf "$ETC/pjsip.conf"
+  cp extensions-lines.conf "$ETC/extensions.conf"
+  for f in modules.conf rtp.conf logger.conf; do cp "$f" "$ETC/$f"; done
+else
+  echo "== installing configs into $ETC (trunk peer $DIALLER_HOST)"
+  sed -e "s|@DIALLER_HOST@|$DIALLER_HOST|g" pjsip.conf > "$ETC/pjsip.conf"
+  for f in extensions.conf modules.conf rtp.conf logger.conf; do cp "$f" "$ETC/$f"; done
+fi
 
 if [ "$TRUNK_TLS" = 1 ]; then
   echo "== trunk TLS: installing certificates into $KEYS"

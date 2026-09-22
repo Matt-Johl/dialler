@@ -21,12 +21,34 @@ func TestIsTrunkSource(t *testing.T) {
 		{"TLS", "ASTERISK:5061", true},
 	}
 	for _, c := range cases {
-		if got := isTrunkSource(c.transport, c.source, tr); got != c.want {
+		if got := isTrunkSource(c.transport, c.source, tr, nil); got != c.want {
 			t.Errorf("%s from %s → %v, want %v", c.transport, c.source, got, c.want)
 		}
 	}
-	if isTrunkSource("udp", "10.0.0.9:5060", nil) {
+	if isTrunkSource("udp", "10.0.0.9:5060", nil, nil) {
 		t.Error("no trunk configured → never a trunk leg")
+	}
+}
+
+// A cluster originates from whichever node handles the call, not only the
+// one we send to. An unnamed node's INVITE is challenged like an app's and
+// the call fails, so every node has to be trustable (-pbx-peers).
+func TestIsTrunkSourceAcceptsTheOtherClusterNodes(t *testing.T) {
+	tr := &pbx.Trunk{Host: "cucm-pub", Port: 5061, Transport: "tls"}
+	peers := []string{"cucm-sub1", "cucm-sub2", ""}
+	for _, c := range []struct {
+		source string
+		want   bool
+	}{
+		{"cucm-pub:5061", true},
+		{"cucm-sub1:5061", true},
+		{"CUCM-SUB2:5061", true},
+		{"10.18.0.111:53414", false}, // an app, still challenged
+		{"cucm-sub3:5061", false},    // a node nobody named
+	} {
+		if got := isTrunkSource("tls", c.source, tr, peers); got != c.want {
+			t.Errorf("tls from %s → %v, want %v", c.source, got, c.want)
+		}
 	}
 }
 

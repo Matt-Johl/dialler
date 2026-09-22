@@ -13,4 +13,6 @@ exec docker run --rm --network "$NET" \
   -v "$(pwd):/repo:ro" -w /repo \
   -e DIALLER_API="${DIALLER_API:-https://dialler:8080}" \
   -e DIALLER_ADMIN_TOKEN="${DIALLER_ADMIN_TOKEN:-harness}" \
+  -e DEV_A_SSIDS="${DEV_A_SSIDS:-}" \
+  -e PBX_LINES="${PBX_LINES:-0}" \
   alpine:3.20 sh "$SCRIPT" "$@"

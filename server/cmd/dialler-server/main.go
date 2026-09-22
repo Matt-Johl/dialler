@@ -30,9 +30,11 @@ import (
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/gateway"
 	"dialler/server/internal/pbx"
+	"dialler/server/internal/pbxline"
 	"dialler/server/internal/qos"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/routing"
+	"dialler/server/internal/secrets"
 	"dialler/server/internal/sipauth"
 	"dialler/server/internal/tlsutil"
 	"dialler/server/internal/wire"
@@ -73,6 +75,12 @@ func main() {
 		trunkCA      = flag.String("trunk-tls-ca", "", "CA PEM the PBX's certificate is verified against (empty: the system roots, which reject the private CA most PBX deployments use)")
 		trunkNoVer   = flag.Bool("trunk-tls-insecure", false, "accept any certificate from the PBX: a dev convenience against a self-signed PBX, and an open door to anyone who can intercept the trunk")
 		trunkTLSMin  = flag.String("trunk-tls-min-version", "1.2", "lowest TLS version accepted on the PBX leg: 1.2 or 1.3. The app leg always pins 1.3; CUCM's secure trunks generally speak 1.2, so raising this may leave the exchange unreachable")
+		pbxMode      = flag.String("pbx-mode", "trunk", "how this server presents itself to the PBX named by -trunk: trunk (an IP-trusted peer, the default and unchanged) or lines (one registered third-party SIP device per configured device, SPEC §6 item 3c). Never both — a PBX matches inbound SIP against its trunks by source address, so a trunk pointing at us would bypass the registrations")
+		pbxRegistrar = flag.String("pbx-registrar", "", "where REGISTERs go in -pbx-mode=lines, if not the -trunk peer itself (host[:port]); the transport follows -trunk")
+		pbxDomain    = flag.String("pbx-domain", "", "SIP domain in a line's address of record, i.e. the host part of From and To towards the PBX (default: the -trunk peer's host)")
+		pbxPeers     = flag.String("pbx-peers", "", "further PBX addresses to trust as a call source over a TLS trunk, comma-separated: a cluster originates from whichever node handles the call, and a call from an unnamed node is challenged like an app's and fails")
+		pbxExpiry    = flag.Duration("pbx-register-expiry", time.Hour, "registration lifetime asked for in -pbx-mode=lines; the refresh follows what the PBX grants, not this")
+		pbxDefLine   = flag.String("pbx-default-line", "", "the user whose line identifies a call to the PBX that has no line of its own (a transfer target dialled for a party that is itself on the PBX). Empty refuses such a call rather than sending it under someone else's number")
 	)
 	flag.Parse()
 	trunkTLSMinVer, err := tlsutil.MinTLSVersion(*trunkTLSMin)
@@ -88,6 +96,11 @@ func main() {
 	trunkCodecList, err := b2bua.ParseCodecs(*trunkCodecs)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bad -trunk-codecs:", err)
+		os.Exit(2)
+	}
+	pbxLines, err := parsePBXMode(*pbxMode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bad -pbx-mode:", err)
 		os.Exit(2)
 	}
 	sip.SIPDebug = *sipTrace
@@ -127,6 +140,12 @@ func main() {
 		trunkCA:               *trunkCA,
 		trunkTLSInsecure:      *trunkNoVer,
 		trunkTLSMin:           trunkTLSMinVer,
+		pbxLines:              pbxLines,
+		pbxRegistrar:          *pbxRegistrar,
+		pbxDomain:             *pbxDomain,
+		pbxPeers:              splitList(*pbxPeers),
+		pbxExpiry:             *pbxExpiry,
+		pbxDefaultLine:        *pbxDefLine,
 	}); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -162,6 +181,15 @@ type options struct {
 	trunkCert, trunkKey, trunkCA  string
 	trunkTLSInsecure              bool
 	trunkTLSMin                   uint16
+	// How the PBX leg presents itself (SPEC §6 item 3c). pbxLines false is
+	// the IP-trusted trunk peer this server has always been, and none of
+	// the rest applies.
+	pbxLines       bool
+	pbxRegistrar   string
+	pbxDomain      string
+	pbxPeers       []string
+	pbxExpiry      time.Duration
+	pbxDefaultLine string
 }
 
 func run(ctx context.Context, log *slog.Logger, o options) error {
@@ -204,6 +232,12 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// Credentials issued from now on also carry their SIP Digest form for
 	// this realm (the app leg's registrar verifies against it).
 	devices.Realm = o.localDomain
+	// The key that seals PBX line credentials (SPEC §6 item 3c). Opened in
+	// either mode: an operator may provision lines against a server that is
+	// still trunking, ready for the switch.
+	if devices.Secrets, err = secrets.OpenKey(filepath.Join(o.dataDir, "pbx.key")); err != nil {
+		return err
+	}
 	// One directory per device (SPEC §6 item 7): <data-dir>/directories/
 	// <device>.json. A pre-item-7 global directory.json is folded into
 	// every enrolled device's directory once, then renamed.
@@ -318,6 +352,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		TrunkSRTP:             o.trunkSRTP,
 		TrunkQualify:          o.trunkQualify,
 		TrunkTLS:              trunkTLS,
+		TrunkPeers:            o.pbxPeers,
+		PBXDomain:             o.pbxDomain,
+		DefaultLine:           o.pbxDefaultLine,
 		RingTimeout:           o.ringTimeout,
 		Auth:                  sipauth.New(o.localDomain, devices),
 		Logger:                log,
@@ -325,6 +362,21 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if err != nil {
 		return err
 	}
+	// Lines mode (SPEC §6 item 3c): this server holds one registration per
+	// configured device instead of being an IP-trusted trunk peer. Built
+	// before Serve, which is what starts the registration loops, and
+	// nothing at all in trunk mode.
+	var lines *pbxline.Manager
+	if o.pbxLines {
+		lines, err = startPBXLines(log, o, trunkCfg, calls, devices)
+		if err != nil {
+			return err
+		}
+		defer lines.Stop()
+	} else if o.pbxRegistrar != "" || o.pbxDomain != "" || len(o.pbxPeers) > 0 || o.pbxDefaultLine != "" {
+		log.Warn("-pbx-* flags ignored: -pbx-mode is trunk")
+	}
+
 	// A wake_ack of decline/busy ends that call's wait for a registration at
 	// once (the caller gets 486) instead of at the ring timeout.
 	gw.OnWakeAck(func(deviceID string, ack wire.WakeAck) {
@@ -367,6 +419,12 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		OnRevoke: func(deviceID string) {
 			if ep, ok := reg.LookupDevice(deviceID); ok {
 				reg.Deprovision(ep.User)
+				// Its phone can no longer connect, so its line must not
+				// stay registered: the exchange would go on ringing a
+				// number nobody can answer for the whole ring timeout.
+				if lines != nil {
+					lines.Delete(ep.User)
+				}
 			}
 			gw.Disconnect(deviceID)
 		},
@@ -377,6 +435,15 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			log.Info("enrolment code claimed", "device", deviceID, "user", user)
 			reg.Provision(user, deviceID)
 			gw.Disconnect(deviceID)
+			// A claim un-revokes, so a line that was dropped on revocation
+			// comes back with the replacement phone.
+			if lines != nil {
+				if cred, ok, err := devices.PBXCredential(deviceID); err != nil {
+					log.Error("pbx line for the claimed device could not be read", "device", deviceID, "err", err)
+				} else if ok {
+					lines.Put(pbxline.Line{User: cred.User, DN: cred.DN, DigestUser: cred.DigestUser, Secret: cred.Secret})
+				}
+			}
 		},
 		// Settings changed: that device's live sessions get them now; a
 		// device not connected gets them in its next welcome.
@@ -384,6 +451,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			log.Info("device settings changed", "device", deviceID, "version", cfg.Version, "ssids", cfg.SSIDs)
 			gw.NotifyConfig(deviceID, wire.DeviceConfig{Version: cfg.Version, SSIDs: cfg.SSIDs})
 		},
+		// A PBX line written or removed: that one line re-registers, and
+		// nothing else on the server is touched.
+		OnPBXLine: pbxLineHook(log, lines, devices),
 	}
 	mux.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,
 		enroll.Link{Host: o.publicHost, HTTPSPort: httpPort, CertSHA256: certSHA256}, hooks))

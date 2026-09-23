@@ -129,6 +129,13 @@ type Config struct {
 	// probed with OPTIONS so one that has gone silently dead is dropped
 	// before a call needs it (qualify.go). 0 = off. Ignored over UDP.
 	TrunkQualify time.Duration
+	// MediaTimeout ends a bridged call once nothing — RTP or RTCP — has
+	// arrived from either party for this long. A B2BUA cannot rely on a BYE
+	// to end a call: a phone that crashes or walks out of range sends none,
+	// and its dialog then has nothing to cancel it (sipgo ends a dialog only
+	// on a BYE, a Hangup answered 200, or a failed ACK), so the call and its
+	// relay live forever — 14½ hours, in the 2026-09-22 capture. 0 = off.
+	MediaTimeout time.Duration
 	MinExpires   int
 	MaxExpires   int
 	Logger       *slog.Logger
@@ -181,6 +188,13 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RingTimeout <= 0 {
 		c.RingTimeout = 30 * time.Second
+	}
+	if c.MediaTimeout == 0 {
+		// Longer than the app's own dead-media timeout (baresip rtp_timeout
+		// 30 s, SPEC §6): an endpoint that is still running should end its
+		// own call and send us a BYE. This is the backstop for the one that
+		// cannot, so it must not race the endpoint that can.
+		c.MediaTimeout = 60 * time.Second
 	}
 	if c.MinExpires == 0 {
 		c.MinExpires = 60
@@ -1650,6 +1664,10 @@ func newPump(from, to mediaEnd) (*pump, error) {
 		return nil, err
 	}
 	p := &pump{r: r, w: w}
+	// A pump starts alive: media takes a moment to arrive after the answer,
+	// and a zero here would read as "silent since 1970" to the liveness
+	// supervisor and end the call before its first packet.
+	p.touch()
 	// Packet-level forwarding needs the RTP reader and writer themselves
 	// (for the headers) and the destination's codec; anything else falls
 	// back to the byte copy through io.Writer.
@@ -1674,6 +1692,17 @@ func (p *pump) String() string {
 }
 
 func (p *pump) jitterMs() float64 { return float64(p.jitterMs100.Load()) / 100 }
+
+// touch records that the source leg was heard from just now. Called for RTP
+// (pump.run) and for RTCP (the OnReadRTCP hook a bridged call installs):
+// both are evidence the far end is still there, and a leg that is held or
+// muted sends only the latter.
+func (p *pump) touch() { p.lastReadAt.Store(time.Now().UnixMilli()) }
+
+// idleFor is how long since anything was heard from the source leg.
+func (p *pump) idleFor(now time.Time) time.Duration {
+	return now.Sub(time.UnixMilli(p.lastReadAt.Load()))
+}
 
 // forward sends one payload to the destination leg at once, carrying the
 // source packet's own timing.
@@ -1948,7 +1977,7 @@ func (p *pump) run(ctx context.Context, log *slog.Logger) {
 			}
 			if n > 0 {
 				p.read.Add(1)
-				p.lastReadAt.Store(time.Now().UnixMilli())
+				p.touch()
 				if p.localOnly.Load() {
 					// Hold music has this stream; what arrives is not
 					// forwarded. Counted as read, not written — which is

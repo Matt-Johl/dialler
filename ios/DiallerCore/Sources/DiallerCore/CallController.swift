@@ -248,7 +248,18 @@ public final class CallController {
     /// has just removed from the table.
     private func record(_ c: TrackedCall, id: String, ending: CallRecord.Ending) {
         let direction: CallRecord.Direction = c.direction == .outgoing ? .outgoing : .incoming
-        let outcome = CallRecord.outcome(direction: direction, answered: c.phase == .answered, ending: ending)
+        // Answering a wake commits CallKit before the SIP dialog exists, so
+        // "the user pressed answer" is not yet "the call connected". One
+        // whose INVITE never arrived carried no conversation at all,
+        // however it then ended — the deadline, or the user giving up on
+        // the silence. It is a failure, not a completed call: recording it
+        // as completed puts a call that never happened in the history with
+        // a duration measuring how long the user waited. It is equally not
+        // "missed" or "declined": they answered it.
+        let connected = c.phase == .answered && c.engineCallID != nil
+        let outcome: CallRecord.Outcome = c.phase == .answered && !connected
+            ? .failed
+            : CallRecord.outcome(direction: direction, answered: connected, ending: ending)
         var party = c.direction == .outgoing ? c.wake.to : c.wake.from
         // The name the banner showed (directory → caller's own → number) is
         // the best one known; keep it where the party carried none.
@@ -258,7 +269,7 @@ public final class CallController {
         // sidecar the extension wrote for the same wake must match it.
         let serverID = c.wakeCallID ?? c.diallerCallID
         let r = CallRecord(id: id, wakeCallID: serverID == id ? nil : serverID, direction: direction, counterpart: party,
-                           startedAt: c.startedAt == .distantPast ? ended : c.startedAt, connectedAt: c.connectedAt,
+                           startedAt: c.startedAt == .distantPast ? ended : c.startedAt, connectedAt: connected ? c.connectedAt : nil,
                            endedAt: ended, outcome: outcome)
         log("recents: \(outcome.rawValue) \(direction.rawValue) \(party.uri) \(r.duration.map { CallRecord.durationText($0) } ?? "-")")
         onCallEnded?(r)
@@ -776,7 +787,55 @@ public final class CallController {
             let user = Self.userPart(of: call.wake.to.uri)
             log("answered \(callID); registering \(user) to \(call.wake.sip.host):\(call.wake.sip.port); answering when its INVITE arrives")
             engine?.register(user: user, sip: call.wake.sip)
+            armInviteDeadline(callID: callID, wake: call.wake)
         }
+    }
+
+    /// How long after the wake's own expiry we still allow the INVITE to
+    /// turn up, and the floor when the user answers as the wake expires:
+    /// enough for our REGISTER and the server's INVITE to cross a healthy
+    /// link, which is normally well under a second.
+    private static let inviteGrace: TimeInterval = 5
+
+    /// Runs `work` after `seconds`, for call deadlines. Separate from
+    /// `schedule` — which exists so a four-second tone does not cost a test
+    /// four seconds, and which several tests therefore run inline — because
+    /// a deadline run inline fires the instant it is armed, which is never
+    /// what a test of some other behaviour meant. Replaced on its own by
+    /// the tests that are about deadlines.
+    var scheduleDeadline: (_ seconds: Double, _ work: @escaping () -> Void) -> Void = { seconds, work in
+        CallController.timerQueue.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
+
+    /// Answering a wake commits CallKit to a call the SIP stack has not seen
+    /// yet — the INVITE follows once our REGISTER has given the server a
+    /// route to dial. Nothing else ends this call if that INVITE never
+    /// comes: CallKit shows it connected, CallKit has handed the audio
+    /// session over, and the user sits in permanent silence until they give
+    /// up. That is what a stale server-side route produced on 2026-09-23.
+    ///
+    /// The deadline is the wake's own `expiresAt`, which the server already
+    /// sends and `SessionMachine` has already rebased onto our clock: past
+    /// it the server has stopped waiting for our registration, so no INVITE
+    /// is coming and the call is over whatever we do.
+    private func armInviteDeadline(callID: String, wake: Wake) {
+        let remaining = wake.expiresAt.timeIntervalSince(now())
+        scheduleDeadline(max(remaining, Self.inviteGrace)) { [weak self] in
+            self?.inviteDeadlinePassed(callID)
+        }
+    }
+
+    /// The wake expired with the call still answered and still no INVITE.
+    /// Ends it as failed — the user never got a conversation, so it must
+    /// not be recorded as a completed call with a duration.
+    private func inviteDeadlinePassed(_ callID: String) {
+        let stranded: Bool = lock.withLock {
+            guard let c = calls[callID] else { return false }
+            return c.phase == .answered && c.engineCallID == nil
+        }
+        guard stranded else { return }
+        log("\(callID): answered on the wake but its INVITE never arrived; ending the call")
+        end(callID: callID, reason: .failed)
     }
 
     /// User declined or hung up in the system UI.

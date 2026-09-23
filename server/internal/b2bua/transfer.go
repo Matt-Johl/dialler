@@ -14,11 +14,17 @@ import (
 	"github.com/emiago/diago/media"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
+	"github.com/pion/rtcp"
 
 	"dialler/server/internal/moh"
 	"dialler/server/internal/routing"
 	"dialler/server/internal/wire"
 )
+
+// byeTimeout bounds a BYE sent to a party we already believe is not there.
+// Matches the release path in finishOffload; without it Bye waits out the
+// transaction's own Timer B (32 s) for a 200 that is never coming.
+const byeTimeout = 5 * time.Second
 
 // callLeg is one side of a bridged call as the relay sees it.
 type callLeg struct {
@@ -62,10 +68,21 @@ type bridgedCall struct {
 	// decided. The referrer is released as soon as the target rings, so its
 	// BYE must not be read as the end of the call (rule 6a).
 	handing chan struct{}
+	// dead is closed once neither party has been heard from for
+	// MediaTimeout. wait() selects on it exactly as it does on a leg
+	// ending, because a party that vanished cannot send a BYE and will not
+	// answer ours — so its dialog context never completes and there is
+	// nothing else to notice that the call is over.
+	dead     chan struct{}
+	deadOnce sync.Once
 }
 
 func newBridgedCall(s *Server, log *slog.Logger, callID string, a, b *callLeg) *bridgedCall {
-	return &bridgedCall{s: s, log: log, callID: callID, a: a, b: b, swapped: make(chan struct{}, 1)}
+	return &bridgedCall{
+		s: s, log: log, callID: callID, a: a, b: b,
+		swapped: make(chan struct{}, 1),
+		dead:    make(chan struct{}),
+	}
 }
 
 // start (re)starts the relay pumps between the current legs.
@@ -101,6 +118,7 @@ func (c *bridgedCall) startLocked() error {
 		}
 		inherit(p)
 		c.pumps = []*pump{p}
+		watchRTCP(c.a, p)
 		go p.run(ctx, c.log.With("dir", c.a.name+"→"+c.a.name))
 		return nil
 	}
@@ -115,9 +133,37 @@ func (c *bridgedCall) startLocked() error {
 	inherit(ab)
 	inherit(ba)
 	c.pumps = []*pump{ab, ba}
+	// Each leg's RTCP counts as having heard from that leg, so it goes to
+	// the pump that reads from it. Re-installed on every restart because a
+	// media update forks the RTP session (diago dialog_media.go).
+	watchRTCP(c.a, ab)
+	watchRTCP(c.b, ba)
 	go ab.run(ctx, c.log.With("dir", c.a.name+"→"+c.b.name))
 	go ba.run(ctx, c.log.With("dir", c.b.name+"→"+c.a.name))
 	return nil
+}
+
+// watchRTCP makes RTCP arriving from leg count as that leg being alive.
+//
+// Without it the liveness check would have to read "is this party sending
+// audio", which is false for one that is held, muted or on an inactive
+// stream — all of them perfectly alive, and all of them still exchanging
+// RTCP (diago runs a receiver on every session and sends on a ticker).
+func watchRTCP(leg *callLeg, p *pump) {
+	if leg == nil || p == nil || leg.sess == nil {
+		return
+	}
+	m := leg.sess.Media()
+	if m == nil {
+		return
+	}
+	// Nil before media is negotiated, and on a leg the harness drives
+	// without an RTP session; the RTP path alone still feeds the stamp.
+	rs := m.RTPSession()
+	if rs == nil {
+		return
+	}
+	rs.OnReadRTCP(func(rtcp.Packet, media.RTPReadStats) { p.touch() })
 }
 
 // setHeld starts or stops hold music after `by` re-INVITEd its leg into or
@@ -189,9 +235,82 @@ func (c *bridgedCall) stopHoldLocked() {
 	c.heldBy = nil
 }
 
+// watchMedia ends the call once nothing has been heard from either party
+// for MediaTimeout.
+//
+// This is the only thing that can end a call whose far end vanished without
+// a BYE — a crashed app, a phone out of range, a suspended process whose
+// socket was never closed. The 2026-09-22 capture is the case: the app
+// crashed mid-call, its TLS flow died with no RST ever reaching us, and the
+// call relayed for 14½ hours with both counters frozen.
+//
+// It reads each pump's last-heard stamp rather than a forwarded-packet
+// count, so hold needs no special case: a held party is not forwarded but
+// is still heard, and one that is sending nothing at all still sends RTCP,
+// which touches the same stamp. Every direction must be silent — one live
+// party keeps the call up, which is what makes a one-way path (mute, a
+// half-broken NAT) survive.
+func (c *bridgedCall) watchMedia(ctx context.Context, timeout time.Duration) {
+	// Four samples across the window: prompt enough that the teardown lands
+	// close to the timeout, rare enough to cost nothing (at the 60 s
+	// default, once every 15 s over two pumps). The floor only stops a
+	// pathologically small timeout from asking for a zero-length ticker.
+	tick := timeout / 4
+	if tick < 50*time.Millisecond {
+		tick = 50 * time.Millisecond
+	}
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		// During a transfer a leg going quiet is expected, and the legs are
+		// being replaced underneath us; the same two guards wait() uses.
+		if c.transferring() {
+			continue
+		}
+		c.mu.Lock()
+		pumps := append([]*pump(nil), c.pumps...)
+		c.mu.Unlock()
+		if len(pumps) == 0 {
+			continue // between restarts
+		}
+		now := time.Now()
+		idle := pumps[0].idleFor(now)
+		for _, p := range pumps[1:] {
+			if d := p.idleFor(now); d < idle {
+				idle = d
+			}
+		}
+		if idle < timeout {
+			continue
+		}
+		c.log.Warn("no media from either party; ending the call",
+			"idle_s", idle.Round(time.Second).Seconds(), "timeout_s", timeout.Seconds())
+		c.deadOnce.Do(func() { close(c.dead) })
+		return
+	}
+}
+
+// transferring reports whether a transfer is in flight, during which a leg
+// falling silent or ending is expected rather than the call ending.
+func (c *bridgedCall) transferring() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.offload != nil || c.handing != nil
+}
+
 // wait blocks until either leg ends, hangs up the other, and stops the
 // pumps. A transfer swaps a leg underneath it.
 func (c *bridgedCall) wait() {
+	if d := c.s.cfg.MediaTimeout; d > 0 {
+		wctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		go c.watchMedia(wctx, d)
+	}
 	for {
 		c.mu.Lock()
 		a, b := c.a, c.b
@@ -200,13 +319,15 @@ func (c *bridgedCall) wait() {
 		if b != nil {
 			bDone = b.sess.Context().Done()
 		}
-		aEnded := false
+		aEnded, mediaDead := false, false
 		select {
 		case <-a.sess.Context().Done():
 			aEnded = true
 		case <-bDone:
 		case <-c.swapped:
 			continue
+		case <-c.dead:
+			mediaDead = true
 		}
 		// A transfer the PBX is completing ends the legs on its own terms:
 		// let finishOffload do the orderly release (final NOTIFY to the
@@ -220,6 +341,19 @@ func (c *bridgedCall) wait() {
 		// then look again at whatever legs are left.
 		if c.awaitHandover() {
 			continue
+		}
+		if mediaDead {
+			// Neither party is answering, so neither dialog will end itself
+			// and at least one BYE is going nowhere. Bound it: a dialog's
+			// own context never expires, and Bye waits for a 200 that a
+			// vanished phone will never send (Timer B, 32 s, twice).
+			hctx, hcancel := context.WithTimeout(context.Background(), byeTimeout)
+			_ = a.sess.Hangup(hctx)
+			if b != nil {
+				_ = b.sess.Hangup(hctx)
+			}
+			hcancel()
+			break
 		}
 		if aEnded {
 			if b != nil {

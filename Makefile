@@ -52,6 +52,13 @@ harness-call:
 harness-flow-gone:
 	sh harness/flow_gone_test.sh
 
+# A bridged call whose parties vanish must end itself: both phones are
+# SIGKILLed mid-call (no BYE, no RTP, no RTCP — the 2026-09-22 zombie), and
+# the server's media supervisor must tear the call down. Also asserts the
+# other half: one live party keeps the call up.
+harness-media-gone:
+	sh harness/media_gone_test.sh
+
 # NAT regression (macOS host, not sandboxable): the real engine on this Mac
 # registers through Docker's port forwarding — a genuine NAT — and must be
 # reached over its own TLS connection with symmetric RTP.

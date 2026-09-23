@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/emiago/sipgo/sip"
 
@@ -119,5 +120,60 @@ func TestNewRequiresTLSAndHost(t *testing.T) {
 	}
 	if s.cfg.Port != 5061 || s.cfg.RingTimeout == 0 || s.cfg.MinExpires != 60 {
 		t.Fatalf("defaults not applied: %+v", s.cfg)
+	}
+}
+
+func TestDropDeadFlowPurgesBinding(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	newServer := func(keepContact bool) (*Server, *registry.Registry) {
+		reg := registry.New(nil)
+		r := routing.New(reg, nil, nil)
+		s, err := New(Config{
+			TLS: &tls.Config{}, ExternalHost: "h", Logger: log,
+			KeepAdvertisedContact: keepContact,
+		}, reg, r, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.Provision("201", "dev-a")
+		return s, reg
+	}
+
+	// The 2026-09-23 failure: the binding names a connection that is not in
+	// the pool, so it must be dropped rather than dialled.
+	const dead = "sip:201-0x11c280fd0@10.18.0.204:65309;transport=tls"
+	s, reg := newServer(false)
+	if _, err := reg.Register("201", dead, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	ep, _ := reg.Lookup("201")
+	if !s.dropDeadFlow(log, ep, "test") {
+		t.Fatal("dead flow was not dropped")
+	}
+	if reg.Registered("201") {
+		t.Fatal("binding survived its flow")
+	}
+	// Idempotent: nothing left to drop.
+	if s.dropDeadFlow(log, ep, "test") {
+		t.Fatal("dropped a binding twice")
+	}
+
+	// Without the rewrite there is no flow to track, so the binding stands
+	// even though nothing is pooled for it.
+	keep, keepReg := newServer(true)
+	if _, err := keepReg.Register("201", dead, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	ep, _ = keepReg.Lookup("201")
+	if keep.dropDeadFlow(log, ep, "test") {
+		t.Fatal("KeepAdvertisedContact must not track flows")
+	}
+	if !keepReg.Registered("201") {
+		t.Fatal("binding dropped under KeepAdvertisedContact")
+	}
+
+	// An unregistered endpoint has no flow to judge.
+	if s.dropDeadFlow(log, registry.Endpoint{User: "201"}, "test") {
+		t.Fatal("dropped a flow for an endpoint with no contact")
 	}
 }

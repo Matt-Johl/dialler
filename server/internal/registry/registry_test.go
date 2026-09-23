@@ -165,3 +165,69 @@ func TestProvisionRegisterExpire(t *testing.T) {
 		t.Fatal("deprovision left device index")
 	}
 }
+
+func TestUnregisterRouteComparesFirst(t *testing.T) {
+	now := time.Date(2026, 9, 23, 7, 11, 0, 0, time.UTC)
+	r := New(func() time.Time { return now })
+	r.Provision("201", "dev-a")
+
+	const flowA = "sip:201-0x11c280fd0@10.18.0.204:65309;transport=tls"
+	const flowB = "sip:201-0x11c280fd0@10.18.0.204:65401;transport=tls"
+
+	if r.UnregisterRoute("201", flowA) {
+		t.Fatal("unregistered a user that holds no binding")
+	}
+	if _, err := r.Register("201", flowA, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	// The phone re-registered on a new connection while the watcher was
+	// still deciding that the old one was dead. Acting on that stale
+	// verdict must not drop the binding that replaced it.
+	if _, err := r.Register("201", flowB, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if r.UnregisterRoute("201", flowA) {
+		t.Fatal("stale route verdict dropped the newer binding")
+	}
+	if ep, _ := r.Lookup("201"); ep.Contact != flowB {
+		t.Fatalf("binding should still be the new flow, got %q", ep.Contact)
+	}
+	// The verdict that does match clears it.
+	if !r.UnregisterRoute("201", flowB) {
+		t.Fatal("matching route was not cleared")
+	}
+	if r.Registered("201") {
+		t.Fatal("binding survived its flow")
+	}
+	if r.UnregisterRoute("201", flowB) {
+		t.Fatal("second clear reported work it did not do")
+	}
+}
+
+func TestBindingsListsOnlyLiveRegistrations(t *testing.T) {
+	now := time.Date(2026, 9, 23, 7, 11, 0, 0, time.UTC)
+	r := New(func() time.Time { return now })
+	r.Provision("201", "dev-a")
+	r.Provision("202", "dev-b")
+	r.Provision("203", "dev-c") // never registers
+
+	if got := r.Bindings(); len(got) != 0 {
+		t.Fatalf("want no bindings, got %+v", got)
+	}
+	if _, err := r.Register("202", "sip:202@10.0.0.6:5061;transport=tls", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Register("201", "sip:201@10.0.0.5:5061;transport=tls", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	got := r.Bindings()
+	if len(got) != 2 || got[0].User != "201" || got[1].User != "202" {
+		t.Fatalf("want 201,202 sorted, got %+v", got)
+	}
+
+	// An expired registration is not a flow worth sweeping.
+	now = now.Add(61 * time.Second)
+	if got := r.Bindings(); len(got) != 0 {
+		t.Fatalf("expired bindings still listed: %+v", got)
+	}
+}

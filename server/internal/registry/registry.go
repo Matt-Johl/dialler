@@ -182,6 +182,37 @@ func (r *Registry) Unregister(user string) {
 	}
 }
 
+// UnregisterRoute clears the SIP contact for user only if it still equals
+// route, and reports whether it did. The flow watcher uses this: it decides
+// a route is dead outside the lock, and by the time it acts the phone may
+// already have re-registered on a new connection. Comparing first means a
+// stale verdict drops nothing — an unconditional Unregister would throw
+// away the good binding that replaced it.
+func (r *Registry) UnregisterRoute(user, route string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ep := r.byUser[user]
+	if ep == nil || ep.Contact == "" || ep.Contact != route {
+		return false
+	}
+	ep.Contact, ep.Expires = "", time.Time{}
+	return true
+}
+
+// Bindings lists the endpoints holding a live registration, sorted by user.
+func (r *Registry) Bindings() []Endpoint {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Endpoint, 0, len(r.byUser))
+	for _, ep := range r.byUser {
+		if v := r.viewLocked(ep); v.Contact != "" {
+			out = append(out, v)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
+	return out
+}
+
 // Lookup returns the endpoint for user. An expired registration is reported
 // with Contact cleared so callers never route to a stale contact.
 func (r *Registry) Lookup(user string) (Endpoint, bool) {

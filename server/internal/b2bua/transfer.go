@@ -525,8 +525,7 @@ func (s *Server) transferDestination(ctx context.Context, log *slog.Logger, c *b
 		return dst, true, err
 	}
 	ep := d.Endpoint
-	if d.Registered && !s.cfg.KeepAdvertisedContact && !s.flowAlive(ep.Contact) {
-		s.reg.Unregister(ep.User)
+	if d.Registered && s.dropDeadFlow(log, ep, "transfer") {
 		d.Registered = false
 	}
 	if !d.Registered {
@@ -541,6 +540,18 @@ func (s *Server) transferDestination(ctx context.Context, log *slog.Logger, c *b
 		c.woken = append(c.woken, ep.DeviceID)
 		c.mu.Unlock()
 		ep = woken
+	}
+	// Same race as the inbound path (serveInvite): the flow the wake
+	// produced can be gone again by the time we dial it. Wait for the phone
+	// to come back rather than handing back a route to a dead socket; ctx
+	// carries the transfer's own deadline.
+	if s.dropDeadFlow(log, ep, "transfer pre-dial") {
+		log.Info("transfer: target flow died before the INVITE; waiting for it to re-register", "route", ep.Contact)
+		fresh, werr := s.reg.WaitRegistered(ctx, ep.User)
+		if werr != nil {
+			return dst, false, fmt.Errorf("transfer target flow gone: %w", werr)
+		}
+		ep = fresh
 	}
 	err := sip.ParseUri(ep.Contact, &dst)
 	return dst, false, err

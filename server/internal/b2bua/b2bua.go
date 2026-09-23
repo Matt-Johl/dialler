@@ -129,9 +129,14 @@ type Config struct {
 	// probed with OPTIONS so one that has gone silently dead is dropped
 	// before a call needs it (qualify.go). 0 = off. Ignored over UDP.
 	TrunkQualify time.Duration
-	MinExpires   int
-	MaxExpires   int
-	Logger       *slog.Logger
+	// FlowPoll is how often watchFlows sweeps the registrations for ones
+	// whose connection has left the pool. It bounds how long a dead
+	// binding can look live to anything that does not re-check at the
+	// point of use. Ignored under KeepAdvertisedContact (no flows).
+	FlowPoll   time.Duration
+	MinExpires int
+	MaxExpires int
+	Logger     *slog.Logger
 	// Auth challenges every app-leg REGISTER and initial INVITE with SIP
 	// Digest against the device enrolment store and refuses a SIP user
 	// other than the device's enrolled one (SPEC §4.4 rule 2). nil = no
@@ -182,6 +187,12 @@ func (c Config) withDefaults() Config {
 	if c.RingTimeout <= 0 {
 		c.RingTimeout = 30 * time.Second
 	}
+	if c.FlowPoll <= 0 {
+		// Short enough that a binding left by a phone that dropped off Wi-Fi
+		// is gone before the next call finds it, cheap enough to ignore: one
+		// pool lookup per registered user.
+		c.FlowPoll = time.Second
+	}
 	if c.MinExpires == 0 {
 		c.MinExpires = 60
 	}
@@ -221,6 +232,9 @@ var (
 	// defunct. bridge drops the INVITE and the connection; serveDialog
 	// redials once on a fresh one.
 	errTrunkUnresponsive = errors.New("trunk connection unresponsive")
+	// The callee's registration was bound to a connection that is gone and
+	// there is no wake path to bring it back, so there is nothing to dial.
+	errFlowGone = errors.New("callee registration flow gone")
 )
 
 // trunkResponseTimeout is how long an INVITE to the trunk over TCP/TLS may
@@ -511,6 +525,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	s.startTrunkQualify(ctx)
 	s.startLines(ctx)
+	go s.watchFlows(ctx)
 	err := s.dg.Serve(ctx, s.serveDialog)
 	if ctx.Err() != nil {
 		return nil
@@ -674,6 +689,62 @@ func (s *Server) flowAlive(route string) bool {
 	return err == nil
 }
 
+// tracksFlows is whether registrations are bound to the connection they
+// arrived on, and so have a flow whose death invalidates them. False under
+// -rewrite-contact=false, where the advertised Contact is kept as sent and
+// there is no flow to track.
+func (s *Server) tracksFlows() bool {
+	return !s.cfg.KeepAdvertisedContact
+}
+
+// dropDeadFlow clears a registration whose connection is gone, and reports
+// whether it did. Safe to call on a live flow: it checks first.
+func (s *Server) dropDeadFlow(log *slog.Logger, ep registry.Endpoint, where string) bool {
+	if !s.tracksFlows() || ep.Contact == "" || s.flowAlive(ep.Contact) {
+		return false
+	}
+	// Compare-and-clear: between flowAlive and here the phone may have
+	// re-registered on a fresh connection, and that binding must survive.
+	if !s.reg.UnregisterRoute(ep.User, ep.Contact) {
+		return false
+	}
+	log.Info("registration flow gone; dropped the binding", "user", ep.User, "route", ep.Contact, "at", where)
+	return true
+}
+
+// watchFlows purges registrations as their connections leave sipgo's pool,
+// so a binding never outlives the flow it was rewritten onto (RFC 5626:
+// a registration is reachable only over the flow that created it).
+//
+// It polls rather than subscribing because sipgo v1.6.0 offers nothing to
+// subscribe to: TransactionLayer.OnConnectionClose is unexported, and diago
+// owns the listener, so the accepted connections cannot be wrapped from
+// here. TransportLayer.GetConnection — pool-only, never dials — is the one
+// liveness signal available, and there are only a handful of bindings, so
+// the sweep is a few map lookups.
+//
+// Polling leaves a window shorter than the interval, which is why the call
+// path re-checks at the point of use (serveInvite, transfer) rather than
+// trusting the watcher alone. In the 2026-09-23 capture the flow died 14 ms
+// after the REGISTER, well inside any practical interval.
+func (s *Server) watchFlows(ctx context.Context) {
+	if !s.tracksFlows() {
+		return
+	}
+	t := time.NewTicker(s.cfg.FlowPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for _, ep := range s.reg.Bindings() {
+				s.dropDeadFlow(s.log, ep, "watcher")
+			}
+		}
+	}
+}
+
 // reliableTransport is whether SIP over `transport` keeps a connection that
 // can go silently dead (TCP, TLS) — as opposed to UDP, which pools nothing.
 func reliableTransport(transport string) bool {
@@ -813,13 +884,11 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 	}
 
 	ep := d.Endpoint
-	if d.Registered && !s.cfg.KeepAdvertisedContact && !s.flowAlive(ep.Contact) {
+	if d.Registered && s.dropDeadFlow(log, ep, "invite") {
 		// The registration was bound to a connection that no longer exists
 		// (phone backgrounded, network changed, app killed). Dialling its
 		// NAT'd address can only time out; treat it as unregistered so the
 		// wake path brings the phone back on a fresh connection.
-		log.Info("invite: registration flow gone, treating as unregistered", "route", ep.Contact)
-		s.reg.Unregister(ep.User)
 		d.Registered = false
 	}
 	wakeable := ep.DeviceID != "" && s.waker != nil
@@ -838,6 +907,38 @@ func (s *Server) serveDialog(in *diago.DialogServerSession) {
 
 	var err error
 	for attempt := 0; ; attempt++ {
+		// A flow can die between being handed a registration and dialling
+		// it — the phone backgrounds, Wi-Fi drops — in a window too short
+		// for the watcher's sweep to have caught (14 ms, in the 2026-09-23
+		// capture). Dialling a dead one reaches an ephemeral client port
+		// nothing listens on, and the "connection refused" only arrives
+		// once the pool gives up, long after the wake has rung the phone
+		// and the user has answered. So re-check at the point of use, and
+		// give a wakeable phone the rest of the ring to come back on a
+		// fresh connection: it is already being rung, and the pending wake
+		// rings it again when it reconnects.
+		if s.dropDeadFlow(log, ep, "pre-dial") {
+			if !wakeable {
+				log.Info("invite: callee flow died before the INVITE and it cannot be woken", "route", ep.Contact)
+				err = errFlowGone
+				if in.Context().Err() == nil {
+					_ = in.Respond(480, "Temporarily Unavailable", nil)
+				}
+				break
+			}
+			log.Info("invite: callee flow died before the INVITE; waiting for it to re-register", "route", ep.Contact)
+			fresh, werr := s.reg.WaitRegistered(ctx, ep.User)
+			if werr != nil {
+				log.Info("invite: callee never came back on a new flow", "err", werr)
+				err = werr
+				if in.Context().Err() == nil {
+					_ = in.Respond(480, "Temporarily Unavailable", nil)
+				}
+				break
+			}
+			log.Info("invite: callee re-registered on a new flow", "route", fresh.Contact)
+			ep = fresh
+		}
 		var dst sip.Uri
 		if err = sip.ParseUri(ep.Contact, &dst); err != nil {
 			log.Error("bad registered contact", "contact", ep.Contact, "err", err)

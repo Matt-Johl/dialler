@@ -56,6 +56,7 @@ func main() {
 		adminToken   = flag.String("admin-token", "", "bearer token for admin APIs (empty → generated and printed)")
 		ringTimeout  = flag.Duration("ring-timeout", 30*time.Second, "how long a callee may ring (and a woken app may take to register)")
 		trunkQualify = flag.Duration("trunk-qualify", 10*time.Second, "how often the trunk's TCP/TLS connection is probed with OPTIONS so one that has gone silently dead (a network blip on either side) is dropped before a call needs it; 0 = off; no effect over UDP")
+		flowPoll     = flag.Duration("flow-poll", time.Second, "how often app registrations are swept for ones whose TLS connection has gone, so a binding never outlives the flow it was rewritten onto; no effect with -rewrite-contact=false")
 		rtpMin       = flag.Int("rtp-min", 20000, "first UDP port for relayed media (0 = ephemeral)")
 		rtpMax       = flag.Int("rtp-max", 20100, "last UDP port for relayed media")
 		rewrite      = flag.Bool("rewrite-contact", true, "route to a registration's source address over its own TLS connection (required for phones behind NAT); false only for harness negative tests")
@@ -135,6 +136,7 @@ func main() {
 		trunkCodecs:           trunkCodecList,
 		trunkSRTP:             trunkSRTPMode,
 		trunkQualify:          *trunkQualify,
+		flowPoll:              *flowPoll,
 		trunkCert:             *trunkCert,
 		trunkKey:              *trunkKey,
 		trunkCA:               *trunkCA,
@@ -178,6 +180,7 @@ type options struct {
 	trunkCodecs                   []media.Codec
 	trunkSRTP                     b2bua.TrunkSRTPMode
 	trunkQualify                  time.Duration
+	flowPoll                      time.Duration
 	trunkCert, trunkKey, trunkCA  string
 	trunkTLSInsecure              bool
 	trunkTLSMin                   uint16
@@ -351,6 +354,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		TrunkCodecs:           o.trunkCodecs,
 		TrunkSRTP:             o.trunkSRTP,
 		TrunkQualify:          o.trunkQualify,
+		FlowPoll:              o.flowPoll,
 		TrunkTLS:              trunkTLS,
 		TrunkPeers:            o.pbxPeers,
 		PBXDomain:             o.pbxDomain,

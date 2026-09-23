@@ -586,6 +586,26 @@ static uint64_t g_busy_last_report;  /* watchdog thread only: mono_ms */
 #define LOOP_BUSY_PCT 80             /* of one core, over LOOP_BUSY_SAMPLES */
 #define LOOP_BUSY_SAMPLES 10         /* × 500 ms watchdog period = 5 s */
 #define LOOP_BUSY_REPORT_MS 60000    /* one dump a minute while it lasts */
+/* When iOS suspends the app it freezes every thread in the process, this
+ * watchdog included, while CLOCK_MONOTONIC runs on. On resume the heartbeat
+ * is as old as the suspension and says nothing whatever about the loop
+ * thread's health — but the naive age check reads it as a multi-minute
+ * stall and dumps a stack of wherever the loop happened to be parked. Two
+ * of those on 2026-09-23 (459794 ms and 335884 ms) were taken for a
+ * blocking SSL_write; the durations turned out to match the gaps in the
+ * gateway log exactly, and libre's sockets are non-blocking (re tcp.c), so
+ * that write could not have blocked at all. An instrument that cries wolf
+ * every time the phone is pocketed is worse than none: SPEC §4.7 makes the
+ * same point about the gateway's own idle rule.
+ *
+ * The tell is the watchdog's own period: it slept 500 ms, so a much larger
+ * elapsed wall time means the whole process was off the CPU, not that the
+ * loop thread is stuck. Stall age is then measured from the resume rather
+ * than from the pre-suspension heartbeat, so a loop that really is wedged
+ * is still caught 3 s later — with an honest duration. */
+#define WD_PERIOD_MS 500
+#define WD_FROZEN_MS 2000            /* > period + scheduling jitter, < stall */
+static uint64_t g_wd_resumed_at;     /* watchdog thread only: mono_ms */
 
 /* CPU time (user+system, µs) the loop thread has consumed, from the kernel. */
 static uint64_t loop_cpu_us(void)
@@ -645,11 +665,20 @@ static void *watchdog_thread(void *arg)
     int busy_run = 0;
     (void)arg;
     while (g.running) {
-        usleep(500000);
+        usleep(WD_PERIOD_MS * 1000);
         uint64_t beat = atomic_load(&g_loop_beat);
         if (!beat)
             continue;
         uint64_t now = mono_ms();
+        /* Far more wall time than we slept: the process was frozen (iOS
+         * suspension), so nothing that follows can be blamed on the loop
+         * thread. Re-base the stall check on the resume. */
+        if (wall_prev && now - wall_prev > WD_FROZEN_MS) {
+            g_wd_resumed_at = now;
+            wd_say("cbaresip: watchdog: the process did not run for %llu ms "
+                   "(suspended); not a loop stall\n",
+                   (unsigned long long)(now - wall_prev));
+        }
         /* Spinning: loop CPU over the last period, as a percentage of one
          * core. Sustained for LOOP_BUSY_SAMPLES periods → one stack dump,
          * repeated at most once a minute while it lasts. */
@@ -670,7 +699,11 @@ static void *watchdog_thread(void *arg)
         }
         cpu_prev = cpu;
         wall_prev = now;
-        uint64_t age = now - beat;
+        /* Age from the later of the last heartbeat and the last resume: a
+         * heartbeat older than a suspension we sat through proves nothing,
+         * but a loop that does not beat within 3 s of resuming is wedged. */
+        uint64_t since = beat > g_wd_resumed_at ? beat : g_wd_resumed_at;
+        uint64_t age = now > since ? now - since : 0;
         if (age > 3000) {
             if (!atomic_exchange(&g_stall_reported, 1)) {
                 wd_say("cbaresip: watchdog: loop heartbeat stalled %llu ms; "

@@ -235,21 +235,27 @@ func (c *bridgedCall) stopHoldLocked() {
 	c.heldBy = nil
 }
 
-// watchMedia ends the call once nothing has been heard from either party
-// for MediaTimeout.
+// watchMedia ends the call once a party has not been heard from for
+// MediaTimeout.
 //
 // This is the only thing that can end a call whose far end vanished without
 // a BYE — a crashed app, a phone out of range, a suspended process whose
-// socket was never closed. The 2026-09-22 capture is the case: the app
-// crashed mid-call, its TLS flow died with no RST ever reaching us, and the
-// call relayed for 14½ hours with both counters frozen.
+// socket was never closed. Two captures, and they are different shapes:
+// on 2026-09-22 the app crashed and both directions froze for 14½ hours;
+// on 2026-09-23 the app was force-quit mid-call and the desk phone talked
+// on into it for as long as anyone watched, 100 packets every 2 s, every
+// one of them failing to be written to the leg that was gone
+// (write_errs climbing, read_2s=0 the other way).
 //
-// It reads each pump's last-heard stamp rather than a forwarded-packet
-// count, so hold needs no special case: a held party is not forwarded but
-// is still heard, and one that is sending nothing at all still sends RTCP,
-// which touches the same stamp. Every direction must be silent — one live
-// party keeps the call up, which is what makes a one-way path (mute, a
-// half-broken NAT) survive.
+// So the test is per party, not per call: a two-party call needs both of
+// them, and one going quiet while the other talks on is exactly what a
+// vanished phone looks like. Judging the call as a whole — the first cut
+// of this — only ever caught the first shape.
+//
+// What counts as being heard is the pump's last-read stamp, which RTP and
+// RTCP both touch, so a party that is merely silent (muted, sending
+// comfort noise, nothing to say) still counts as there. A party on hold
+// has legitimately stopped sending and is not judged at all.
 func (c *bridgedCall) watchMedia(ctx context.Context, timeout time.Duration) {
 	// Four samples across the window: prompt enough that the teardown lands
 	// close to the timeout, rare enough to cost nothing (at the 60 s
@@ -267,40 +273,51 @@ func (c *bridgedCall) watchMedia(ctx context.Context, timeout time.Duration) {
 			return
 		case <-t.C:
 		}
-		// During a transfer a leg going quiet is expected, and the legs are
-		// being replaced underneath us; the same two guards wait() uses.
-		if c.transferring() {
+		leg, idle := c.silentLeg(time.Now(), timeout)
+		if leg == nil {
 			continue
 		}
-		c.mu.Lock()
-		pumps := append([]*pump(nil), c.pumps...)
-		c.mu.Unlock()
-		if len(pumps) == 0 {
-			continue // between restarts
-		}
-		now := time.Now()
-		idle := pumps[0].idleFor(now)
-		for _, p := range pumps[1:] {
-			if d := p.idleFor(now); d < idle {
-				idle = d
-			}
-		}
-		if idle < timeout {
-			continue
-		}
-		c.log.Warn("no media from either party; ending the call",
+		c.log.Warn("no media from a party; ending the call", "party", leg.name,
 			"idle_s", idle.Round(time.Second).Seconds(), "timeout_s", timeout.Seconds())
 		c.deadOnce.Do(func() { close(c.dead) })
 		return
 	}
 }
 
-// transferring reports whether a transfer is in flight, during which a leg
-// falling silent or ending is expected rather than the call ending.
-func (c *bridgedCall) transferring() bool {
+// silentLeg returns the party we have not heard from for longer than
+// timeout, and for how long; nil when everyone we can judge is still there.
+//
+// Each pump is named by the leg it READS from, which startLocked builds in
+// step with the legs: [a→b, b→a] for a bridged call, [a→a] for echo. That
+// is what makes the judgement per party rather than per call.
+func (c *bridgedCall) silentLeg(now time.Time, timeout time.Duration) (*callLeg, time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.offload != nil || c.handing != nil
+	// A transfer is replacing the legs underneath us and a quiet one is
+	// expected; the same two guards wait() consults before reading a leg's
+	// end as the call's.
+	if c.offload != nil || c.handing != nil {
+		return nil, 0
+	}
+	for i, p := range c.pumps {
+		var leg *callLeg
+		switch i {
+		case 0:
+			leg = c.a
+		case 1:
+			leg = c.b
+		}
+		// Between pump restarts, on echo's single pump, or for the party
+		// that pressed hold — who has stopped sending on purpose, and is
+		// being played our music, so silence says nothing about them.
+		if leg == nil || leg == c.heldBy {
+			continue
+		}
+		if d := p.idleFor(now); d > timeout {
+			return leg, d
+		}
+	}
+	return nil, 0
 }
 
 // wait blocks until either leg ends, hangs up the other, and stops the

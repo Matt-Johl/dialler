@@ -7,12 +7,17 @@
 # media counters frozen — the app had crashed mid-call and its TLS flow died
 # without even an RST reaching the server.
 #
-# Both phones are SIGKILLed mid-call, which is the same silent death: no BYE,
-# no RTP, no RTCP, nothing closed. The server must notice the silence and end
-# the call (b2bua watchMedia). The second half asserts the other side of the
-# invariant: killing only ONE phone must NOT end the call, because one party
-# still being heard means a one-way call, which is a bad call and not a dead
-# one. Exit 0 = pass.
+# The callee is SIGKILLed mid-call while the caller talks on. That is the
+# 2026-09-23 device test: the app was force-quit, the desk phone carried on
+# sending 100 packets every 2 s, and every one of them failed to reach the
+# leg that was gone. A two-party call needs both parties, so one going
+# silent ends it (b2bua watchMedia) — judging the call as a whole, which
+# this test's first version did, kept it up for as long as anyone watched.
+#
+# The second half is the case that must NOT end: both phones alive and
+# talking. Hold — the other legitimate silence — is covered by the unit
+# tests, since the harness cannot hold for longer than the timeout without
+# making this test very slow. Exit 0 = pass.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -49,27 +54,24 @@ sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
 sleep 5
 
-# ---- one party gone: the call must survive -------------------------------
-echo "== 211 dials 212, then the CALLEE alone is killed"
+# ---- both parties talking: the call must survive --------------------------
+echo "== 211 dials 212; both phones alive and sending"
 ctl '{"command":"dial","params":"212@dialler"}'
 sleep 6
 srvlog | grep -q 'msg=bridged' || { echo "FAIL: the call never bridged"; exit 1; }
 before=$(ended_calls)
 
-$COMPOSE kill -s SIGKILL baresip-b >/dev/null 2>&1
-# Well past the timeout: the surviving caller is still sending, so the call
-# must still be up. (baresip-a has its own 30 s dead-media timeout, which is
-# why this window stays short.)
+# Well past the timeout with both parties sending: nothing may end it.
 sleep $((TIMEOUT_S + 6))
 if [ "$(ended_calls)" -ne "$before" ]; then
   srvlog | grep -E 'no media|call ended' | cut -c1-200 | tail -4 | sed 's/^/   /'
-  echo "FAIL: ended a call one party was still on"; exit 1
+  echo "FAIL: ended a call both parties were on"; exit 1
 fi
-echo "   ok: still up with one party sending"
+echo "   ok: still up with both parties sending"
 
-# ---- both parties gone: the call must end --------------------------------
-echo "== now the CALLER too: nobody is on the call and no BYE can arrive"
-$COMPOSE kill -s SIGKILL baresip-a >/dev/null 2>&1
+# ---- one party gone: the call must end ------------------------------------
+echo "== SIGKILL the CALLEE; the caller talks on into a leg that is gone"
+$COMPOSE kill -s SIGKILL baresip-b >/dev/null 2>&1
 
 # Give it the timeout plus a sweep and some slack.
 waited=0
@@ -84,9 +86,9 @@ echo "== server"
 srvlog | grep -E 'no media|call ended|msg=bridged' | cut -c1-200 | tail -5 | sed 's/^/   /'
 
 if [ "$(ended_calls)" -le "$before" ]; then
-  echo "FAIL: a call nobody was on was still running after ${limit}s"; exit 1
+  echo "FAIL: a call the callee had left was still running after ${limit}s"; exit 1
 fi
-srvlog | grep -q 'no media from either party' || {
+srvlog | grep -q 'no media from a party' || {
   echo "FAIL: the call ended, but not because the media supervisor noticed"; exit 1; }
 
 # And the relay must have stopped with it: no ticks after the teardown.
@@ -97,4 +99,4 @@ if [ -n "$last_tick" ] && [ -n "$last_end" ] && [ "$last_tick" -gt "$last_end" ]
   echo "FAIL: the relay is still ticking after the call ended (the 2026-09-22 leak)"; exit 1
 fi
 
-echo "PASS: a call with no media either way ended itself; one with a live party did not"
+echo "PASS: the call ended when a party went silent, and not while both were talking"

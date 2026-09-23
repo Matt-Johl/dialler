@@ -1323,16 +1323,16 @@ on by config — see §7.4.
      the API does not answer: what degrades, what refuses, and what the
      operator is told. A UI that shows stale state while a credential
      write failed is worse than one that says so.
-     — **Audit, and who "the admin" is.** There are **two different
-     authentications** here and they are easy to conflate: the operator's
-     password into `dialler-admin` (human → UI, §4.8's `-password-file`),
-     and the credential `dialler-admin` presents to the call server
-     (machine → machine, 9b). If an audit trail is wanted — and admin
-     actions rotate credentials, so it probably is — the *identity* has
-     to come from the first and be carried into the second, or every
-     entry reads "the admin did it", which tells nobody anything when two
-     people share one password. Decide it here; retrofitting an actor
-     through a finished API is miserable.
+     — **Who "the admin" is — settled 2026-09-23, and recorded so it is
+     not reopened.** There are two authentications here and they are easy
+     to conflate: the operator's password into `dialler-admin` (human →
+     UI, §4.8's `-password-file`), and the credential `dialler-admin`
+     presents to the call server (machine → machine, 9b). **No operator
+     identity is passed to the call server, and the admin API keeps no
+     audit trail.** Its job is to keep unauthorised callers out, not to
+     record who did what. If an audit trail is ever wanted it belongs in
+     `dialler-admin`, which is the only process that knows a human was
+     involved.
      — **Session lifetime**, and what expiry does to a half-filled form.
      — **A half-applied bulk action.** A CSV upload is one replace-all on
      one device, but "copy directory to…" is N of them: what the operator
@@ -1348,32 +1348,37 @@ on by config — see §7.4.
      is already written, unit-tested and has no caller) and **purge**
      (`DELETE /v1/admin/devices/{id}?purge=1`, deleting record and
      directory where a plain delete revokes).
-     *How `dialler-admin` authenticates (decided 2026-09-23).* Today the
-     admin API is a static bearer token over TLS on the **same listener
-     as the device API**, which is the real weakness: `-http-addr`
-     defaults to loopback, but a deployment must publish it on the LAN
-     for phones to reach `/v1/directory`, `/v1/diag` and `/v1/enrol` —
-     and that exposes every admin route to the whole office Wi-Fi, with
-     no rate limit (only `/v1/enrol` has one). Three changes, in order of
-     what they buy:
-     — **Split the listener.** `-admin-addr`, default
-     **`127.0.0.1:8081`**, carrying `/v1/admin/` alone. The device API
-     stays LAN-reachable because it must be; the admin API becomes
-     loopback-only by default, which is where §4.8 already expects
-     `dialler-admin` to sit. A deployment needing remote administration
-     opts in explicitly and knowingly.
+     *How `dialler-admin` authenticates.* **What it is for is settled
+     (2026-09-23): keep unauthorised callers out of the admin API, and
+     nothing more.** The call server authenticates the *caller*, not the
+     person — no operator identity crosses this boundary and there is no
+     audit trail through it. Who pressed the button is `dialler-admin`'s
+     own business, behind its operator password.
+     The mechanism stays what it already is, a **bearer token over TLS**.
+     The weakness is not the token: it is that the admin API shares a
+     listener with the device API. `-http-addr` defaults to loopback, but
+     a deployment must publish it on the LAN for phones to reach
+     `/v1/directory`, `/v1/diag` and `/v1/enrol` — and that exposes every
+     admin route to the whole office Wi-Fi, with no rate limit (only
+     `/v1/enrol` has one). Two changes:
+     — **A second listener on its own port.** `-admin-addr`, default
+     **`127.0.0.1:8081`**, carrying `/v1/admin/` alone, while the device
+     API keeps `-http-addr`. *Production runs both processes on one VM*,
+     so loopback is the right default and the admin API is then
+     unreachable from the network at all. The address is a flag rather
+     than a constant because **testing may put the two on different
+     machines**, which must keep working: bind it wider and the token
+     over TLS is what protects it, exactly as it protects the device API.
      — **Take the token out of argv.** `-admin-token-file`, matching the
      `-password-file` pattern §4.8 uses for the operator password:
      `-admin-token` is readable by every local user in `ps`, and
      `make dev-server` passes it literally.
-     — **Mutual TLS.** `dialler-admin` presents a client certificate the
-     call server verifies against a CA, so no shared secret crosses the
-     wire at all. The machinery exists — `tlsutil.PeerConfig` does
-     exactly this on the trunk leg (cert, key, CA, minimum version). This
-     one may be staged after the other two where a deployment does not
-     need it yet; the other two are not optional.
-     Rate-limit the admin listener as `/v1/enrol` is rate-limited, and
-     carry an actor identity if 9a asks for one.
+     Rate-limit the admin listener as `/v1/enrol` is rate-limited.
+     *Deliberately not decided:* mutual TLS, where `dialler-admin` also
+     presents a certificate the call server verifies, so no shared secret
+     crosses the wire. `tlsutil.PeerConfig` already does this on the
+     trunk leg, so it is cheap to add later; it is recorded as an option
+     for a deployment that wants it, not as work.
      *Strictness, in the standard library.* **No ORM**: there is no
      database to map — persistence is per-device JSON files written
      atomically — and §3 pins this server to the standard library. The
@@ -1413,9 +1418,8 @@ on by config — see §7.4.
      `server/cmd/dialler-admin`, the same Go module, standard library
      only, templates and CSS through `embed`. Flags: `-listen`,
      `-server`, `-admin-token-file`, `-server-ca` or `-insecure`,
-     `-password-file`, `-tls-cert`/`-tls-key` (self-signed when absent),
-     plus the client-certificate flags if 9b's mutual TLS is in; `make
-     admin` and `make dev-admin`. One operator password, a session
+     `-password-file`, `-tls-cert`/`-tls-key` (self-signed when absent);
+     `make admin` and `make dev-admin`. One operator password, a session
      cookie, a CSRF token on every form, no roles. It never touches SIP,
      media or the wake gateway, and can crash, restart or be redeployed
      with no effect on a call.

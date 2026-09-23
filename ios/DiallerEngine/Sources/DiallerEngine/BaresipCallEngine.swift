@@ -161,9 +161,21 @@ public final class BaresipCallEngine: CallEngine {
         }
     }
 
-    public func answer(engineCallID: String) {
+    @discardableResult
+    public func answer(engineCallID: String) -> Bool {
         let rc = cb_answer(engineCallID)
-        log(rc == 0 ? "engine: answered \(engineCallID)" : "engine: answer of \(engineCallID) failed (\(rc))")
+        if rc == 0 {
+            log("engine: answered \(engineCallID)")
+            return true
+        }
+        // rc is -errno from the SIP stack. -EPROTO here means the 200 OK
+        // could not be written to the connection the INVITE came in on: it
+        // died while the phone was suspended and nothing had noticed yet.
+        // The dialog cannot be rescued — the far end's INVITE transaction is
+        // on that same dead connection — so the call is over.
+        let why = String(cString: strerror(-rc))
+        log("engine: answer of \(engineCallID) failed (\(rc): \(why)); the 200 OK could not be sent")
+        return false
     }
 
     /// Refuse an incoming call with 486 Busy Here: the PBX applies its busy

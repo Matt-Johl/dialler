@@ -81,7 +81,15 @@ public protocol CallEngine: AnyObject {
     /// during a call, ringing included.
     func resetRegistration()
     /// Answer the incoming call `engineCallID` (its INVITE has arrived).
-    func answer(engineCallID: String)
+    /// Answer the incoming call `engineCallID`, returning whether the 200 OK
+    /// actually went out. It can fail: the dialog is bound to the TLS
+    /// connection its INVITE arrived on, and after a suspension that
+    /// connection can be dead with the stack yet to notice, so the write
+    /// fails with EPROTO (2026-09-23). The caller must not leave CallKit
+    /// showing a connected call when it does — there is no conversation
+    /// behind it and the far end is still ringing.
+    @discardableResult
+    func answer(engineCallID: String) -> Bool
     /// Refuse the incoming call `engineCallID` with 486 Busy Here, so the
     /// PBX applies its busy rule: a caller the app will not take (call
     /// waiting off, or a third call).
@@ -131,6 +139,13 @@ public struct TrackedCall: Equatable, Sendable {
     public var phase: Phase
     /// The INVITE for this call has reached the SIP stack.
     public var sipArrived: Bool = false
+    /// The call really is up: our 200 OK went out (incoming) or the far end
+    /// answered ours (outgoing). Distinct from `phase == .answered`, which
+    /// only says the user pressed answer — on the wake path CallKit commits
+    /// to a call before the SIP stack has one, and the answer itself can
+    /// fail to send. A call that was never connected carried no
+    /// conversation, whatever ended it.
+    public var connected: Bool = false
     /// The caller name last given to the system UI for this call.
     public var reportedName: String = ""
     /// The server's call id from the wake, if one arrived: the id a decline
@@ -248,18 +263,15 @@ public final class CallController {
     /// has just removed from the table.
     private func record(_ c: TrackedCall, id: String, ending: CallRecord.Ending) {
         let direction: CallRecord.Direction = c.direction == .outgoing ? .outgoing : .incoming
-        // Answering a wake commits CallKit before the SIP dialog exists, so
-        // "the user pressed answer" is not yet "the call connected". One
-        // whose INVITE never arrived carried no conversation at all,
-        // however it then ended — the deadline, or the user giving up on
-        // the silence. It is a failure, not a completed call: recording it
-        // as completed puts a call that never happened in the history with
-        // a duration measuring how long the user waited. It is equally not
-        // "missed" or "declined": they answered it.
-        let connected = c.phase == .answered && c.engineCallID != nil
-        let outcome: CallRecord.Outcome = c.phase == .answered && !connected
+        // "The user pressed answer" is not "the call connected": on the wake
+        // path CallKit commits before the SIP dialog exists, and the answer
+        // itself can fail to send. Either way no conversation happened, so
+        // it is a failure — not a completed call whose duration measures how
+        // long the user waited in silence, and equally not "missed" or
+        // "declined", since they did answer it.
+        let outcome: CallRecord.Outcome = c.phase == .answered && !c.connected
             ? .failed
-            : CallRecord.outcome(direction: direction, answered: connected, ending: ending)
+            : CallRecord.outcome(direction: direction, answered: c.connected, ending: ending)
         var party = c.direction == .outgoing ? c.wake.to : c.wake.from
         // The name the banner showed (directory → caller's own → number) is
         // the best one known; keep it where the party carried none.
@@ -269,7 +281,7 @@ public final class CallController {
         // sidecar the extension wrote for the same wake must match it.
         let serverID = c.wakeCallID ?? c.diallerCallID
         let r = CallRecord(id: id, wakeCallID: serverID == id ? nil : serverID, direction: direction, counterpart: party,
-                           startedAt: c.startedAt == .distantPast ? ended : c.startedAt, connectedAt: connected ? c.connectedAt : nil,
+                           startedAt: c.startedAt == .distantPast ? ended : c.startedAt, connectedAt: c.connected ? c.connectedAt : nil,
                            endedAt: ended, outcome: outcome)
         log("recents: \(outcome.rawValue) \(direction.rawValue) \(party.uri) \(r.duration.map { CallRecord.durationText($0) } ?? "-")")
         onCallEnded?(r)
@@ -395,6 +407,7 @@ public final class CallController {
         lock.withLock {
             calls[id]?.phase = .answered
             calls[id]?.connectedAt = now()
+            calls[id]?.connected = true
         }
         log("\(id): connected")
         stopTone(for: id) // answered: ring-back stops
@@ -500,7 +513,7 @@ public final class CallController {
             if call.phase == .answered || call.answerWhenInvite {
                 // The user answered on the wake before the INVITE got here.
                 lock.withLock { calls[mergedID]?.answerWhenInvite = false }
-                engine?.answer(engineCallID: engineCallID)
+                answerSIP(callID: mergedID, engineCallID: engineCallID)
             }
             return
         case .refused:
@@ -782,13 +795,32 @@ public final class CallController {
         }
         if let engineID = call.engineCallID {
             log("answered \(callID)")
-            engine?.answer(engineCallID: engineID)
+            answerSIP(callID: callID, engineCallID: engineID)
         } else {
             let user = Self.userPart(of: call.wake.to.uri)
             log("answered \(callID); registering \(user) to \(call.wake.sip.host):\(call.wake.sip.port); answering when its INVITE arrives")
             engine?.register(user: user, sip: call.wake.sip)
             armInviteDeadline(callID: callID, wake: call.wake)
         }
+    }
+
+    /// Answers the SIP call and records whether it really went up.
+    ///
+    /// The 200 OK can fail to send — the dialog is bound to the connection
+    /// its INVITE arrived on, and after a suspension that can be dead with
+    /// the stack yet to notice. Nothing used to act on that: CallKit was
+    /// left showing a connected call, it handed over the audio session, and
+    /// the user sat in silence while the caller went on ringing until the
+    /// server gave up (2026-09-23, call ef036a07). The dialog cannot be
+    /// rescued — the far end's INVITE transaction is on the same dead
+    /// connection — so end the call and let the user see that it failed.
+    private func answerSIP(callID: String, engineCallID: String) {
+        guard engine?.answer(engineCallID: engineCallID) != false else {
+            log("\(callID): the answer could not be sent; ending the call")
+            end(callID: callID, reason: .failed)
+            return
+        }
+        lock.withLock { calls[callID]?.connected = true }
     }
 
     /// How long after the wake's own expiry we still allow the INVITE to

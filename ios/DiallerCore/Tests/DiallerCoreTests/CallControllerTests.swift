@@ -56,8 +56,16 @@ final class FakeEngine: CallEngine {
     var muted: [Bool] = []
     var held: [(String, Bool)] = []
     var dialFails = false
+    /// The 200 OK cannot be written: the connection the INVITE arrived
+    /// on died while the phone was suspended (2026-09-23).
+    var answerFails = false
     func register(user: String, sip: SIPTarget) { registered.append(user) }
-    func answer(engineCallID: String) { answered.append(engineCallID) }
+    @discardableResult
+    func answer(engineCallID: String) -> Bool {
+        if answerFails { return false }
+        answered.append(engineCallID)
+        return true
+    }
     func reject(engineCallID: String) { rejected.append(engineCallID) }
     func dial(callID: String, to target: String) -> String? {
         dialled.append((callID, target))
@@ -820,5 +828,87 @@ final class WakeAnsweredWithoutInviteTests: XCTestCase {
 
         XCTAssertNil(fireDeadline(), "nothing was armed")
         XCTAssertEqual(c.activeCalls.map(\.phase), [.answered])
+    }
+}
+
+/// The 2026-09-23 failure, call ef036a07. The INVITE arrived, the user
+/// answered, and the 200 OK could not be written — the connection it came in
+/// on had died while the phone was suspended:
+///
+///     05:11:11.874Z engine: INVITE 863bf92c… for call ef036a07
+///     05:11:15.218Z callkit: answer accepted … answered ef036a07
+///     05:11:15.219Z baresip: tls: SSL_write: 5
+///     05:11:15.219Z engine: answer of 863bf92c… failed (-100)
+///     05:11:15.288Z callkit: observer … connected=true
+///     05:11:15.710Z callkit: audio session activated
+///
+/// Nothing acted on that failure: CallKit went connected, took the audio
+/// session, and the user sat in silence while 101 rang on until the server
+/// gave up.
+final class AnswerThatCannotBeSentTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func wake(_ id: String) -> Wake {
+        Wake(callID: id, from: Party(displayName: "SIP phone", uri: "sip:101@10.18.0.5"), to: Party(uri: "sip:201@dialler"),
+             sip: SIPTarget(host: "dialler", port: 5061, transport: "tls"), expiresAt: t0.addingTimeInterval(30))
+    }
+
+    func make() -> (CallController, FakeCallUI, FakeEngine) {
+        let ui = FakeCallUI(), engine = FakeEngine()
+        let c = CallController(ui: ui, engine: engine, now: { self.t0 })
+        c.attach(transport: FakeTransport())
+        return (c, ui, engine)
+    }
+
+    /// The wake path, exactly as it happened: wake, INVITE, answer, and the
+    /// answer cannot be sent.
+    func testCallEndsWhenTheAnswerCannotBeSent() {
+        let (c, ui, engine) = make()
+        var records: [CallRecord] = []
+        c.onCallEnded = { records.append($0) }
+
+        c.handle(.wake(wake("ef036a07")))
+        engine.onIncomingCall?("863bf92c", "sip:101@10.18.0.5", "SIP phone", "ef036a07")
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.ringing])
+
+        engine.answerFails = true
+        c.userAnswered(callID: "ef036a07")
+
+        XCTAssertTrue(c.activeCalls.isEmpty, "a call whose answer never went out must not stay up")
+        XCTAssertEqual(ui.ended.map(\.0), ["ef036a07"])
+        XCTAssertEqual(ui.ended.map(\.1), [.failed])
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].outcome, .failed, "no conversation happened")
+        XCTAssertNil(records[0].duration, "and so no duration")
+    }
+
+    /// The same failure on the other answer path: the user answered on the
+    /// wake and the INVITE arrived afterwards, so the controller answers it
+    /// itself.
+    func testCallEndsWhenTheAutoAnswerCannotBeSent() {
+        let (c, ui, engine) = make()
+        c.handle(.wake(wake("ef036a07")))
+        c.userAnswered(callID: "ef036a07") // no INVITE yet: registers and waits
+        XCTAssertEqual(engine.registered, ["201@dialler"])
+
+        engine.answerFails = true
+        engine.onIncomingCall?("863bf92c", "sip:101@10.18.0.5", "SIP phone", "ef036a07")
+
+        XCTAssertTrue(c.activeCalls.isEmpty, "the late INVITE could not be answered either")
+        XCTAssertEqual(ui.ended.map(\.1), [.failed])
+    }
+
+    /// The normal path must be untouched: an answer that goes out leaves a
+    /// connected call that records as completed, with its duration.
+    func testAnswerThatGoesOutLeavesTheCallUp() {
+        let (c, ui, engine) = make()
+        c.handle(.wake(wake("ef036a07")))
+        engine.onIncomingCall?("863bf92c", "sip:101@10.18.0.5", "SIP phone", "ef036a07")
+        c.userAnswered(callID: "ef036a07")
+
+        XCTAssertEqual(engine.answered, ["863bf92c"])
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.answered])
+        XCTAssertTrue(ui.ended.isEmpty, "nothing failed")
+        XCTAssertEqual(c.activeCalls.first?.connected, true)
     }
 }

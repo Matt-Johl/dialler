@@ -1013,8 +1013,10 @@ final class LoggingCallEngine: CallEngine {
     func register(user: String, sip: SIPTarget) {
         log("engine: would REGISTER \(user) to \(sip.host):\(sip.port)/\(sip.transport)")
     }
-    func answer(engineCallID: String) {
+    @discardableResult
+    func answer(engineCallID: String) -> Bool {
         log("engine: would answer \(engineCallID)")
+        return true // no stack to fail on
     }
     func dial(callID: String, to target: String) -> String? {
         log("engine: would dial \(target) for \(callID)")

@@ -1283,32 +1283,150 @@ on by config — see §7.4.
      directory. Settings › Re-enrol (not a reinstall) is the recovery for
      a phone whose credential the server no longer holds.
 
-  9. **`dialler-admin` (new process; needs item 7 and the routes of
-     §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib
-     only, templates and CSS through `embed`. Flags: `-listen`, `-server`,
-     `-admin-token`, `-server-ca` or `-insecure`, `-password-file`,
-     `-tls-cert`/`-tls-key` (self-signed when absent); `make admin` and
-     `make dev-admin`. *Pages:* **Devices** — label, user, generated id
-     (read-only, copyable), app and extension online, SIP registered,
-     revoked; add a device (label + user) and be shown its code, expiry
-     and QR; per row: revoke, new code. **Device** — the directory as a
-     table with inline add / edit / delete and a favourite star,
-     **Download CSV**, **Upload CSV** (replace-all, with the counts of
-     rows added, changed and removed shown before it applies), and **Copy
-     directory to…** other devices; and, in `lines` mode, **the device's
-     PBX line** — DN, digest user and a write-only secret field, with the
-     registration's live state beside it (item 3c). **Server** — healthz,
-     version, trunk qualify state, and the fleet's line registrations at
-     a glance, since one refused line is the failure an operator needs
-     to see without reading a log.
-     *CSV format* is in §4.8. *QR:* an in-tree encoder
-     (`internal/qr`: byte mode, error-correction M, versions 1–10)
-     rendered as inline SVG, so the binary stays stdlib-only and builds
-     offline; golden tests plus one scan on a phone. If that proves slow
-     to write, the fallback is a vendored single-file JavaScript encoder
-     (a one-off download outside the sandbox). *Remove* is the existing
-     revoke — the directory is kept, so re-enrolling the same device
-     restores it — and a separate *Purge* deletes record and directory.
+  *Item 9 split into 9a/9b/9c on 2026-09-23.* It was one item covering a
+  contract, a hardened API and a web UI, which are three different kinds
+  of work with three different risks. The order is deliberate: the API is
+  the part that touches the call server, so it must be specified before
+  it is built and hardened before anything depends on it, while the UI is
+  replaceable — someone may well want a CLI or their own provisioning
+  system against the same API. **The `internal/qr` encoder (9c) depends
+  on none of it and can start at any time**: it is the piece most likely
+  to send us to its own fallback, so finding that out early is worth more
+  than doing it in order.
+
+  9a. **The admin contract — define it exhaustively before building it.**
+     The deliverable is writing, not code: every page, every action,
+     every error state, and the API surface each one needs, so that 9b is
+     not guessing and 9c is not inventing endpoints as it goes.
+     *Carried over from the original item 9,* as the seed rather than the
+     answer. **Pages: Devices** — label, user, generated id (read-only,
+     copyable), app and extension online, SIP registered, revoked; add a
+     device (label + user) and be shown its code, expiry and QR; per row
+     revoke, new code. **Device** — the directory as a table with inline
+     add / edit / delete and a favourite star, **Download CSV**, **Upload
+     CSV** (replace-all, with the counts of rows added, changed and
+     removed shown before it applies), **Copy directory to…** other
+     devices, and in `lines` mode the device's PBX line: DN, digest user,
+     a write-only secret field, and the registration's live state beside
+     it (item 3c). **Server** — healthz, version, trunk qualify state,
+     and the fleet's line registrations at a glance, since one refused
+     line is the failure an operator needs to see without reading a log.
+     *Remove* is the existing revoke — the directory is kept, so
+     re-enrolling the same device restores it — and a separate *Purge*
+     deletes record and directory. *CSV format* is in §4.8.
+     *What 9a must settle and nobody has yet*, each of which changes the
+     API rather than the page:
+     — **Scale.** Pagination and search once a fleet is 200 devices, or
+     an explicit decision that the admin lists everything and the browser
+     copes. `GET /v1/admin/devices` returns all of them today.
+     — **The call server being unreachable.** What each page does when
+     the API does not answer: what degrades, what refuses, and what the
+     operator is told. A UI that shows stale state while a credential
+     write failed is worse than one that says so.
+     — **Audit, and who "the admin" is.** There are **two different
+     authentications** here and they are easy to conflate: the operator's
+     password into `dialler-admin` (human → UI, §4.8's `-password-file`),
+     and the credential `dialler-admin` presents to the call server
+     (machine → machine, 9b). If an audit trail is wanted — and admin
+     actions rotate credentials, so it probably is — the *identity* has
+     to come from the first and be carried into the second, or every
+     entry reads "the admin did it", which tells nobody anything when two
+     people share one password. Decide it here; retrofitting an actor
+     through a finished API is miserable.
+     — **Session lifetime**, and what expiry does to a half-filled form.
+     — **A half-applied bulk action.** A CSV upload is one replace-all on
+     one device, but "copy directory to…" is N of them: what the operator
+     sees when the third of five fails.
+     — **Concurrency.** Two operators on one device, or one operator in
+     two tabs. Last-write-wins is an acceptable answer; losing the other
+     edit silently is not.
+
+  9b. **The admin API on the call server, hardened (needs 9a).** Additive
+     handlers only; nothing that exists changes shape. Two routes are
+     missing outright: **`GET /v1/admin/status`** (§4.8 — per device,
+     including the line state whose supplier `pbxline.Manager.Statuses()`
+     is already written, unit-tested and has no caller) and **purge**
+     (`DELETE /v1/admin/devices/{id}?purge=1`, deleting record and
+     directory where a plain delete revokes).
+     *How `dialler-admin` authenticates (decided 2026-09-23).* Today the
+     admin API is a static bearer token over TLS on the **same listener
+     as the device API**, which is the real weakness: `-http-addr`
+     defaults to loopback, but a deployment must publish it on the LAN
+     for phones to reach `/v1/directory`, `/v1/diag` and `/v1/enrol` —
+     and that exposes every admin route to the whole office Wi-Fi, with
+     no rate limit (only `/v1/enrol` has one). Three changes, in order of
+     what they buy:
+     — **Split the listener.** `-admin-addr`, default
+     **`127.0.0.1:8081`**, carrying `/v1/admin/` alone. The device API
+     stays LAN-reachable because it must be; the admin API becomes
+     loopback-only by default, which is where §4.8 already expects
+     `dialler-admin` to sit. A deployment needing remote administration
+     opts in explicitly and knowingly.
+     — **Take the token out of argv.** `-admin-token-file`, matching the
+     `-password-file` pattern §4.8 uses for the operator password:
+     `-admin-token` is readable by every local user in `ps`, and
+     `make dev-server` passes it literally.
+     — **Mutual TLS.** `dialler-admin` presents a client certificate the
+     call server verifies against a CA, so no shared secret crosses the
+     wire at all. The machinery exists — `tlsutil.PeerConfig` does
+     exactly this on the trunk leg (cert, key, CA, minimum version). This
+     one may be staged after the other two where a deployment does not
+     need it yet; the other two are not optional.
+     Rate-limit the admin listener as `/v1/enrol` is rate-limited, and
+     carry an actor identity if 9a asks for one.
+     *Strictness, in the standard library.* **No ORM**: there is no
+     database to map — persistence is per-device JSON files written
+     atomically — and §3 pins this server to the standard library. The
+     guarantee wanted (no malformed request interrupts operation or
+     corrupts data) lives at the HTTP boundary and the write path, which
+     is precisely where an ORM is not:
+     — **One typed request struct per endpoint**, decoded with
+     `DisallowUnknownFields` and a bounded body, so an unknown or
+     mistyped field is a 400 with a reason rather than a silent partial
+     apply. Today there are **six decoders and no `DisallowUnknownFields`
+     anywhere**, so `{"ssids":["Office"],"nonsense":true}` is accepted
+     without comment.
+     — **Validate before mutate.** Every handler returns its error before
+     the store is touched, so nothing half-writes.
+     — **Atomic writes and a single writer**, already the pattern (temp
+     file + rename, a mutex per store); stated here so it is not lost.
+     — **A schema version** on each stored file, so a later format change
+     is detectable rather than silently misread.
+     — **Round-trip properties**: anything written reads back identical.
+     *Adversarial testing is the acceptance criterion, not a garnish.*
+     Go's native fuzzing (`go test -fuzz`, standard library) against
+     every admin endpoint: **never panic, never write a document that
+     will not round-trip, never leave a store unreadable.** A panic in a
+     handler takes the call server down with it, which is the whole
+     reason this matters. Beside the fuzzer, a written adversarial suite:
+     wrong types, missing and unknown fields, duplicate JSON keys,
+     enormous bodies and arrays, deep nesting, NUL bytes and invalid
+     UTF-8, numbers that overflow, path traversal in `{id}` and `{cid}`,
+     and concurrent writes to one device from two callers.
+     **The gate that matters: run all of it while a call is bridged, and
+     the call must survive** — audio continues, no session closes, no
+     re-INVITE, no `directory_changed`. That is §4.8's isolation rule
+     turned into a test, and it is what protects the product. There are
+     **no fuzz tests in the repository today**.
+
+  9c. **`dialler-admin`, the web UI (needs 9a and 9b).**
+     `server/cmd/dialler-admin`, the same Go module, standard library
+     only, templates and CSS through `embed`. Flags: `-listen`,
+     `-server`, `-admin-token-file`, `-server-ca` or `-insecure`,
+     `-password-file`, `-tls-cert`/`-tls-key` (self-signed when absent),
+     plus the client-certificate flags if 9b's mutual TLS is in; `make
+     admin` and `make dev-admin`. One operator password, a session
+     cookie, a CSRF token on every form, no roles. It never touches SIP,
+     media or the wake gateway, and can crash, restart or be redeployed
+     with no effect on a call.
+     *QR:* an in-tree encoder (`internal/qr`: byte mode,
+     error-correction M, versions 1–10) rendered as inline SVG, so the
+     binary stays standard-library-only and builds offline; golden tests
+     plus one scan on a real phone, since a code that scans on one camera
+     and not another is the failure mode. If it proves slow to write, the
+     fallback is a vendored single-file JavaScript encoder (a one-off
+     download outside the sandbox). **Independent of 9a and 9b — start it
+     whenever.**
      *Isolation:* the rule of §4.8 applies in full — every admin action
      touches one device's entry and one device's file, notifies one
      device, and never restarts, reloads or re-binds anything. `make
@@ -1316,14 +1434,6 @@ on by config — see §7.4.
      revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
      call's audio continues, and neither dev-ha nor dev-hb sees a session
      close, a re-INVITE or a `directory_changed`.
-     *Inherited from item 3c, and easy to miss:* `GET /v1/admin/status`
-     is part of this item and does not exist yet, and the line half of
-     its payload is already written —
-     `pbxline.Manager.Statuses()` returns each line's state, realm,
-     expiry and last error, is unit-tested, and **has no caller until
-     this endpoint is built**. 3c stopped there deliberately rather than
-     add a second status endpoint that would only have to be folded into
-     this one. Wiring it up is a handler, not a design.
 
 ### Much later (not scheduled)
 

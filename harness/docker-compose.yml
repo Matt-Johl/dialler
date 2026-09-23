@@ -26,11 +26,6 @@ services:
       - -local-domain=dialler
       - -data-dir=/data
       - -ring-timeout=30s
-      # End a bridged call once neither party has sent RTP or RTCP for this
-      # long: the backstop for a phone that vanished without a BYE
-      # (b2bua watchMedia). Shortened by harness-media-gone so the test
-      # does not have to wait out the production default.
-      - -media-timeout=${DIALLER_MEDIA_TIMEOUT:-60s}
       # Host-side ports are overridable so this harness can run next to a
       # native `make dev-server` (DIALLER_SIGNAL_HOSTPORT / SIP_HOSTPORT /
       # HTTP_HOSTPORT / RTP_MIN / RTP_MAX); the RTP range is published 1:1.

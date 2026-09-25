@@ -133,11 +133,12 @@ if ! printf '%s\n' "$SERVER_JSON" | grep -q '"rejected_rate":[1-9]'; then
   echo "FAIL: the flood was never rate-limited"; exit 1
 fi
 
-echo "== the call"
-ctl '{"command":"hangup"}'
-sleep 2
+echo "== the call (checked before it is hung up, so the hangup's own lines do not count)"
 if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'panic:'; then
   echo "FAIL: the server panicked"; $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -A5 'panic:' | head -20; exit 1
+fi
+if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'msg="call ended"'; then
+  echo "FAIL: the call ended during the load:"; $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'call ended|hangup|BYE|gone|timed out' | tail -5; exit 1
 fi
 for phone in baresip-a baresip-b; do
   eval "before=\$LOGS_BEFORE_$( [ $phone = baresip-a ] && echo A || echo B )"
@@ -146,6 +147,8 @@ for phone in baresip-a baresip-b; do
     echo "FAIL: $phone was disturbed:"; printf '%s\n' "$new" | grep -iE 'session closed|re-invite|directory_changed|registration failed|unauthorized' | head -5; exit 1
   fi
 done
+ctl '{"command":"hangup"}'
+sleep 2
 RSS_AFTER="$(rss_mb)"
 echo "   server RSS ${RSS_BEFORE:-?} MiB → ${RSS_AFTER:-?} MiB"
 if [ -n "$RSS_BEFORE" ] && [ -n "$RSS_AFTER" ] && [ $((RSS_AFTER - RSS_BEFORE)) -gt "$LIMIT_RSS_MB" ]; then

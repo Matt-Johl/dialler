@@ -1531,14 +1531,24 @@ on by config — see §7.4.
      planned, one commit each (steps 6–9 together), `go test ./...`
      green throughout, with fuzz targets on every admin write route and
      the sub-millisecond digest-read test under continuous writes.
-     Step 10 is written (`harness/admin_test.sh`, `make harness-admin`,
-     in `harness-regression`) but **has not run**: Docker Desktop stopped
-     answering its socket partway through the session and had not
-     returned by the end, so no harness test ran against any of 9b —
-     including the port move to 8081 that every existing harness test
-     now depends on. First thing on a machine with Docker: `make
-     harness-call`, then `make harness-admin`. Two things the harness
-     gate does not yet measure, recorded rather than hidden: a third
+     Step 10 is `harness/admin_test.sh`, `make harness-admin`, in
+     `harness-regression`. *Verified the same day, once Docker was
+     restarted:* `make harness-regression` end to end (SIPp conformance,
+     call, wake, qos, every trunk variant, stall, PBX hold and
+     unavailable, hold music, cancel-before-answer, the admin gate, the
+     narrowband and xfer-app trunk runs), then flow-gone, peer-gone,
+     hold-music-srtp, echo (server and PBX) and pbx-lines — all pass on
+     the branch, so the port move to 8081 and every 9b change hold under
+     the whole suite. In the admin gate the flood was refused 11–21
+     thousand times by the rate limit, nothing was refused as busy, no
+     event was dropped, the call's audio passed the gate and the server
+     grew by under 50 MiB and returned. One harness script changed
+     outside the contract's scope, and only for the environment:
+     `wake_test.sh` now runs `fake-app` from the compose image tag
+     because Docker Desktop's image store, after the restart, refused the
+     sha id it used to look up (the server's wake path is untouched).
+     Two things the harness gate does not yet measure, recorded rather
+     than hidden: a third
      phone's REGISTER and INVITE latency during the flood (needs a third
      baresip in compose and a timing probe) and the `by` field on
      `directory_changed` events (the store's change hook does not know

@@ -24,25 +24,25 @@ func TestSetConfigVersionsPersistsAndIsolates(t *testing.T) {
 		t.Fatalf("device view: %+v", d)
 	}
 
-	cfg, err := s.SetConfig("dev-a", []string{" Office ", "", "Office-5G", "Office"})
+	cfg, changed, err := s.SetConfig("dev-a", []string{" Office ", "", "Office-5G", "Office"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Version != 1 || !reflect.DeepEqual(cfg.SSIDs, []string{"Office", "Office-5G"}) {
+	if !changed || cfg.Version != 1 || !reflect.DeepEqual(cfg.SSIDs, []string{"Office", "Office-5G"}) {
 		t.Fatalf("first set: %+v (trimmed, empties and repeats dropped, order kept)", cfg)
 	}
-	// The same list again still bumps: an admin's "apply" always reaches
-	// the phone, which decides for itself whether anything changed.
-	cfg, _ = s.SetConfig("dev-a", []string{"Office", "Office-5G"})
-	if cfg.Version != 2 {
-		t.Fatalf("re-set: %+v", cfg)
+	// The same list again is a no-op (ADMIN-API.md §5.3): same version,
+	// nothing pushed, so a re-applied form disturbs nobody.
+	cfg, changed, _ = s.SetConfig("dev-a", []string{"Office", "Office-5G"})
+	if changed || cfg.Version != 1 {
+		t.Fatalf("re-set: changed=%v %+v", changed, cfg)
 	}
 	// An empty list is a setting too (no background wakes), not "unset".
-	cfg, _ = s.SetConfig("dev-a", []string{})
-	if cfg.Version != 3 || len(cfg.SSIDs) != 0 || s.Config("dev-a") == nil {
+	cfg, changed, _ = s.SetConfig("dev-a", []string{})
+	if !changed || cfg.Version != 2 || len(cfg.SSIDs) != 0 || s.Config("dev-a") == nil {
 		t.Fatalf("empty set: %+v", cfg)
 	}
-	if _, err := s.SetConfig("nobody", []string{"x"}); err != ErrInvalid {
+	if _, _, err := s.SetConfig("nobody", []string{"x"}); err != ErrInvalid {
 		t.Fatalf("unknown device: %v", err)
 	}
 	if s.Config("dev-b") != nil {
@@ -50,10 +50,10 @@ func TestSetConfigVersionsPersistsAndIsolates(t *testing.T) {
 	}
 
 	s2, _ := Open(path)
-	if got := s2.Config("dev-a"); got == nil || got.Version != 3 {
+	if got := s2.Config("dev-a"); got == nil || got.Version != 2 {
 		t.Fatalf("persisted: %+v", got)
 	}
-	if d := s2.Devices()[0]; d.Config == nil || d.Config.Version != 3 {
+	if d := s2.Devices()[0]; d.Config == nil || d.Config.Version != 2 {
 		t.Fatalf("device view after reload: %+v", d)
 	}
 }

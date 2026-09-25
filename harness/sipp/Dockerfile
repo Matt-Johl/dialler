@@ -23,6 +23,6 @@ WORKDIR /work
 # SIPp's TLS mode wants a client cert pair in the working directory.
 RUN openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
       -keyout cakey.pem -out cacert.pem -days 365 -subj "/CN=sipp-harness"
-COPY run.sh /work/run.sh
-RUN chmod +x /work/run.sh
+COPY run.sh probe.sh /work/
+RUN chmod +x /work/run.sh /work/probe.sh
 ENTRYPOINT ["/work/run.sh"]

@@ -47,20 +47,83 @@ var ErrInvalid = errors.New("directory: uri and mode (local|trunk) are required"
 // ErrNoDevice is returned for an empty device id.
 var ErrNoDevice = errors.New("directory: device id is required")
 
+// ErrVersionMismatch is returned when a Match precondition fails.
+var ErrVersionMismatch = errors.New("directory: the directory changed since it was read")
+
+// Option qualifies a write: a Match precondition, or By naming the writer.
+type Option interface{ apply(*writeOpts) }
+
+type writeOpts struct {
+	pre []Match
+	by  string
+}
+
+func collect(opts []Option) writeOpts {
+	var o writeOpts
+	for _, opt := range opts {
+		opt.apply(&o)
+	}
+	return o
+}
+
+// Match is an If-Match precondition (ADMIN-API.md §4.5): the write
+// proceeds only if the directory's version is what the caller last read.
+// Checked under the write lock, so two writers cannot both pass.
+type Match struct {
+	Version int64
+}
+
+func (m Match) apply(o *writeOpts) { o.pre = append(o.pre, m) }
+
+// By names who is writing — "admin", "device" or "server" — for the
+// directory_changed event's by field (ADMIN-API.md §5.9).
+type By string
+
+func (b By) apply(o *writeOpts) { o.by = string(b) }
+
+func checkAll(pre []Match, st *state) error {
+	for _, m := range pre {
+		if m.Version != st.Version {
+			return ErrVersionMismatch
+		}
+	}
+	return nil
+}
+
 // state is one device's directory: the on-disk shape of its file (and of
 // the pre-item-7 global directory.json, which Migrate reads).
 type state struct {
+	// Schema is the file's shape (ADMIN-API.md §6.2); absent in files
+	// written before 9b, which read as schema 1 and are rewritten with it.
+	Schema   int                 `json:"schema,omitempty"`
 	Version  int64               `json:"version"`
 	Contacts map[string]*Contact `json:"contacts"`
 }
 
-// Store holds every device's directory. Safe for concurrent use.
+// schemaVersion is what this binary writes and the highest it reads.
+const schemaVersion = 1
+
+// clone is a copy safe to keep while the original is mutated.
+func (st *state) clone() *state {
+	c := &state{Schema: st.Schema, Version: st.Version, Contacts: make(map[string]*Contact, len(st.Contacts))}
+	for id, ct := range st.Contacts {
+		cp := *ct
+		c.Contacts[id] = &cp
+	}
+	return c
+}
+
+// Store holds every device's directory. Safe for concurrent use. Writes
+// follow ADMIN-API.md §4.7: memory is mutated under mu, which is then
+// released before the file is written; a failed write restores memory.
 type Store struct {
 	mu       sync.RWMutex
-	dir      string // "" → memory only
+	wmu      sync.Mutex // serialises writers end to end
+	dir      string     // "" → memory only
 	devices  map[string]*state
 	now      func() time.Time
 	onChange func(deviceID string, version int64)
+	onWrite  func(deviceID string, version int64, by string)
 }
 
 // Open loads every directory under dir (memory-only if ""), creating the
@@ -101,10 +164,14 @@ func readState(path string) (*state, error) {
 		if err := json.Unmarshal(raw, st); err != nil {
 			return nil, err
 		}
+		if st.Schema > schemaVersion {
+			return nil, fmt.Errorf("schema %d is newer than this binary's %d; upgrade the server rather than let it misread the file", st.Schema, schemaVersion)
+		}
 		if st.Contacts == nil {
 			st.Contacts = map[string]*Contact{}
 		}
 	}
+	st.Schema = schemaVersion
 	return st, nil
 }
 
@@ -141,7 +208,7 @@ func (s *Store) Migrate(legacyPath string, deviceIDs []string) (contacts, device
 			// A star the device already gave this number is the user's; the
 			// global list never had one, so keep it.
 			c.Favourite = s.favourite(id, c.URI)
-			if _, err := s.Upsert(id, c); err != nil {
+			if _, err := s.Upsert(id, c, By("server")); err != nil {
 				return 0, 0, fmt.Errorf("migrating into %s: %w", id, err)
 			}
 		}
@@ -171,6 +238,24 @@ func (s *Store) OnChange(fn func(deviceID string, version int64)) {
 	s.mu.Lock()
 	s.onChange = fn
 	s.mu.Unlock()
+}
+
+// OnWrite is OnChange with the writer named (By, or "" when the caller
+// gave none), for the event ring.
+func (s *Store) OnWrite(fn func(deviceID string, version int64, by string)) {
+	s.mu.Lock()
+	s.onWrite = fn
+	s.mu.Unlock()
+}
+
+// notify calls the hooks, outside the lock.
+func (s *Store) notify(deviceID string, version int64, by string, fn func(string, int64), wr func(string, int64, string)) {
+	if fn != nil {
+		fn(deviceID, version)
+	}
+	if wr != nil {
+		wr(deviceID, version, by)
+	}
 }
 
 // Version is the current version of deviceID's directory (0 if it has none).
@@ -263,58 +348,76 @@ func (s *Store) upsertLocked(st *state, c Contact, v int64) (Contact, bool) {
 
 // Upsert creates or replaces a contact in deviceID's directory (see
 // upsertLocked for the by-URI rule).
-func (s *Store) Upsert(deviceID string, c Contact) (Contact, error) {
+func (s *Store) Upsert(deviceID string, c Contact, opts ...Option) (Contact, error) {
+	wo := collect(opts)
 	if deviceID == "" {
 		return Contact{}, ErrNoDevice
 	}
 	if err := validate(c); err != nil {
 		return Contact{}, err
 	}
-	s.mu.Lock()
-	st := s.stateLocked(deviceID)
-	out, _ := s.upsertLocked(st, c, 0)
-	err := s.saveLocked(deviceID, st)
-	v, fn := st.Version, s.onChange
-	s.mu.Unlock()
-	if err != nil {
+	if err := checkDeviceID(deviceID); err != nil {
 		return Contact{}, err
 	}
-	if fn != nil {
-		fn(deviceID, v)
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	s.mu.Lock()
+	backup := s.backupLocked(deviceID)
+	st := s.stateLocked(deviceID)
+	if err := checkAll(wo.pre, st); err != nil {
+		s.mu.Unlock()
+		return Contact{}, err
 	}
+	out, _ := s.upsertLocked(st, c, 0)
+	raw, err := marshal(st)
+	v, fn, wr := st.Version, s.onChange, s.onWrite
+	s.mu.Unlock()
+	if err := s.write(deviceID, raw, err, backup); err != nil {
+		return Contact{}, err
+	}
+	s.notify(deviceID, v, wo.by, fn, wr)
 	return out, nil
 }
 
 // Delete tombstones a contact in deviceID's directory. Returns false if
 // unknown or already deleted.
-func (s *Store) Delete(deviceID, id string) (bool, error) {
+func (s *Store) Delete(deviceID, id string, opts ...Option) (bool, error) {
+	wo := collect(opts)
 	if deviceID == "" {
 		return false, ErrNoDevice
 	}
+	if err := checkDeviceID(deviceID); err != nil {
+		return false, err
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
 	st, ok := s.devices[deviceID]
 	if !ok {
 		s.mu.Unlock()
 		return false, nil
 	}
+	if err := checkAll(wo.pre, st); err != nil {
+		s.mu.Unlock()
+		return false, err
+	}
 	c, ok := st.Contacts[id]
 	if !ok || c.Deleted {
 		s.mu.Unlock()
 		return false, nil
 	}
+	backup := st.clone()
 	st.Version++
 	c.Deleted = true
 	c.Version = st.Version
 	c.UpdatedAt = s.now()
-	err := s.saveLocked(deviceID, st)
-	v, fn := st.Version, s.onChange
+	raw, err := marshal(st)
+	v, fn, wr := st.Version, s.onChange, s.onWrite
 	s.mu.Unlock()
-	if err != nil {
+	if err := s.write(deviceID, raw, err, backup); err != nil {
 		return false, err
 	}
-	if fn != nil {
-		fn(deviceID, v)
-	}
+	s.notify(deviceID, v, wo.by, fn, wr)
 	return true, nil
 }
 
@@ -331,7 +434,8 @@ type ReplaceResult struct {
 // among them is tombstoned, and the directory's version is bumped once for
 // the lot, so a client syncs the whole change as one delta. A contact that
 // is already present and identical is left alone (and not counted).
-func (s *Store) Replace(deviceID string, contacts []Contact) (ReplaceResult, error) {
+func (s *Store) Replace(deviceID string, contacts []Contact, opts ...Option) (ReplaceResult, error) {
+	wo := collect(opts)
 	if deviceID == "" {
 		return ReplaceResult{}, ErrNoDevice
 	}
@@ -340,8 +444,70 @@ func (s *Store) Replace(deviceID string, contacts []Contact) (ReplaceResult, err
 			return ReplaceResult{}, err
 		}
 	}
+	if err := checkDeviceID(deviceID); err != nil {
+		return ReplaceResult{}, err
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	s.mu.Lock()
+	backup := s.backupLocked(deviceID)
 	st := s.stateLocked(deviceID)
+	if err := checkAll(wo.pre, st); err != nil {
+		if backup == nil {
+			delete(s.devices, deviceID)
+		}
+		s.mu.Unlock()
+		return ReplaceResult{}, err
+	}
+	res, changed := s.replaceLocked(st, contacts)
+	var raw []byte
+	var err error
+	if changed {
+		raw, err = marshal(st)
+	}
+	fn, wr := s.onChange, s.onWrite
+	s.mu.Unlock()
+	if changed {
+		if err := s.write(deviceID, raw, err, backup); err != nil {
+			return ReplaceResult{}, err
+		}
+		s.notify(deviceID, res.Version, wo.by, fn, wr)
+	}
+	return res, nil
+}
+
+// DryRun is Replace's answer without Replace's effect: the counts and the
+// current version, nothing written, nobody notified (ADMIN-API.md §5.5).
+// It runs the same reconcile on a copy, so the numbers are exactly what
+// the real thing would do.
+func (s *Store) DryRun(deviceID string, contacts []Contact) (ReplaceResult, error) {
+	if deviceID == "" {
+		return ReplaceResult{}, ErrNoDevice
+	}
+	for _, c := range contacts {
+		if err := validate(c); err != nil {
+			return ReplaceResult{}, err
+		}
+	}
+	s.mu.RLock()
+	st, ok := s.devices[deviceID]
+	var copy *state
+	if ok {
+		copy = st.clone()
+	} else {
+		copy = &state{Contacts: map[string]*Contact{}}
+	}
+	s.mu.RUnlock()
+	current := copy.Version
+	res, _ := s.replaceLocked(copy, contacts)
+	res.Version = current
+	return res, nil
+}
+
+// replaceLocked is the reconcile behind Replace and DryRun, applied to st
+// in place; the caller owns the lock or the copy. Returns what it did and
+// whether anything changed (the version is bumped only then).
+func (s *Store) replaceLocked(st *state, contacts []Contact) (ReplaceResult, bool) {
 	var res ReplaceResult
 	v := st.Version + 1
 	keep := map[string]bool{}
@@ -373,19 +539,7 @@ func (s *Store) Replace(deviceID string, contacts []Contact) (ReplaceResult, err
 		st.Version = v
 	}
 	res.Version = st.Version
-	var err error
-	if changed {
-		err = s.saveLocked(deviceID, st)
-	}
-	fn := s.onChange
-	s.mu.Unlock()
-	if err != nil {
-		return ReplaceResult{}, err
-	}
-	if changed && fn != nil {
-		fn(deviceID, res.Version)
-	}
-	return res, nil
+	return res, changed
 }
 
 // liveByURILocked finds the one live contact with uri, if any. When
@@ -408,17 +562,21 @@ func (s *Store) liveByURILocked(st *state, uri string) *Contact {
 // Purge deletes deviceID's directory and its file outright (an admin
 // removing a device for good). Nothing is notified: the device is gone.
 func (s *Store) Purge(deviceID string) error {
+	if err := checkDeviceID(deviceID); err != nil {
+		return err
+	}
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	// The file first, with no lock held: if it cannot go, nothing changes.
+	if s.dir != "" {
+		if err := os.Remove(s.path(deviceID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.devices, deviceID)
-	if s.dir == "" {
-		return nil
-	}
-	err := os.Remove(s.path(deviceID))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+	s.mu.Unlock()
+	return nil
 }
 
 // Changes returns every contact in deviceID's directory changed after
@@ -464,19 +622,56 @@ func (s *Store) path(deviceID string) string {
 	return filepath.Join(s.dir, deviceID+".json")
 }
 
-// saveLocked writes one device's file atomically: a crash mid-write leaves
-// every other device's file untouched (SPEC §4.8 isolation).
-func (s *Store) saveLocked(deviceID string, st *state) error {
-	if s.dir == "" {
-		return nil
-	}
+// checkDeviceID refuses an id that could name a path outside dir. Checked
+// before any mutation, so a bad id changes nothing.
+func checkDeviceID(deviceID string) error {
 	if strings.ContainsAny(deviceID, `/\`) || deviceID == "." || deviceID == ".." {
 		return fmt.Errorf("directory: bad device id %q", deviceID)
 	}
-	raw, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return err
+	return nil
+}
+
+// backupLocked is a copy of deviceID's directory to restore if a write
+// fails, or nil when it has none yet. Caller holds the write lock.
+func (s *Store) backupLocked(deviceID string) *state {
+	if st, ok := s.devices[deviceID]; ok {
+		return st.clone()
 	}
+	return nil
+}
+
+// marshal serialises one directory for its file; CPU only, done under the
+// lock so the bytes match memory, never I/O.
+func marshal(st *state) ([]byte, error) {
+	st.Schema = schemaVersion
+	return json.MarshalIndent(st, "", "  ")
+}
+
+// write persists one device's marshalled directory atomically with no
+// lock held (temp file, then rename: a crash mid-write leaves every other
+// device's file untouched, SPEC §4.8). marshalErr is the marshal's result,
+// folded in so callers have one failure path. On any failure memory is
+// restored to backup (nil: the directory did not exist), so the entry is
+// unchanged (ADMIN-API.md §4.4).
+func (s *Store) write(deviceID string, raw []byte, marshalErr error, backup *state) error {
+	err := marshalErr
+	if err == nil && s.dir != "" {
+		err = s.writeFile(deviceID, raw)
+	}
+	if err == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if backup == nil {
+		delete(s.devices, deviceID)
+	} else {
+		s.devices[deviceID] = backup
+	}
+	s.mu.Unlock()
+	return err
+}
+
+func (s *Store) writeFile(deviceID string, raw []byte) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}

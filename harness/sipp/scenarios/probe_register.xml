@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!--
+  The latency probe's REGISTER (ADMIN-API.md §4.7 gate): the same exchange
+  as register_tls, as dev-hc (213), a device no harness phone uses, so the
+  probe never disturbs a call. rtd 1 is the authenticated REGISTER's round
+  trip, the number the admin gate compares against its idle baseline.
+-->
+<scenario name="probe_register">
+  <send>
+    <![CDATA[
+      REGISTER sip:dialler SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      Max-Forwards: 70
+      From: <sip:[service]@dialler>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@dialler>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
+      User-Agent: sipp-harness
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <recv response="401" auth="true" timeout="5000"/>
+
+  <send start_rtd="1">
+    <![CDATA[
+      REGISTER sip:dialler SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
+      Max-Forwards: 70
+      From: <sip:[service]@dialler>;tag=[pid]SIPpTag00[call_number]
+      To: <sip:[service]@dialler>
+      Call-ID: [call_id]
+      CSeq: 2 REGISTER
+      Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
+      [authentication username=dev-hc password=tok_dev_hc_harness_fixed]
+      User-Agent: sipp-harness
+      Content-Length: 0
+    ]]>
+  </send>
+
+  <recv response="200" timeout="5000" rtd="1">
+    <action>
+      <ereg regexp="expires=300" search_in="hdr" header="Contact:" check_it="true" assign_to="1"/>
+    </action>
+  </recv>
+
+  <!-- SIPp rejects variables that are assigned but never read; this marks $1 as used. -->
+  <Reference variables="1"/>
+</scenario>

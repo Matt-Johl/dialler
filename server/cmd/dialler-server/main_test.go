@@ -1,9 +1,38 @@
 package main
 
 import (
+	"errors"
 	"net"
 	"testing"
 )
+
+func TestResolveAdminToken(t *testing.T) {
+	files := map[string]string{"tok": "  s3cret\n", "empty": " \n"}
+	read := func(name string) ([]byte, error) {
+		if s, ok := files[name]; ok {
+			return []byte(s), nil
+		}
+		return nil, errors.New("no such file")
+	}
+	if got, err := resolveAdminToken("lit", "", read); err != nil || got != "lit" {
+		t.Fatalf("literal: %q %v", got, err)
+	}
+	if got, err := resolveAdminToken("", "", read); err != nil || got != "" {
+		t.Fatalf("neither: %q %v (empty means generate)", got, err)
+	}
+	if got, err := resolveAdminToken("", "tok", read); err != nil || got != "s3cret" {
+		t.Fatalf("file: %q %v (must be trimmed)", got, err)
+	}
+	if _, err := resolveAdminToken("", "empty", read); err == nil {
+		t.Fatal("an empty file must be refused, not become an empty token")
+	}
+	if _, err := resolveAdminToken("", "missing", read); err == nil {
+		t.Fatal("a missing file must be refused")
+	}
+	if _, err := resolveAdminToken("lit", "tok", read); err == nil {
+		t.Fatal("both flags at once must be refused")
+	}
+}
 
 func TestCheckPublicHost(t *testing.T) {
 	addrs := func() ([]net.Addr, error) {

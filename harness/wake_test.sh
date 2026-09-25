@@ -51,8 +51,12 @@ WAKE_OUT="$(mktemp)"
 # resolver needs a fixed one), so a second container of that service
 # (`compose run`) cannot start: run the fake app from the same image
 # directly on the network instead.
-IMG="$($COMPOSE images -q dialler 2>/dev/null | head -n1)"
-[ -n "$IMG" ] || IMG="$(docker inspect --format '{{.Image}}' dialler-harness-dialler-1)"
+# By the tag compose gives the service's image (<project>-<service>): a
+# sha256 id from `compose images -q` or the container's .Image is not
+# resolvable by `docker run` under Docker Desktop's containerd image store
+# (seen 2026-09-25 after a Docker restart), while the tag always is.
+IMG="dialler-harness-dialler"
+docker image inspect "$IMG" >/dev/null 2>&1 || IMG="$($COMPOSE images -q dialler 2>/dev/null | head -n1)"
 docker run --rm --network "$NET" --entrypoint /fake-app "$IMG" \
     -server dialler:7443 -device dev-hb -token "$TOKEN_B" -kind extension \
     -phone-ctl baresip-b:4444 -wake-cmd "$WAKE_CMD" -timeout 40s -hold 20s \
@@ -73,9 +77,11 @@ sleep 2
 
 wait $FAKE_PID && fake_rc=0 || fake_rc=$?
 echo "== fake-app (exit $fake_rc)"
-sed 's/^/   /' "$WAKE_OUT.err" | grep -E 'connected|wake|register|error' || true
+sed 's/^/   /' "$WAKE_OUT.err" | grep -iE 'connected|wake|register|error' || true
 if ! grep -q '"call_id"' "$WAKE_OUT"; then
-  echo "FAIL: fake-app never received a wake"; exit 1
+  echo "FAIL: fake-app never received a wake (exit $fake_rc; 125 is docker refusing the run):"
+  sed 's/^/   /' "$WAKE_OUT.err" | tail -5
+  exit 1
 fi
 echo "   wake: $(cat "$WAKE_OUT")"
 

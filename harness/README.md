@@ -52,7 +52,7 @@ the Mac. This is the bug that reached a real phone on 2026-09-06.
 
 `make harness-up` advertises this Mac's en0 address (`DIALLER_PUBLIC_HOST`)
 to phones for SIP and media, and publishes 7443 (signal), 5061 (SIP/TLS),
-8080 (HTTPS, directory/admin) and UDP 20000–20100 (relayed media) on the host. The docker
+8080 (HTTPS, device API), 8081 (HTTPS, admin API) and UDP 20000–20100 (relayed media) on the host. The docker
 phones reach the relay through the same published ports, so one setting
 serves both real devices and the container tests.
 
@@ -62,7 +62,7 @@ serves both real devices and the container tests.
 python3 harness/baresip/media/gen_tone.py                       # once: creates in.wav (an aperiodic burst pattern: the quality gates correlate recordings against it)
 # Next to a running `make dev-server`: move the published ports and pin the
 # public host, e.g. DIALLER_PUBLIC_HOST=dialler DIALLER_SIGNAL_HOSTPORT=7444
-# DIALLER_SIP_HOSTPORT=5063 DIALLER_HTTP_HOSTPORT=8081 DIALLER_RTP_MIN=20200
+# DIALLER_SIP_HOSTPORT=5063 DIALLER_HTTP_HOSTPORT=8082 DIALLER_ADMIN_HOSTPORT=8083 DIALLER_RTP_MIN=20200
 # DIALLER_RTP_MAX=20300 make harness-…  (the Mac-address default would send
 # a phone's responses to the native server on 5061).
 # Identities: dev-ha/211 and dev-hb/212 are the docker phones; the simulator

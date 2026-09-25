@@ -1283,32 +1283,306 @@ on by config — see §7.4.
      directory. Settings › Re-enrol (not a reinstall) is the recovery for
      a phone whose credential the server no longer holds.
 
-  9. **`dialler-admin` (new process; needs item 7 and the routes of
-     §4.8).** `server/cmd/dialler-admin`, the same Go module, stdlib
-     only, templates and CSS through `embed`. Flags: `-listen`, `-server`,
-     `-admin-token`, `-server-ca` or `-insecure`, `-password-file`,
-     `-tls-cert`/`-tls-key` (self-signed when absent); `make admin` and
-     `make dev-admin`. *Pages:* **Devices** — label, user, generated id
-     (read-only, copyable), app and extension online, SIP registered,
-     revoked; add a device (label + user) and be shown its code, expiry
-     and QR; per row: revoke, new code. **Device** — the directory as a
-     table with inline add / edit / delete and a favourite star,
-     **Download CSV**, **Upload CSV** (replace-all, with the counts of
-     rows added, changed and removed shown before it applies), and **Copy
-     directory to…** other devices; and, in `lines` mode, **the device's
-     PBX line** — DN, digest user and a write-only secret field, with the
-     registration's live state beside it (item 3c). **Server** — healthz,
-     version, trunk qualify state, and the fleet's line registrations at
-     a glance, since one refused line is the failure an operator needs
-     to see without reading a log.
-     *CSV format* is in §4.8. *QR:* an in-tree encoder
-     (`internal/qr`: byte mode, error-correction M, versions 1–10)
-     rendered as inline SVG, so the binary stays stdlib-only and builds
-     offline; golden tests plus one scan on a phone. If that proves slow
-     to write, the fallback is a vendored single-file JavaScript encoder
-     (a one-off download outside the sandbox). *Remove* is the existing
-     revoke — the directory is kept, so re-enrolling the same device
-     restores it — and a separate *Purge* deletes record and directory.
+  *Item 9 split into 9a/9b/9c on 2026-09-23.* It was one item covering a
+  contract, a hardened API and a web UI, which are three different kinds
+  of work with three different risks. The order is deliberate: the API is
+  the part that touches the call server, so it must be specified before
+  it is built and hardened before anything depends on it, while the UI is
+  replaceable — someone may well want a CLI or their own provisioning
+  system against the same API. **The `internal/qr` encoder (9c) depends
+  on none of it and can start at any time**: it is the piece most likely
+  to send us to its own fallback, so finding that out early is worth more
+  than doing it in order.
+
+  9a. **The admin contract — define it exhaustively before building it.**
+     The deliverable is writing, not code. *Reframed 2026-09-25:* the
+     contract is **not a set of pages**. It is, first, the inventory of
+     every configurable an operator needs to run and maintain the server
+     and the system — what each is, where it lives, how it changes and
+     when the change takes effect — and, second, the server API that
+     inventory requires, so that 9b builds and tests exactly that API and
+     9c is written afterwards against it. The pages below survive as the
+     seed of the inventory, not its bound.
+     *Written 2026-09-25 (this branch); approved 2026-09-25:*
+     [protocol/ADMIN-API.md](protocol/ADMIN-API.md). Its inventory sorts
+     configurables into three classes — deployment (the startup flags,
+     read-only through the API), per device (the API's whole writable
+     surface), and a single runtime, non-persisted class (log level and
+     SIP trace) — and the API gains, beyond §4.8's routes: `whoami`,
+     `server`, `status`, `events` (a bounded in-memory ring), `log`,
+     `calls` (list only; nothing ends a call), per-device `diag` (list, download,
+     delete, with a `-diag-retain` sweeper), `PATCH` for the description
+     (the device's `label` field is renamed `description`),
+     `DELETE …/enrol-code`, `?dry_run=1` on the replace-all, a JSON error
+     envelope, optional `If-Match` on every versioned write, and a
+     separate `-admin-addr` listener. It settles the open questions
+     below (everything listed, no pagination, 500-device ceiling;
+     `If-Match` with 412; `user` immutable; revoked is an authentication
+     state and every admin route works on a revoked device; a re-POST of
+     an existing id without a token is 409, with a token replaces only
+     the credential) and records what it does not do (certificate
+     rotation strands every phone; live trunk settings stay flags).
+     *Load isolation (added 2026-09-25, §4.7 of the contract):* the admin
+     API cannot degrade a call under any load. Calls and the app leg are
+     the highest priority in the process and the admin API the lowest,
+     enforced by hard bounds (64 connections, 4 requests in flight,
+     per-source and global rate limits, server timeouts), no disk I/O
+     under any lock the call path takes, one-second cached snapshots for
+     status and calls, and a mandatory revert timer on debug logging. A
+     harness gate floods the admin listener while a call is bridged and
+     a third phone registers and dials; the audio gate must hold and the
+     third phone's REGISTER and INVITE latency must stay within twice
+     its idle baseline.
+     *Carried over from the original item 9,* as the seed rather than the
+     answer. **Pages: Devices** — label, user, generated id (read-only,
+     copyable), app and extension online, SIP registered, revoked; add a
+     device (label + user) and be shown its code, expiry and QR; per row
+     revoke, new code. **Device** — the directory as a table with inline
+     add / edit / delete and a favourite star, **Download CSV**, **Upload
+     CSV** (replace-all, with the counts of rows added, changed and
+     removed shown before it applies), **Copy directory to…** other
+     devices, and in `lines` mode the device's PBX line: DN, digest user,
+     a write-only secret field, and the registration's live state beside
+     it (item 3c). **Server** — healthz, version, trunk qualify state,
+     and the fleet's line registrations at a glance, since one refused
+     line is the failure an operator needs to see without reading a log.
+     *Remove* is the existing revoke — the directory is kept, so
+     re-enrolling the same device restores it — and a separate *Purge*
+     deletes record and directory. *CSV format* is in §4.8.
+     *What 9a must settle and nobody has yet*, each of which changes the
+     API rather than the page:
+     — **Scale.** Pagination and search once a fleet is 200 devices, or
+     an explicit decision that the admin lists everything and the browser
+     copes. `GET /v1/admin/devices` returns all of them today.
+     — **The call server being unreachable.** What each page does when
+     the API does not answer: what degrades, what refuses, and what the
+     operator is told. A UI that shows stale state while a credential
+     write failed is worse than one that says so.
+     — **Who "the admin" is — settled 2026-09-23, and recorded so it is
+     not reopened.** There are two authentications here and they are easy
+     to conflate: the operator's password into `dialler-admin` (human →
+     UI, §4.8's `-password-file`), and the credential `dialler-admin`
+     presents to the call server (machine → machine, 9b). **No operator
+     identity is passed to the call server, and the admin API keeps no
+     audit trail.** Its job is to keep unauthorised callers out, not to
+     record who did what. If an audit trail is ever wanted it belongs in
+     `dialler-admin`, which is the only process that knows a human was
+     involved.
+     — **Session lifetime**, and what expiry does to a half-filled form.
+     — **A half-applied bulk action.** A CSV upload is one replace-all on
+     one device, but "copy directory to…" is N of them: what the operator
+     sees when the third of five fails.
+     — **Concurrency.** Two operators on one device, or one operator in
+     two tabs. Last-write-wins is an acceptable answer; losing the other
+     edit silently is not.
+
+  9b. **The admin API on the call server, hardened (needs 9a).** Additive
+     handlers only; nothing that exists changes shape. Two routes are
+     missing outright: **`GET /v1/admin/status`** (§4.8 — per device,
+     including the line state whose supplier `pbxline.Manager.Statuses()`
+     is already written, unit-tested and has no caller) and **purge**
+     (`DELETE /v1/admin/devices/{id}?purge=1`, deleting record and
+     directory where a plain delete revokes).
+     *How `dialler-admin` authenticates.* **What it is for is settled
+     (2026-09-23): keep unauthorised callers out of the admin API, and
+     nothing more.** The call server authenticates the *caller*, not the
+     person — no operator identity crosses this boundary and there is no
+     audit trail through it. Who pressed the button is `dialler-admin`'s
+     own business, behind its operator password.
+     The mechanism stays what it already is, a **bearer token over TLS**.
+     The weakness is not the token: it is that the admin API shares a
+     listener with the device API. `-http-addr` defaults to loopback, but
+     a deployment must publish it on the LAN for phones to reach
+     `/v1/directory`, `/v1/diag` and `/v1/enrol` — and that exposes every
+     admin route to the whole office Wi-Fi, with no rate limit (only
+     `/v1/enrol` has one). Two changes:
+     — **A second listener on its own port.** `-admin-addr`, default
+     **`127.0.0.1:8081`**, carrying `/v1/admin/` alone, while the device
+     API keeps `-http-addr`. *Production runs both processes on one VM*,
+     so loopback is the right default and the admin API is then
+     unreachable from the network at all. The address is a flag rather
+     than a constant because **testing may put the two on different
+     machines**, which must keep working: bind it wider and the token
+     over TLS is what protects it, exactly as it protects the device API.
+     — **Take the token out of argv.** `-admin-token-file`, matching the
+     `-password-file` pattern §4.8 uses for the operator password:
+     `-admin-token` is readable by every local user in `ps`, and
+     `make dev-server` passes it literally.
+     Rate-limit the admin listener as `/v1/enrol` is rate-limited.
+     *Deliberately not decided:* mutual TLS, where `dialler-admin` also
+     presents a certificate the call server verifies, so no shared secret
+     crosses the wire. `tlsutil.PeerConfig` already does this on the
+     trunk leg, so it is cheap to add later; it is recorded as an option
+     for a deployment that wants it, not as work.
+     *Strictness, in the standard library.* **No ORM**: there is no
+     database to map — persistence is per-device JSON files written
+     atomically — and §3 pins this server to the standard library. The
+     guarantee wanted (no malformed request interrupts operation or
+     corrupts data) lives at the HTTP boundary and the write path, which
+     is precisely where an ORM is not:
+     — **One typed request struct per endpoint**, decoded with
+     `DisallowUnknownFields` and a bounded body, so an unknown or
+     mistyped field is a 400 with a reason rather than a silent partial
+     apply. Today there are **six decoders and no `DisallowUnknownFields`
+     anywhere**, so `{"ssids":["Office"],"nonsense":true}` is accepted
+     without comment.
+     — **Validate before mutate.** Every handler returns its error before
+     the store is touched, so nothing half-writes.
+     — **Atomic writes and a single writer**, already the pattern (temp
+     file + rename, a mutex per store); stated here so it is not lost.
+     — **A schema version** on each stored file, so a later format change
+     is detectable rather than silently misread.
+     — **Round-trip properties**: anything written reads back identical.
+     *Adversarial testing is the acceptance criterion, not a garnish.*
+     Go's native fuzzing (`go test -fuzz`, standard library) against
+     every admin endpoint: **never panic, never write a document that
+     will not round-trip, never leave a store unreadable.** A panic in a
+     handler takes the call server down with it, which is the whole
+     reason this matters. Beside the fuzzer, a written adversarial suite:
+     wrong types, missing and unknown fields, duplicate JSON keys,
+     enormous bodies and arrays, deep nesting, NUL bytes and invalid
+     UTF-8, numbers that overflow, path traversal in `{id}` and `{cid}`,
+     and concurrent writes to one device from two callers.
+     **The gate that matters: run all of it while a call is bridged, and
+     the call must survive** — audio continues, no session closes, no
+     re-INVITE, no `directory_changed`. That is §4.8's isolation rule
+     turned into a test, and it is what protects the product. There are
+     **no fuzz tests in the repository today**.
+     *Plan (2026-09-25, from the approved contract
+     [protocol/ADMIN-API.md](protocol/ADMIN-API.md)).* Ten steps on
+     `feature/admin-api`, each a commit that leaves `go test ./...` and
+     `make harness-test` green, in this order because each is tested
+     through the one before it. The contract's section numbers are given
+     so nothing here is a second source of truth.
+     1. **The admin listener** (contract §4.1, §4.6, §4.7 bounds).
+        `-admin-addr` (default `127.0.0.1:8081`) and `-admin-token-file`;
+        `/v1/admin/` moves there and is 404 on `-http-addr`; a
+        connection-limiting listener (64), an in-flight semaphore (4,
+        503 `busy` after 2 s), per-source and global token buckets,
+        `http.Server` timeouts on both listeners; `GET /healthz` and
+        `GET /v1/admin/whoami`. Harness: `docker-compose.yml` publishes
+        8081, `provision.sh`, `set_pbx_line.sh`, `wake_test.sh` and both
+        READMEs point admin calls at it, and `provision.sh` line 73
+        becomes an `enrol-code` mint. Tests: the limiter and semaphore
+        in isolation; a 65th connection waits; a flood gets 429 and 503,
+        never a hang.
+     2. **Strict decoding and the error envelope** (§4.2–§4.4). One
+        request struct per endpoint, `DisallowUnknownFields`, duplicate
+        keys detected by a token walk (the standard decoder accepts
+        them), trailing data refused, identifier grammar checked before
+        any store call, JSON errors with the stable codes. The fuzz
+        targets start here, one per write route, and run in CI for a
+        fixed budget. Nothing in this step changes a success body.
+     3. **The device store** (§6.2, §4.7 lock discipline, §5.1
+        semantics). Schema version and `updated_at` on the record;
+        `label` renamed `description` with the read-old-write-new
+        migration; a write mutates memory under the store lock and
+        serialises to disk under a separate writer mutex, so a digest
+        verification never waits on an fsync; round-trip property tests
+        on every store; the p99-under-one-millisecond digest-read test
+        under a continuous replace. Same rewrite for the directory
+        store. Then the semantics the contract fixes: revoked is an
+        authentication state and every admin route works on a revoked
+        record; re-POST of an existing id is 409 without a token and a
+        credential-only replace with one; an identical settings write is
+        a no-op.
+     4. **Device routes** (§5.1, §5.2). `GET …/{id}`, `PATCH …/{id}`
+        for the description, `DELETE …?purge=1` removing record,
+        directory, line and diagnostics, `DELETE …/enrol-code`, and
+        `If-Match` on the record's `updated_at`.
+     5. **Directory routes** (§5.5). `?dry_run=1`, the limits (5,000
+        contacts, field lengths, duplicate URI in one request named by
+        index), `If-Match` on the directory version.
+     6. **Live state** (§3, §5.6–§5.8). The gateway keeps `since`,
+        remote address and `app_version` per session and gains a
+        snapshot method; the trunk qualifier exposes up / down / off
+        with `since` and last error; the B2BUA gains a registry of live
+        calls with their legs, state and pump counters; the line manager
+        is passed to the handler. Then `GET /v1/admin/status`, `/calls`
+        and `/server` (with `-X main.version` in the Makefile and
+        `-version`), served from a one-second cached snapshot. Tests: a
+        snapshot under concurrent registrations and a bridged call in
+        the b2bua test rig; the cache coalesces concurrent callers.
+     7. **Events** (§5.9). The bounded ring, its `since` / `limit` /
+        `truncated` contract, non-blocking append with a drop counter,
+        and an emitter at each of the sites that only log today:
+        presence, registration, line, trunk, call start and end, wake,
+        enrolment, every admin write.
+     8. **Log level** (§5.10). A `slog.LevelVar` for the process, the SIP
+        trace global behind it, the revert timer, `for_seconds` required
+        for `debug` and for the trace.
+     9. **Diagnostics** (§5.11). List, download with the name grammar and
+        no symlink following, delete one and all, `-diag-retain` with
+        the hourly per-device sweeper that yields between files.
+     10. **The gates** (contract §4.7 and §7). In `make harness-test`:
+        the isolation check (revoke dev-s, replace dev-a's directory,
+        mint dev-a a code, set the log level, read status, events and
+        calls while dev-ha ↔ dev-hb is bridged, and nothing reaches
+        either phone); the load gate (sixty seconds of the four floods
+        while the call is bridged and dev-s registers and dials every
+        five seconds, with the audio gate holding and dev-s's REGISTER
+        and INVITE latency within twice its idle baseline); and the
+        adversarial suite run against the live server rather than a
+        test mux. Then the README's admin examples move to 8081.
+     *Not in 9b:* mutual TLS, certificate rollover, live trunk settings
+     (contract §10). *After 9b:* 9c builds `dialler-admin` against this
+     API and nothing else.
+     *Built 2026-09-25 (this branch, awaiting approval):* steps 1–9 as
+     planned, one commit each (steps 6–9 together), `go test ./...`
+     green throughout, with fuzz targets on every admin write route and
+     the sub-millisecond digest-read test under continuous writes.
+     Step 10 is `harness/admin_test.sh`, `make harness-admin`, in
+     `harness-regression`. *Verified the same day, once Docker was
+     restarted:* `make harness-regression` end to end (SIPp conformance,
+     call, wake, qos, every trunk variant, stall, PBX hold and
+     unavailable, hold music, cancel-before-answer, the admin gate, the
+     narrowband and xfer-app trunk runs), then flow-gone, peer-gone,
+     hold-music-srtp, echo (server and PBX) and pbx-lines — all pass on
+     the branch, so the port move to 8081 and every 9b change hold under
+     the whole suite. In the admin gate the flood was refused 11–21
+     thousand times by the rate limit, nothing was refused as busy, no
+     event was dropped, the call's audio passed the gate and the server
+     grew by under 50 MiB and returned. One harness script changed
+     outside the contract's scope, and only for the environment:
+     `wake_test.sh` now runs `fake-app` from the compose image tag
+     because Docker Desktop's image store, after the restart, refused the
+     sha id it used to look up (the server's wake path is untouched).
+     *Two gaps closed the same day:* the gate now measures a third
+     party's latency — SIPp as dev-hc/213 (an identity no phone uses)
+     REGISTERs and INVITEs dev-hd/214 (a user with no phone, answered 480
+     by the wake path) six times idle and then every five seconds
+     through the flood; the loaded median must stay within twice the
+     idle median, with a 10 ms floor because SIPp reports whole
+     milliseconds and idle is about one. Measured: REGISTER 0–1 ms idle
+     and 1 ms loaded, INVITE→480 0 ms idle and 1 ms loaded. And every
+     directory write names its writer (`directory.By`: admin, device or
+     server), so `directory_changed` events carry `by`; the gate asserts
+     it. Decided in the building:
+     the `calls` view lists calls waiting on a wake with only their id
+     and start time, since nothing else is known before the INVITE; a
+     call's end reason is `bye`, `peer_gone` or `failed` (the wake and
+     ring timeouts end a call before it is bridged, so they never
+     appear); `for_seconds` is required whenever the *resulting* level
+     is debug or the trace is on, so "extend" is `{"for_seconds": N}`
+     and "turn off" is `{"level": "info"}`.
+
+  9c. **`dialler-admin`, the web UI (needs 9a and 9b).**
+     `server/cmd/dialler-admin`, the same Go module, standard library
+     only, templates and CSS through `embed`. Flags: `-listen`,
+     `-server`, `-admin-token-file`, `-server-ca` or `-insecure`,
+     `-password-file`, `-tls-cert`/`-tls-key` (self-signed when absent);
+     `make admin` and `make dev-admin`. One operator password, a session
+     cookie, a CSRF token on every form, no roles. It never touches SIP,
+     media or the wake gateway, and can crash, restart or be redeployed
+     with no effect on a call.
+     *QR:* an in-tree encoder (`internal/qr`: byte mode,
+     error-correction M, versions 1–10) rendered as inline SVG, so the
+     binary stays standard-library-only and builds offline; golden tests
+     plus one scan on a real phone, since a code that scans on one camera
+     and not another is the failure mode. If it proves slow to write, the
+     fallback is a vendored single-file JavaScript encoder (a one-off
+     download outside the sandbox). **Independent of 9a and 9b — start it
+     whenever.**
      *Isolation:* the rule of §4.8 applies in full — every admin action
      touches one device's entry and one device's file, notifies one
      device, and never restarts, reloads or re-binds anything. `make
@@ -1316,14 +1590,6 @@ on by config — see §7.4.
      revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
      call's audio continues, and neither dev-ha nor dev-hb sees a session
      close, a re-INVITE or a `directory_changed`.
-     *Inherited from item 3c, and easy to miss:* `GET /v1/admin/status`
-     is part of this item and does not exist yet, and the line half of
-     its payload is already written —
-     `pbxline.Manager.Statuses()` returns each line's state, realm,
-     expiry and last error, is unit-tested, and **has no caller until
-     this endpoint is built**. 3c stopped there deliberately rather than
-     add a second status endpoint that would only have to be folded into
-     this one. Wiring it up is a handler, not a design.
 
 ### Much later (not scheduled)
 
@@ -1553,7 +1819,7 @@ binary in the same module (stdlib only, templates and CSS embedded), holding
 the admin token and a login of its own, speaking to the call server's admin
 API over HTTPS and to nothing else. It never touches SIP, media or the wake
 gateway; it can crash, restart or be redeployed with no effect on a call.
-Typically both run on the same box (`-server https://127.0.0.1:8080`). The
+Typically both run on the same box (`-server https://127.0.0.1:8081`). The
 admin verifies the call server's certificate (`-server-ca`, or `-insecure`
 against the self-signed dev certificate) and serves its own pages over TLS
 through the same `tlsutil` pattern, behind a single operator password

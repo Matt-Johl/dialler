@@ -17,7 +17,7 @@ fmt:
 	cd server && gofmt -l -w .
 
 server:
-	cd server && go build -o ../bin/dialler-server ./cmd/dialler-server
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-server ./cmd/dialler-server
 
 # Dev run: self-signed TLS, data in ./data, admin token printed in the log.
 run: server
@@ -149,6 +149,13 @@ harness-pbx-lines:
 # The merge gate for anything that touches the PBX leg: every trunk-mode
 # test, in the order they get cheaper to debug. Lines mode is an addition
 # to this server, not a change to it, and this is what says so.
+# The admin API cannot disturb a call (ADMIN-API.md §4.7): admin actions
+# and a sustained flood against the admin listener while a call is
+# bridged, with the audio gate as the judge. LOAD_SECONDS=10 for a quick
+# look; the gate is 60.
+harness-admin:
+	sh harness/admin_test.sh
+
 harness-regression:
 	@set -e; \
 	echo "=== harness-test (SIPp conformance; needs the stack up, unlike the rest)"; \
@@ -158,7 +165,7 @@ harness-regression:
 	for t in harness-call harness-wake harness-qos \
 	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
 	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
-	         harness-hold-music harness-cancel-before-answer; do \
+	         harness-hold-music harness-cancel-before-answer harness-admin; do \
 	  echo "=== $$t"; $(MAKE) $$t || { echo "REGRESSION FAILED: $$t"; exit 1; }; \
 	done; \
 	echo "=== NARROWBAND=1 harness-trunk"; NARROWBAND=1 sh harness/trunk_test.sh || exit 1; \
@@ -223,7 +230,7 @@ dev-server: server tone
 	@$(if $(filter lines,$(PBX_MODE)),$(if $(ASTERISK_HOST),true,{ echo "PBX_MODE=lines needs a PBX to register to: set ASTERISK_HOST=<ubuntu-ip>"; exit 1; }),true)
 	@echo "pbx: $(if $(ASTERISK_HOST),$(if $(filter lines,$(PBX_MODE)),LINES — registering 201 to Asterisk at $(ASTERISK_HOST):5060; the PBX must have LINES=1 too,trunk to Asterisk at $(ASTERISK_HOST):$(if $(filter 1,$(TRUNK_TLS)),5061 over TLS,5060 over UDP))$(if $(TRUNK_SRTP), ; media SRTP $(TRUNK_SRTP),); listener :5062,none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
 	@$(if $(filter 1,$(TRUNK_TLS)),test -f $(LAN_TLS)/dialler.pem || { echo "no $(LAN_TLS)/dialler.pem — run: OUT=lan DIALLER_IP=$(DIALLER_PUBLIC_HOST) ASTERISK_IP=$(ASTERISK_HOST) sh harness/tls/gen_certs.sh"; exit 1; },true)
-	( sleep 2 && DIALLER_API=https://127.0.0.1:8080 PBX_LINES=$(if $(filter lines,$(PBX_MODE)),1,0) sh harness/provision.sh ) &
+	( sleep 2 && DIALLER_API=https://127.0.0.1:8081 PBX_LINES=$(if $(filter lines,$(PBX_MODE)),1,0) sh harness/provision.sh ) &
 	@mkdir -p data/logs
 	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
 	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS) \

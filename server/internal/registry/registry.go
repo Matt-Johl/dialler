@@ -29,6 +29,7 @@ type Registry struct {
 	byUser   map[string]*Endpoint
 	byDevice map[string]string          // deviceID → user
 	waiters  map[string][]chan struct{} // user → callers blocked in WaitRegistered
+	onChange func(ep Endpoint, registered bool)
 }
 
 // New creates an empty registry. now may be nil.
@@ -162,24 +163,45 @@ func (r *Registry) Deprovision(user string) {
 // Register records a live SIP contact for user with the given TTL.
 func (r *Registry) Register(user, contact string, ttl time.Duration) (Endpoint, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	ep := r.byUser[user]
 	if ep == nil {
+		r.mu.Unlock()
 		return Endpoint{}, ErrUnknownUser
 	}
 	ep.Contact = contact
 	ep.Expires = r.now().Add(ttl)
 	r.notifyLocked(user)
-	return *ep, nil
+	v, fn := *ep, r.onChange
+	r.mu.Unlock()
+	if fn != nil {
+		fn(v, true)
+	}
+	return v, nil
 }
 
 // Unregister clears the SIP contact for user.
 func (r *Registry) Unregister(user string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if ep := r.byUser[user]; ep != nil {
+	ep := r.byUser[user]
+	var v Endpoint
+	had := ep != nil && ep.Contact != ""
+	if ep != nil {
 		ep.Contact, ep.Expires = "", time.Time{}
+		v = *ep
 	}
+	fn := r.onChange
+	r.mu.Unlock()
+	if had && fn != nil {
+		fn(v, false)
+	}
+}
+
+// OnChange registers a callback invoked, outside the lock, after a user
+// registers or unregisters (for the event ring).
+func (r *Registry) OnChange(fn func(ep Endpoint, registered bool)) {
+	r.mu.Lock()
+	r.onChange = fn
+	r.mu.Unlock()
 }
 
 // Lookup returns the endpoint for user. An expired registration is reported
@@ -209,6 +231,19 @@ func (r *Registry) LookupDevice(deviceID string) (Endpoint, bool) {
 func (r *Registry) Registered(user string) bool {
 	ep, ok := r.Lookup(user)
 	return ok && ep.Contact != ""
+}
+
+// Endpoints snapshots every provisioned user, sorted by user, with expired
+// registrations shown as unregistered (for the status endpoint).
+func (r *Registry) Endpoints() []Endpoint {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Endpoint, 0, len(r.byUser))
+	for _, ep := range r.byUser {
+		out = append(out, r.viewLocked(ep))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].User < out[j].User })
+	return out
 }
 
 // Users lists provisioned users, sorted.

@@ -13,5 +13,5 @@ COPY --from=build /dialler-server /dialler-server
 COPY --from=build /fake-app /fake-app
 COPY --from=build --chown=65532:65532 /data /data
 VOLUME ["/data"]
-EXPOSE 7443 5061 8080
+EXPOSE 7443 5061 8080 8081
 ENTRYPOINT ["/dialler-server"]

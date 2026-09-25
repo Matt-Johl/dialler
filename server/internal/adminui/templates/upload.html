@@ -5,9 +5,9 @@
 <section class="card narrow">
   <p>The file holds <strong>{{.Count}}</strong> contacts. Compared with the directory as it is now (version {{.Version}}):</p>
   <ul class="counts">
-    <li><strong>{{.Result.Added}}</strong> added</li>
-    <li><strong>{{.Result.Changed}}</strong> changed</li>
-    <li><strong>{{.Result.Removed}}</strong> removed</li>
+    <li><b>{{.Result.Added}}</b> added</li>
+    <li><b>{{.Result.Changed}}</b> changed</li>
+    <li><b>{{.Result.Removed}}</b> removed</li>
   </ul>
   {{if and (eq .Result.Added 0) (eq .Result.Changed 0) (eq .Result.Removed 0)}}<p>Nothing would change; applying it is harmless and pushes nothing.</p>{{end}}
   <form method="post" action="/devices/{{.DeviceID}}/directory/upload">

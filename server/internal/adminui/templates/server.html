@@ -32,7 +32,7 @@
   <h2>Trunk</h2>
   <dl>
     <dt>PBX</dt><dd class="mono small">{{.URI}}</dd>
-    <dt>State</dt><dd><span class="trunk {{.Qualify}}">{{.Qualify}}</span>{{if .QualifySince.IsZero}}{{else}} since {{when .QualifySince}}{{end}}{{if .QualifyLastError}} · {{.QualifyLastError}}{{end}}</dd>
+    <dt>State</dt><dd><span class="chip {{if eq .Qualify "up"}}ok{{else if eq .Qualify "down"}}bad{{end}}">{{.Qualify}}</span>{{if .QualifySince.IsZero}}{{else}} since {{when .QualifySince}}{{end}}{{if .QualifyLastError}} · {{.QualifyLastError}}{{end}}</dd>
     <dt>Media</dt><dd>SRTP {{.SRTP}} · codecs {{join .Codecs ", "}}</dd>
     <dt>TLS</dt><dd>{{if eq .Transport "tls"}}min {{.TLS.MinVersion}}{{if .TLS.Insecure}} · <strong>certificate not verified</strong>{{end}}{{if not .TLS.CertSet}} · no certificate: inbound calls cannot complete{{end}}{{else}}not TLS ({{.Transport}}){{end}}</dd>
   </dl>

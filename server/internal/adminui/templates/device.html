@@ -3,8 +3,13 @@
 {{$ro := $.ReadOnly}}
 {{$upd := rfc3339 .Device.UpdatedAt}}
 <p class="crumb"><a href="/fleet">Fleet</a> ›</p>
-<h1>{{.Device.User}} <small>{{.Device.Description}}</small></h1>
-<p class="mono">device id {{.Device.DeviceID}} · {{if .Device.Revoked}}<strong>revoked</strong>{{else if .Device.Enrolled}}enrolled{{else}}not enrolled yet{{end}}{{if .Device.CodePending}} · code pending until {{when .Device.CodeExpiresAt}}{{end}}</p>
+<div class="device-head">
+  <span class="avatar lg">{{initials .Device.Description .Device.User}}</span>
+  <div>
+    <h1>{{if .Device.Description}}{{.Device.Description}}{{else}}Ext {{.Device.User}}{{end}}</h1>
+    <div class="meta">Ext {{.Device.User}} · <span class="mono">device id {{.Device.DeviceID}}</span> · {{if .Device.Revoked}}<span class="chip bad">revoked</span>{{else if .Device.Enrolled}}enrolled{{else}}not enrolled yet{{end}}{{if .Device.CodePending}} · code pending until {{when .Device.CodeExpiresAt}}{{end}}</div>
+  </div>
+</div>
 
 {{if .Code}}
 <section class="card code">
@@ -24,10 +29,10 @@
 <section class="card">
   <h2>Live</h2>
   <dl>
-    <dt>App</dt><dd>{{with index .Live.Sessions "app"}}connected {{since .Since}} ago from {{.Addr}}{{if .AppVersion}}, version {{.AppVersion}}{{end}}{{else}}offline{{end}}</dd>
-    <dt>Wake extension</dt><dd>{{with index .Live.Sessions "extension"}}connected {{since .Since}} ago from {{.Addr}}{{else}}offline{{end}}</dd>
-    <dt>SIP</dt><dd>{{with .Live.SIP}}registered until {{when .ExpiresAt}}<br><span class="mono small">{{.Contact}}</span>{{else}}not registered{{end}}</dd>
-    {{with .Live.Line}}<dt>PBX line</dt><dd><span class="line {{.State}}">{{.State}}</span> since {{when .Since}}{{if .Realm}} · realm {{.Realm}}{{end}}{{if .ExpiresAt.IsZero}}{{else}} · expires {{when .ExpiresAt}}{{end}}{{if .Error}}<br><small>{{.Error}}{{if .Attempts}} ({{.Attempts}} attempts){{end}}</small>{{end}}</dd>{{end}}
+    <dt>App</dt><dd>{{with index .Live.Sessions "app"}}<span class="status"><i class="dot"></i> Connected {{since .Since}} ago</span><br><span class="small">{{.Addr}}{{if .AppVersion}} · version {{.AppVersion}}{{end}}</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}</dd>
+    <dt>Wake extension</dt><dd>{{with index .Live.Sessions "extension"}}<span class="status"><i class="dot"></i> Connected {{since .Since}} ago</span><br><span class="small">{{.Addr}}</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}</dd>
+    <dt>SIP</dt><dd>{{with .Live.SIP}}<span class="status"><i class="dot"></i> Registered until {{when .ExpiresAt}}</span><br><span class="mono small">{{.Contact}}</span>{{else}}<span class="status off"><i class="dot"></i> Not registered</span>{{end}}</dd>
+    {{with .Live.Line}}<dt>PBX line</dt><dd><span class="chip {{if eq .State "registered"}}ok{{else if eq .State "refused"}}bad{{else}}warn{{end}}">{{.State}}</span> since {{when .Since}}{{if .Realm}} · realm {{.Realm}}{{end}}{{if .ExpiresAt.IsZero}}{{else}} · expires {{when .ExpiresAt}}{{end}}{{if .Error}}<br><small>{{.Error}}{{if .Attempts}} ({{.Attempts}} attempts){{end}}</small>{{end}}</dd>{{end}}
     {{with .Live.Call}}<dt>Call</dt><dd><a href="/calls">on a call</a> for {{since .Since}}</dd>{{end}}
   </dl>
 </section>

@@ -479,7 +479,7 @@ func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("preview: %d %s", rec.Code, rec.Body)
 	}
-	mustContain(t, rec, "Replace the directory?", "<strong>2</strong> added", "<strong>1</strong> removed", `name="stage" value="confirm"`, `name="directory_version" value="5"`)
+	mustContain(t, rec, "Replace the directory?", "<b>2</b> added", "<b>1</b> removed", `name="stage" value="confirm"`, `name="directory_version" value="5"`)
 	if !strings.Contains(h.api.requests[len(h.api.requests)-2], "dry_run=1") {
 		t.Fatalf("preview must be a dry run: %v", h.api.requests)
 	}

@@ -149,6 +149,13 @@ harness-pbx-lines:
 # The merge gate for anything that touches the PBX leg: every trunk-mode
 # test, in the order they get cheaper to debug. Lines mode is an addition
 # to this server, not a change to it, and this is what says so.
+# The admin API cannot disturb a call (ADMIN-API.md §4.7): admin actions
+# and a sustained flood against the admin listener while a call is
+# bridged, with the audio gate as the judge. LOAD_SECONDS=10 for a quick
+# look; the gate is 60.
+harness-admin:
+	sh harness/admin_test.sh
+
 harness-regression:
 	@set -e; \
 	echo "=== harness-test (SIPp conformance; needs the stack up, unlike the rest)"; \
@@ -158,7 +165,7 @@ harness-regression:
 	for t in harness-call harness-wake harness-qos \
 	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
 	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
-	         harness-hold-music harness-cancel-before-answer; do \
+	         harness-hold-music harness-cancel-before-answer harness-admin; do \
 	  echo "=== $$t"; $(MAKE) $$t || { echo "REGRESSION FAILED: $$t"; exit 1; }; \
 	done; \
 	echo "=== NARROWBAND=1 harness-trunk"; NARROWBAND=1 sh harness/trunk_test.sh || exit 1; \

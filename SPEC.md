@@ -1527,6 +1527,29 @@ on by config — see §7.4.
      *Not in 9b:* mutual TLS, certificate rollover, live trunk settings
      (contract §10). *After 9b:* 9c builds `dialler-admin` against this
      API and nothing else.
+     *Built 2026-09-25 (this branch, awaiting approval):* steps 1–9 as
+     planned, one commit each (steps 6–9 together), `go test ./...`
+     green throughout, with fuzz targets on every admin write route and
+     the sub-millisecond digest-read test under continuous writes.
+     Step 10 is written (`harness/admin_test.sh`, `make harness-admin`,
+     in `harness-regression`) but **has not run**: Docker Desktop stopped
+     answering its socket partway through the session and had not
+     returned by the end, so no harness test ran against any of 9b —
+     including the port move to 8081 that every existing harness test
+     now depends on. First thing on a machine with Docker: `make
+     harness-call`, then `make harness-admin`. Two things the harness
+     gate does not yet measure, recorded rather than hidden: a third
+     phone's REGISTER and INVITE latency during the flood (needs a third
+     baresip in compose and a timing probe) and the `by` field on
+     `directory_changed` events (the store's change hook does not know
+     whether the admin or the device wrote). Decided in the building:
+     the `calls` view lists calls waiting on a wake with only their id
+     and start time, since nothing else is known before the INVITE; a
+     call's end reason is `bye`, `peer_gone` or `failed` (the wake and
+     ring timeouts end a call before it is bridged, so they never
+     appear); `for_seconds` is required whenever the *resulting* level
+     is debug or the trace is on, so "extend" is `{"for_seconds": N}`
+     and "turn off" is `{"level": "info"}`.
 
   9c. **`dialler-admin`, the web UI (needs 9a and 9b).**
      `server/cmd/dialler-admin`, the same Go module, standard library

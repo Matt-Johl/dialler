@@ -18,6 +18,7 @@ services:
       - -signal-addr=:7443
       - -sip-addr=:5061
       - -http-addr=:8080
+      - -admin-addr=:8081
       - -admin-token=harness
       # The host apps register SIP to. Inside the compose network "dialler"
       # resolves; a phone needs the Mac's LAN address:
@@ -93,7 +94,8 @@ services:
     ports:
       - "${DIALLER_SIGNAL_HOSTPORT:-7443}:7443"
       - "${DIALLER_SIP_HOSTPORT:-5061}:5061"
-      - "${DIALLER_HTTP_HOSTPORT:-8080}:8080" # directory + admin API; reachable from devices on the LAN (token-protected)
+      - "${DIALLER_HTTP_HOSTPORT:-8080}:8080" # device API (directory, diag, enrol); reachable from devices on the LAN
+      - "${DIALLER_ADMIN_HOSTPORT:-8081}:8081" # admin API; loopback-only in production, published here so provisioning runs from the host
       - "${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}:${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}/udp" # relayed media, so phones (and containers via the host address) reach it
 
   asterisk:

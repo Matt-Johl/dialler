@@ -8,7 +8,7 @@
 # the two layers of shell quoting that reach it through innet.sh are exactly
 # the kind of thing that silently does nothing and makes a test pass.
 set -eu
-API="${DIALLER_API:-https://dialler:8080}"
+API="${DIALLER_API:-https://dialler:8081}"
 TOKEN="${DIALLER_ADMIN_TOKEN:-harness}"
 [ $# -eq 3 ] || { echo "usage: set_pbx_line.sh <device> <digest_user> <secret>" >&2; exit 2; }
 

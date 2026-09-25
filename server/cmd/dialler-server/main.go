@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"dialler/server/internal/admin"
 	"dialler/server/internal/b2bua"
 	"dialler/server/internal/diag"
 	"dialler/server/internal/directory"
@@ -47,7 +48,9 @@ func main() {
 	var (
 		signalAddr   = flag.String("signal-addr", ":7443", "wire-protocol TLS listen address")
 		sipAddr      = flag.String("sip-addr", ":5061", "app-leg SIP/TLS listen address")
-		httpAddr     = flag.String("http-addr", "127.0.0.1:8080", "directory + admin HTTP listen address")
+		httpAddr     = flag.String("http-addr", "127.0.0.1:8080", "device API listen address (directory, diag, enrol); phones reach it, so a deployment binds it on the LAN")
+		adminAddr    = flag.String("admin-addr", "127.0.0.1:8081", "admin API listen address (/v1/admin/); loopback by default because dialler-admin runs on this host. Bind it wider only for testing across machines — the token over TLS protects it either way")
+		adminTokFile = flag.String("admin-token-file", "", "file holding the admin bearer token (whitespace trimmed); the production form of -admin-token, which is visible to every local user in ps")
 		certFile     = flag.String("tls-cert", "", "TLS certificate PEM (empty → self-signed dev cert)")
 		keyFile      = flag.String("tls-key", "", "TLS private key PEM")
 		publicHost   = flag.String("public-host", "", "hostname/IP advertised to apps in wakes and certs (default: first non-loopback IPv4)")
@@ -105,6 +108,11 @@ func main() {
 		os.Exit(2)
 	}
 	sip.SIPDebug = *sipTrace
+	adminTok, err := resolveAdminToken(*adminToken, *adminTokFile, os.ReadFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	var level slog.Level
 	if err := level.UnmarshalText([]byte(*logLevel)); err != nil {
@@ -121,10 +129,10 @@ func main() {
 	media.SetDefaultLogger(log)
 
 	if err := run(context.Background(), log, options{
-		signalAddr: *signalAddr, sipAddr: *sipAddr, httpAddr: *httpAddr,
+		signalAddr: *signalAddr, sipAddr: *sipAddr, httpAddr: *httpAddr, adminAddr: *adminAddr,
 		certFile: *certFile, keyFile: *keyFile,
 		publicHost: *publicHost, localDomain: *localDomain,
-		dataDir: *dataDir, adminToken: *adminToken,
+		dataDir: *dataDir, adminToken: adminTok,
 		ringTimeout: *ringTimeout, rtpMin: *rtpMin, rtpMax: *rtpMax,
 		keepAdvertisedContact: !*rewrite,
 		noSymmetricRTP:        !*rtpSym,
@@ -164,8 +172,31 @@ func certFingerprint(cfg *tls.Config) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
+// resolveAdminToken picks the admin bearer token from the two flags: the
+// file wins when given (trimmed; empty is an error), the literal is the
+// harness's, and both at once is a mistake worth refusing. Empty means
+// "generate one", which run does.
+func resolveAdminToken(literal, file string, readFile func(string) ([]byte, error)) (string, error) {
+	if file == "" {
+		return literal, nil
+	}
+	if literal != "" {
+		return "", errors.New("give -admin-token or -admin-token-file, not both")
+	}
+	b, err := readFile(file)
+	if err != nil {
+		return "", fmt.Errorf("-admin-token-file: %w", err)
+	}
+	tok := strings.TrimSpace(string(b))
+	if tok == "" {
+		return "", fmt.Errorf("-admin-token-file %s is empty", file)
+	}
+	return tok, nil
+}
+
 type options struct {
 	signalAddr, sipAddr, httpAddr string
+	adminAddr                     string
 	certFile, keyFile             string
 	publicHost, localDomain       string
 	dataDir, adminToken           string
@@ -388,8 +419,11 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		calls.HandleWakeAck(deviceID, ack)
 	})
 
-	// HTTP: directory + admin.
+	// HTTP, two listeners (ADMIN-API.md §4.1): the device API on -http-addr,
+	// which phones reach, and the admin API on -admin-addr, loopback by
+	// default. /v1/admin/ is not served on the device listener at all.
 	mux := http.NewServeMux()
+	adminAPI := http.NewServeMux()
 	dirH := directory.NewHandler(dir, devices.DeviceAuth)
 	mux.Handle("/v1/directory", dirH)
 	mux.Handle("/v1/directory/", dirH)
@@ -397,8 +431,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// are more specific than the enrolment handler's prefix, so they win.
 	knownDevice := func(id string) bool { _, ok := devices.UserFor(id); return ok }
 	dirAdmin := directory.NewAdminHandler(dir, o.adminToken, knownDevice)
-	mux.Handle("/v1/admin/devices/{id}/directory", dirAdmin)
-	mux.Handle("/v1/admin/devices/{id}/directory/{cid}", dirAdmin)
+	adminAPI.Handle("/v1/admin/devices/{id}/directory", dirAdmin)
+	adminAPI.Handle("/v1/admin/devices/{id}/directory/{cid}", dirAdmin)
+	adminAPI.Handle("GET /v1/admin/whoami", admin.Whoami())
 	// Device diagnostics land in <data-dir>/diag/<device>/ (app + extension
 	// logs, MetricKit crash/CPU reports): readable on this machine without
 	// touching the phone. See ios/README.md "When the app dies or freezes".
@@ -459,11 +494,17 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		// nothing else on the server is touched.
 		OnPBXLine: pbxLineHook(log, lines, devices),
 	}
-	mux.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,
+	adminAPI.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,
 		enroll.Link{Host: o.publicHost, HTTPSPort: httpPort, CertSHA256: certSHA256}, hooks))
 	mux.Handle("POST /v1/enrol", enroll.NewEnrolHandler(devices,
 		enroll.EnrolInfo{SignalPort: signalPort, SIPDomain: o.localDomain, CertSHA256: certSHA256}, hooks))
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = fmt.Fprintln(w, "ok") })
+	mux.Handle("GET /healthz", admin.Healthz())
+	// The admin front door (ADMIN-API.md §4.7): rate limit, bearer guard and
+	// in-flight cap ahead of every admin route; healthz outside it.
+	var adminStats admin.Stats
+	adminRoot := http.NewServeMux()
+	adminRoot.Handle("GET /healthz", admin.Healthz())
+	adminRoot.Handle("/v1/admin/", admin.Chain(o.adminToken, admin.NewRateLimiter(), &adminStats, adminAPI))
 
 	// Listeners.
 	// The wire-protocol listener carries call signalling (wakes): CS3, like
@@ -480,23 +521,35 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if err != nil {
 		return fmt.Errorf("http listen: %w", err)
 	}
-	httpSrv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	httpSrv := &http.Server{Handler: mux}
+	admin.ConfigureServer(httpSrv)
+	// The admin listener accepts a bounded number of connections; the TLS
+	// layer sits on top so a closed TLS conn frees its slot.
+	adminRaw, err := net.Listen("tcp", o.adminAddr)
+	if err != nil {
+		return fmt.Errorf("admin listen: %w", err)
+	}
+	adminLn := tls.NewListener(admin.LimitListener(adminRaw, admin.MaxConnections), tlsCfg)
+	adminSrv := &http.Server{Handler: adminRoot}
+	admin.ConfigureServer(adminSrv)
 
 	log.Info("dialler-server starting",
-		"signal", signalLn.Addr(), "sip", o.sipAddr, "https", httpLn.Addr(),
+		"signal", signalLn.Addr(), "sip", o.sipAddr, "https", httpLn.Addr(), "admin", adminLn.Addr(),
 		"public_host", o.publicHost, "local_domain", o.localDomain,
 		"ring_timeout", o.ringTimeout, "rtp_range", fmt.Sprintf("%d-%d", o.rtpMin, o.rtpMax), "data_dir", o.dataDir)
 
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
 	go func() { errc <- gw.Serve(ctx, signalLn) }()
 	go func() { errc <- calls.Serve(ctx) }()
-	go func() {
-		err := httpSrv.Serve(httpLn)
+	serveHTTP := func(srv *http.Server, ln net.Listener) {
+		err := srv.Serve(ln)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
 		errc <- err
-	}()
+	}
+	go serveHTTP(httpSrv, httpLn)
+	go serveHTTP(adminSrv, adminLn)
 
 	select {
 	case <-ctx.Done():
@@ -510,6 +563,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
+	_ = adminSrv.Shutdown(shutdownCtx)
 	return nil
 }
 

@@ -90,7 +90,7 @@ To prove the credential path rather than assume it, break it and watch both
 ends refuse:
 
 ```sh
-curl -sSk -X POST https://127.0.0.1:8080/v1/admin/devices/dev-a/pbx-line \
+curl -sSk -X POST https://127.0.0.1:8081/v1/admin/devices/dev-a/pbx-line \
   -H 'Authorization: Bearer harness' \
   -d '{"digest_user":"line201","secret":"wrong"}'
 # server log: "pbx line: refused" once, and no retry storm

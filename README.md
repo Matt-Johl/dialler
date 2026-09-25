@@ -31,7 +31,7 @@ them on a normal machine to exercise real forwarding.
 ## Run the server locally
 
 ```sh
-make run           # self-signed TLS on :7443 (signal), :5061 (SIP) and 127.0.0.1:8080 (directory/admin)
+make run           # self-signed TLS on :7443 (signal), :5061 (SIP), 127.0.0.1:8080 (device API) and 127.0.0.1:8081 (admin API)
 ```
 
 Enrol a device, give it a contact, and fetch its directory (`-k`: the dev
@@ -43,9 +43,9 @@ does), and the device reads and writes its own at `/v1/directory`:
 
 ```sh
 curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' \
-     -d '{"device_id":"dev-a","user":"201"}' https://127.0.0.1:8080/v1/admin/devices
+     -d '{"device_id":"dev-a","user":"201"}' https://127.0.0.1:8081/v1/admin/devices
 curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' \
-     -d '{"display_name":"Desk","uri":"sip:100@asterisk","mode":"trunk"}' https://127.0.0.1:8080/v1/admin/devices/dev-a/directory
+     -d '{"display_name":"Desk","uri":"sip:100@asterisk","mode":"trunk"}' https://127.0.0.1:8081/v1/admin/devices/dev-a/directory
 curl -sk -H 'X-Device-ID: dev-a' -H "Authorization: Bearer $TOKEN" 'https://127.0.0.1:8080/v1/directory?since=0'
 ```
 
@@ -75,7 +75,7 @@ A device's office Wi-Fi list is server-managed too (SPEC §6 item 8b):
 
 ```sh
 curl -sk -H 'Authorization: Bearer dev' -H 'Content-Type: application/json' -X PUT \
-     -d '{"ssids":["Office","Office-5G"]}' https://127.0.0.1:8080/v1/admin/devices/dev-a/config
+     -d '{"ssids":["Office","Office-5G"]}' https://127.0.0.1:8081/v1/admin/devices/dev-a/config
 ```
 
 The app receives it in its welcome and as a `config` push on every change,
@@ -135,7 +135,7 @@ Provisioning a line is one admin call per device; the secret is write-only
 and no read returns it:
 
 ```sh
-curl -sSk -X POST https://127.0.0.1:8080/v1/admin/devices/dev-a/pbx-line \
+curl -sSk -X POST https://127.0.0.1:8081/v1/admin/devices/dev-a/pbx-line \
   -H 'Authorization: Bearer <admin token>' \
   -d '{"digest_user":"<the exchange End User>","secret":"<its digest credential>"}'
 # → {"dn":"","digest_user":"…","configured":true}   ("" dn = the device's own extension)

@@ -19,7 +19,7 @@
 # fixed one above.
 set -eu
 # TLS on the server's (self-signed in dev) certificate, hence -k below.
-API="${DIALLER_API:-https://127.0.0.1:8080}"
+API="${DIALLER_API:-https://127.0.0.1:8081}"
 TOKEN="${DIALLER_ADMIN_TOKEN:-harness}"
 DEV_A_TOKEN="${DEV_A_TOKEN:-tok_dev_a_harness_fixed}"
 DEV_HA_TOKEN="${DEV_HA_TOKEN:-tok_dev_ha_harness_fixed}"
@@ -70,7 +70,7 @@ get() {
 }
 if get /v1/admin/devices | tr '}' '\n' | grep '"device_id":"dev-a"' | grep -q '"enrolled":true'; then
   echo "dev-a is enrolled already; keeping its credential"
-  post /v1/admin/devices '{"device_id":"dev-a","user":"201"}'
+  post /v1/admin/devices/dev-a/enrol-code ''
 else
   post /v1/admin/devices "{\"device_id\":\"dev-a\",\"user\":\"201\",\"token\":\"$DEV_A_TOKEN\"}"
 fi

@@ -467,6 +467,25 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			}
 			gw.Disconnect(deviceID)
 		},
+		// Purge (ADMIN-API.md §5.1): everything a revoke does, then the
+		// device's directory and diagnostics go with its record. One
+		// device's entries and files; nothing else is touched.
+		OnPurge: func(deviceID string) {
+			if ep, ok := reg.LookupDevice(deviceID); ok {
+				reg.Deprovision(ep.User)
+				if lines != nil {
+					lines.Delete(ep.User)
+				}
+			}
+			gw.Disconnect(deviceID)
+			if err := dir.Purge(deviceID); err != nil {
+				log.Error("purge: directory", "device", deviceID, "err", err)
+			}
+			if err := diag.Purge(filepath.Join(o.dataDir, "diag"), deviceID); err != nil {
+				log.Error("purge: diagnostics", "device", deviceID, "err", err)
+			}
+			log.Info("device purged", "device", deviceID)
+		},
 		// A claim rotates the credential: whatever is connected with the
 		// old one is dropped (it reconnects with the new one, or it was a
 		// phone this device id no longer belongs to). One device only.

@@ -183,8 +183,40 @@ type Store struct {
 	Secrets *secrets.Box
 }
 
+// Match is an If-Match precondition (ADMIN-API.md §4.5): a write proceeds
+// only if the record is as the caller last saw it. Checked inside the
+// commit, so two writers cannot both pass. Nil fields are not checked.
+type Match struct {
+	// UpdatedAt must equal the record's updated_at.
+	UpdatedAt *time.Time
+	// ConfigVersion must equal the settings' version (0: none set yet).
+	ConfigVersion *int64
+}
+
+func (m Match) check(r *record) error {
+	if m.UpdatedAt != nil && !m.UpdatedAt.Equal(r.UpdatedAt) {
+		return ErrVersionMismatch
+	}
+	if m.ConfigVersion != nil && *m.ConfigVersion != r.ConfigVersion {
+		return ErrVersionMismatch
+	}
+	return nil
+}
+
+// checkAll runs every precondition against r.
+func checkAll(pre []Match, r *record) error {
+	for _, m := range pre {
+		if err := m.check(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Errors the store returns; the handlers map them to the §4.4 codes.
 var (
+	// ErrVersionMismatch is returned when a Match precondition fails.
+	ErrVersionMismatch = errors.New("enroll: the record changed since it was read")
 	// ErrInvalid is returned for empty device ids or users.
 	ErrInvalid = errors.New("enroll: device_id and user are required")
 	// ErrExists is returned by Create for a device id already in use.
@@ -417,7 +449,7 @@ func (s *Store) Create(deviceID, user, description string) (string, error) {
 }
 
 // SetDescription renames a device. ok is false for an unknown device.
-func (s *Store) SetDescription(deviceID, description string) (bool, error) {
+func (s *Store) SetDescription(deviceID, description string, pre ...Match) (bool, error) {
 	found := false
 	err := s.commit(func() error {
 		rec, ok := s.devices[deviceID]
@@ -425,6 +457,9 @@ func (s *Store) SetDescription(deviceID, description string) (bool, error) {
 			return nil
 		}
 		found = true
+		if err := checkAll(pre, rec); err != nil {
+			return err
+		}
 		if rec.Description == description {
 			return errNoChange
 		}
@@ -549,7 +584,7 @@ func (s *Store) Config(deviceID string) *DeviceConfig {
 // is a no-op — same version, changed false, nothing written — so a
 // re-applied form disturbs nobody (ADMIN-API.md §5.3). ErrInvalid for an
 // unknown device.
-func (s *Store) SetConfig(deviceID string, ssids []string) (cfg DeviceConfig, changed bool, err error) {
+func (s *Store) SetConfig(deviceID string, ssids []string, pre ...Match) (cfg DeviceConfig, changed bool, err error) {
 	clean := make([]string, 0, len(ssids))
 	seen := map[string]bool{}
 	for _, ss := range ssids {
@@ -564,6 +599,9 @@ func (s *Store) SetConfig(deviceID string, ssids []string) (cfg DeviceConfig, ch
 		r, ok := s.devices[deviceID]
 		if !ok {
 			return ErrInvalid
+		}
+		if err := checkAll(pre, r); err != nil {
+			return err
 		}
 		if r.ConfigVersion > 0 && equalStrings(r.SSIDs, clean) {
 			cfg = DeviceConfig{Version: r.ConfigVersion, SSIDs: append([]string{}, clean...)}

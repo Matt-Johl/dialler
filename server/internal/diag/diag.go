@@ -55,6 +55,20 @@ func Handler(dir string, deviceAuth func(http.Handler) http.Handler, log *slog.L
 	}))
 }
 
+// Purge removes everything a device uploaded (an admin purging the device,
+// ADMIN-API.md §5.1). A device that never uploaded is not an error.
+func Purge(dir, device string) error {
+	device = clean(device)
+	if device == "" {
+		return nil
+	}
+	err := os.RemoveAll(filepath.Join(dir, device))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // Store writes one diagnostic and returns its path.
 func Store(dir, device, kind, name string, body []byte) (string, error) {
 	d := filepath.Join(dir, device)

@@ -23,7 +23,7 @@ var ErrNoSecretKey = errors.New("enroll: no secret key configured; cannot store 
 // the device's own user, which is the usual case. Both digestUser and secret
 // are required: a line with no credential could never register, and storing
 // half of one only produces a puzzle later.
-func (s *Store) SetPBXLine(deviceID, dn, digestUser, secret string) (PBXLine, error) {
+func (s *Store) SetPBXLine(deviceID, dn, digestUser, secret string, pre ...Match) (PBXLine, error) {
 	dn, digestUser = strings.TrimSpace(dn), strings.TrimSpace(digestUser)
 	if digestUser == "" || secret == "" {
 		return PBXLine{}, fmt.Errorf("%w: digest_user and secret are required", ErrInvalid)
@@ -41,6 +41,9 @@ func (s *Store) SetPBXLine(deviceID, dn, digestUser, secret string) (PBXLine, er
 		r, ok := s.devices[deviceID]
 		if !ok {
 			return ErrInvalid
+		}
+		if err := checkAll(pre, r); err != nil {
+			return err
 		}
 		now := s.now()
 		r.PBXLine = &lineRecord{DN: dn, DigestUser: digestUser, SecretEnc: sealed, UpdatedAt: now}
@@ -68,7 +71,7 @@ func (s *Store) PBXLine(deviceID string) (PBXLine, bool) {
 
 // DeletePBXLine removes deviceID's line. ok is false for an unknown device;
 // removing a line that is not there is not an error.
-func (s *Store) DeletePBXLine(deviceID string) (bool, error) {
+func (s *Store) DeletePBXLine(deviceID string, pre ...Match) (bool, error) {
 	found := false
 	err := s.commit(func() error {
 		r, ok := s.devices[deviceID]
@@ -76,6 +79,9 @@ func (s *Store) DeletePBXLine(deviceID string) (bool, error) {
 			return nil
 		}
 		found = true
+		if err := checkAll(pre, r); err != nil {
+			return err
+		}
 		if r.PBXLine == nil {
 			return errNoChange
 		}

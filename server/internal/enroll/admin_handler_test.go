@@ -146,6 +146,125 @@ func TestAdminRevokedAndRePost(t *testing.T) {
 	}
 }
 
+// The step-4 routes: one device, rename with If-Match, purge, cancel code.
+func TestAdminDeviceRoutes(t *testing.T) {
+	s, _ := Open("")
+	var purged, revoked []string
+	h := NewAdminHandler(s, "admin", Link{}, Hooks{
+		OnPurge:  func(id string) { purged = append(purged, id) },
+		OnRevoke: func(id string) { revoked = append(revoked, id) },
+	})
+	adminDo(h, "POST", "/v1/admin/devices", `{"device_id":"dev-a","user":"201","description":"A"}`)
+
+	rec, _ := adminDo(h, "GET", "/v1/admin/devices/dev-a", "")
+	if rec.Code != 200 {
+		t.Fatalf("get one: %d %s", rec.Code, rec.Body)
+	}
+	var d Device
+	_ = json.Unmarshal(rec.Body.Bytes(), &d)
+	if d.DeviceID != "dev-a" || d.Description != "A" || !d.CodePending || d.CodeExpiresAt.IsZero() || d.UpdatedAt.IsZero() {
+		t.Fatalf("device view: %+v", d)
+	}
+	if rec, _ := adminDo(h, "GET", "/v1/admin/devices/nope", ""); rec.Code != 404 {
+		t.Fatalf("get unknown: %d", rec.Code)
+	}
+
+	// PATCH with the right If-Match, then with a stale one.
+	req := httptest.NewRequest("PATCH", "/v1/admin/devices/dev-a", strings.NewReader(`{"description":"B"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"`+d.UpdatedAt.Format("2006-01-02T15:04:05.999999999Z07:00")+`"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("patch with matching If-Match: %d %s", rec.Code, rec.Body)
+	}
+	var d2 Device
+	_ = json.Unmarshal(rec.Body.Bytes(), &d2)
+	if d2.Description != "B" || !d2.UpdatedAt.After(d.UpdatedAt) {
+		t.Fatalf("after patch: %+v", d2)
+	}
+	req = httptest.NewRequest("PATCH", "/v1/admin/devices/dev-a", strings.NewReader(`{"description":"C"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"`+d.UpdatedAt.Format("2006-01-02T15:04:05.999999999Z07:00")+`"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 412 || errorBodyOf(t, rec).Error != admin.CodeVersionMismatch {
+		t.Fatalf("patch with stale If-Match: %d %s", rec.Code, rec.Body)
+	}
+	if got, _ := s.Device("dev-a"); got.Description != "B" {
+		t.Fatal("a refused patch changed the record")
+	}
+	req = httptest.NewRequest("PATCH", "/v1/admin/devices/dev-a", strings.NewReader(`{"description":"C"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"yesterday"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 400 {
+		t.Fatalf("malformed If-Match: %d", rec.Code)
+	}
+	if rec, e := adminDo(h, "PATCH", "/v1/admin/devices/dev-a", `{}`); rec.Code != 400 || e.Field != "description" {
+		t.Fatalf("patch without description: %d %s", rec.Code, rec.Body)
+	}
+	if rec, e := adminDo(h, "PATCH", "/v1/admin/devices/dev-a", `{"user":"9"}`); rec.Code != 400 || e.Error != admin.CodeUnknownField {
+		t.Fatalf("patch user: %d %s", rec.Code, rec.Body)
+	}
+
+	// Config If-Match is the settings' version.
+	adminDo(h, "PUT", "/v1/admin/devices/dev-a/config", `{"ssids":["Office"]}`)
+	req = httptest.NewRequest("PUT", "/v1/admin/devices/dev-a/config", strings.NewReader(`{"ssids":["Other"]}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"0"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 412 {
+		t.Fatalf("config with stale version: %d %s", rec.Code, rec.Body)
+	}
+	req = httptest.NewRequest("PUT", "/v1/admin/devices/dev-a/config", strings.NewReader(`{"ssids":["Other"]}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"1"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("config with current version: %d %s", rec.Code, rec.Body)
+	}
+
+	// Cancel the code, then purge.
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/dev-a/enrol-code", ""); rec.Code != 204 {
+		t.Fatalf("cancel code: %d", rec.Code)
+	}
+	if got, _ := s.Device("dev-a"); got.CodePending {
+		t.Fatal("code still pending after cancel")
+	}
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/dev-a/enrol-code", ""); rec.Code != 204 {
+		t.Fatalf("cancel with none pending: %d", rec.Code)
+	}
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/nope/enrol-code", ""); rec.Code != 404 {
+		t.Fatalf("cancel unknown: %d", rec.Code)
+	}
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/dev-a?purge=maybe", ""); rec.Code != 400 {
+		t.Fatalf("bad purge value: %d", rec.Code)
+	}
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/dev-a?purge=1", ""); rec.Code != 204 {
+		t.Fatalf("purge: %d %s", rec.Code, rec.Body)
+	}
+	if s.Exists("dev-a") || len(purged) != 1 || purged[0] != "dev-a" || len(revoked) != 0 {
+		t.Fatalf("after purge: exists=%v purged=%v revoked=%v", s.Exists("dev-a"), purged, revoked)
+	}
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/dev-a?purge=1", ""); rec.Code != 404 {
+		t.Fatalf("purge again: %d", rec.Code)
+	}
+	if rec, _ := adminDo(h, "GET", "/v1/admin/devices/dev-a", ""); rec.Code != 404 {
+		t.Fatalf("get after purge: %d", rec.Code)
+	}
+}
+
+func errorBodyOf(t *testing.T, rec *httptest.ResponseRecorder) admin.ErrorBody {
+	t.Helper()
+	var e admin.ErrorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &e)
+	return e
+}
+
 func TestAdminBodyLimitsAndContentType(t *testing.T) {
 	s, _ := Open("")
 	h := NewAdminHandler(s, "admin", Link{}, Hooks{})

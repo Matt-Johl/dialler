@@ -19,6 +19,9 @@ type Hooks struct {
 	OnIssue func(deviceID, user string)
 	// OnRevoke: the admin revoked a device.
 	OnRevoke func(deviceID string)
+	// OnPurge: the admin deleted a device's record outright; whatever else
+	// the device owned (directory, diagnostics, line, sessions) goes too.
+	OnPurge func(deviceID string)
 	// OnClaim: a device claimed its enrolment code and holds a NEW
 	// credential; whatever was connected with the old one must go.
 	OnClaim func(deviceID, user string)

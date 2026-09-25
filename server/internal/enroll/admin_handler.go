@@ -151,17 +151,105 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 		if !ok {
 			return
 		}
-		ok, err := store.Revoke(id)
+		// ?purge=1 deletes the record outright (§5.1); a plain DELETE is
+		// the revoke it has always been. Any other value is a mistake.
+		purge := false
+		switch r.URL.Query().Get("purge") {
+		case "":
+		case "1", "true":
+			purge = true
+		default:
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, "purge must be 1 when given", "purge")
+			return
+		}
+		var (
+			found bool
+			err   error
+		)
+		if purge {
+			found, err = store.Purge(id)
+		} else {
+			found, err = store.Revoke(id)
+		}
 		if err != nil {
 			storeError(w, err)
 			return
 		}
+		if !found {
+			admin.NotFound(w, "device")
+			return
+		}
+		switch {
+		case purge && hooks.OnPurge != nil:
+			hooks.OnPurge(id)
+		case !purge && hooks.OnRevoke != nil:
+			hooks.OnRevoke(id)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.HandleFunc("GET /v1/admin/devices/{id}", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		d, ok := store.Device(id)
 		if !ok {
 			admin.NotFound(w, "device")
 			return
 		}
-		if hooks.OnRevoke != nil {
-			hooks.OnRevoke(id)
+		admin.WriteJSON(w, http.StatusOK, d)
+	}))
+
+	mux.HandleFunc("PATCH /v1/admin/devices/{id}", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		var in struct {
+			Description *string `json:"description"`
+		}
+		if !admin.Decode(w, r, deviceBodyLimit, &in) {
+			return
+		}
+		if in.Description == nil {
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "description is required (it may be empty)", "description")
+			return
+		}
+		if !admin.Clean(*in.Description, maxDescription) {
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("description must be at most %d characters with no control characters", maxDescription), "description")
+			return
+		}
+		pre, done := recordMatch(w, r)
+		if done {
+			return
+		}
+		found, err := store.SetDescription(id, *in.Description, pre...)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		if !found {
+			admin.NotFound(w, "device")
+			return
+		}
+		d, _ := store.Device(id)
+		admin.WriteJSON(w, http.StatusOK, d)
+	}))
+
+	mux.HandleFunc("DELETE /v1/admin/devices/{id}/enrol-code", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		found, err := store.CancelCode(id)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		if !found {
+			admin.NotFound(w, "device")
+			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -224,7 +312,14 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 				return
 			}
 		}
-		cfg, changed, err := store.SetConfig(id, in.SSIDs)
+		// If-Match here is the settings' version (§4.5).
+		var pre []Match
+		if v, sent, done := admin.IfMatchInt(w, r); done {
+			return
+		} else if sent {
+			pre = append(pre, Match{ConfigVersion: v})
+		}
+		cfg, changed, err := store.SetConfig(id, in.SSIDs, pre...)
 		if errors.Is(err, ErrInvalid) {
 			admin.NotFound(w, "device")
 			return
@@ -295,7 +390,11 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			admin.NotFound(w, "device")
 			return
 		}
-		line, err := store.SetPBXLine(id, in.DN, in.DigestUser, in.Secret)
+		pre, done := recordMatch(w, r)
+		if done {
+			return
+		}
+		line, err := store.SetPBXLine(id, in.DN, in.DigestUser, in.Secret, pre...)
 		switch {
 		case errors.Is(err, ErrInvalid):
 			admin.NotFound(w, "device")
@@ -325,7 +424,11 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 		if !ok {
 			return
 		}
-		ok, err := store.DeletePBXLine(id)
+		pre, done := recordMatch(w, r)
+		if done {
+			return
+		}
+		ok, err := store.DeletePBXLine(id, pre...)
 		if err != nil {
 			storeError(w, err)
 			return
@@ -346,8 +449,23 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 // arguments the handler should already have validated (a 400 rather than
 // a 500, so the fuzzer's finding is visible as such), anything else is
 // the disk.
+// recordMatch reads an If-Match carrying the record's updated_at (§4.5).
+// done means a malformed header has been answered.
+func recordMatch(w http.ResponseWriter, r *http.Request) (pre []Match, done bool) {
+	t, sent, done := admin.IfMatchTime(w, r)
+	if done {
+		return nil, true
+	}
+	if sent {
+		pre = append(pre, Match{UpdatedAt: t})
+	}
+	return pre, false
+}
+
 func storeError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, ErrVersionMismatch):
+		admin.PreconditionFailed(w)
 	case errors.Is(err, ErrInvalid):
 		admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
 	case errors.Is(err, ErrExists):

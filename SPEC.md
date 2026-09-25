@@ -1295,9 +1295,32 @@ on by config — see §7.4.
   than doing it in order.
 
   9a. **The admin contract — define it exhaustively before building it.**
-     The deliverable is writing, not code: every page, every action,
-     every error state, and the API surface each one needs, so that 9b is
-     not guessing and 9c is not inventing endpoints as it goes.
+     The deliverable is writing, not code. *Reframed 2026-09-25:* the
+     contract is **not a set of pages**. It is, first, the inventory of
+     every configurable an operator needs to run and maintain the server
+     and the system — what each is, where it lives, how it changes and
+     when the change takes effect — and, second, the server API that
+     inventory requires, so that 9b builds and tests exactly that API and
+     9c is written afterwards against it. The pages below survive as the
+     seed of the inventory, not its bound.
+     *Written 2026-09-25 (this branch, awaiting approval):*
+     [protocol/ADMIN-API.md](protocol/ADMIN-API.md). Its inventory sorts
+     configurables into three classes — deployment (the startup flags,
+     read-only through the API), per device (the API's whole writable
+     surface), and a single runtime, non-persisted class (log level and
+     SIP trace) — and the API gains, beyond §4.8's routes: `whoami`,
+     `server`, `status`, `events` (a bounded in-memory ring), `log`,
+     `calls` (list, and end one), per-device `diag` (list, download,
+     delete, with a `-diag-retain` sweeper), `PATCH` for the label,
+     `DELETE …/enrol-code`, `?dry_run=1` on the replace-all, a JSON error
+     envelope, optional `If-Match` on every versioned write, and a
+     separate `-admin-addr` listener. It settles the open questions
+     below (everything listed, no pagination, 500-device ceiling;
+     `If-Match` with 412; `user` immutable; revoked is an authentication
+     state and every admin route works on a revoked device; a re-POST of
+     an existing id without a token is 409, with a token replaces only
+     the credential) and records what it does not do (certificate
+     rotation strands every phone; live trunk settings stay flags).
      *Carried over from the original item 9,* as the seed rather than the
      answer. **Pages: Devices** — label, user, generated id (read-only,
      copyable), app and extension online, SIP registered, revoked; add a

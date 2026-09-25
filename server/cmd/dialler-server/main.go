@@ -429,7 +429,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	mux.Handle("/v1/directory/", dirH)
 	// The operator's per-device directory routes sit under /v1/admin/ but
 	// are more specific than the enrolment handler's prefix, so they win.
-	knownDevice := func(id string) bool { _, ok := devices.UserFor(id); return ok }
+	knownDevice := devices.Exists
 	dirAdmin := directory.NewAdminHandler(dir, o.adminToken, knownDevice)
 	adminAPI.Handle("/v1/admin/devices/{id}/directory", dirAdmin)
 	adminAPI.Handle("/v1/admin/devices/{id}/directory/{cid}", dirAdmin)

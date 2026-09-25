@@ -36,17 +36,22 @@ func (s *Store) SetPBXLine(deviceID, dn, digestUser, secret string) (PBXLine, er
 		return PBXLine{}, err
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.devices[deviceID]
-	if !ok {
-		return PBXLine{}, ErrInvalid
-	}
-	r.PBXLine = &lineRecord{DN: dn, DigestUser: digestUser, SecretEnc: sealed, UpdatedAt: s.now()}
-	if err := s.saveLocked(); err != nil {
+	var view PBXLine
+	err = s.commit(func() error {
+		r, ok := s.devices[deviceID]
+		if !ok {
+			return ErrInvalid
+		}
+		now := s.now()
+		r.PBXLine = &lineRecord{DN: dn, DigestUser: digestUser, SecretEnc: sealed, UpdatedAt: now}
+		r.UpdatedAt = now
+		view = r.PBXLine.view()
+		return nil
+	})
+	if err != nil {
 		return PBXLine{}, err
 	}
-	return r.PBXLine.view(), nil
+	return view, nil
 }
 
 // PBXLine returns deviceID's line, without its secret. ok is false for an
@@ -64,17 +69,24 @@ func (s *Store) PBXLine(deviceID string) (PBXLine, bool) {
 // DeletePBXLine removes deviceID's line. ok is false for an unknown device;
 // removing a line that is not there is not an error.
 func (s *Store) DeletePBXLine(deviceID string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.devices[deviceID]
-	if !ok {
-		return false, nil
+	found := false
+	err := s.commit(func() error {
+		r, ok := s.devices[deviceID]
+		if !ok {
+			return nil
+		}
+		found = true
+		if r.PBXLine == nil {
+			return errNoChange
+		}
+		r.PBXLine = nil
+		r.UpdatedAt = s.now()
+		return nil
+	})
+	if errors.Is(err, errNoChange) {
+		err = nil
 	}
-	if r.PBXLine == nil {
-		return true, nil
-	}
-	r.PBXLine = nil
-	return true, s.saveLocked()
+	return found, err
 }
 
 // PBXCredential returns one device's line with its secret. The single way a

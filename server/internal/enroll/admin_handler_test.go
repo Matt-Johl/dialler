@@ -47,14 +47,14 @@ func TestAdminErrorsAreTheEnvelope(t *testing.T) {
 		status                   int
 		code, field              string
 	}{
-		{"missing user", "POST", "/v1/admin/devices", `{"label":"x"}`, 400, admin.CodeMissing, "user"},
+		{"missing user", "POST", "/v1/admin/devices", `{"description":"x"}`, 400, admin.CodeMissing, "user"},
 		{"bad user", "POST", "/v1/admin/devices", `{"user":"2 01"}`, 400, admin.CodeInvalid, "user"},
 		{"bad device id", "POST", "/v1/admin/devices", `{"user":"201","device_id":"../x"}`, 400, admin.CodeInvalid, "device_id"},
 		{"unknown field", "POST", "/v1/admin/devices", `{"user":"201","nonsense":true}`, 400, admin.CodeUnknownField, "nonsense"},
 		{"duplicate key", "POST", "/v1/admin/devices", `{"user":"201","user":"202"}`, 400, admin.CodeBadJSON, ""},
 		{"wrong type", "POST", "/v1/admin/devices", `{"user":201}`, 400, admin.CodeInvalid, "user"},
 		{"short token", "POST", "/v1/admin/devices", `{"user":"201","token":"short"}`, 400, admin.CodeInvalid, "token"},
-		{"control char in label", "POST", "/v1/admin/devices", "{\"user\":\"201\",\"label\":\"a\\u0000b\"}", 400, admin.CodeInvalid, "label"},
+		{"control char in description", "POST", "/v1/admin/devices", "{\"user\":\"201\",\"description\":\"a\\u0000b\"}", 400, admin.CodeInvalid, "description"},
 		{"not json", "POST", "/v1/admin/devices", `user=201`, 400, admin.CodeBadJSON, ""},
 		{"revoke unknown", "DELETE", "/v1/admin/devices/nope", "", 404, admin.CodeNotFound, ""},
 		// A ".." segment never reaches a handler: the mux cleans the path
@@ -90,10 +90,66 @@ func TestAdminErrorsAreTheEnvelope(t *testing.T) {
 	}
 }
 
+// Revoked is an authentication state: every admin route still works on
+// the record, and re-POSTing an id is 409 without a token, a credential
+// replace with one (ADMIN-API.md §5.1).
+func TestAdminRevokedAndRePost(t *testing.T) {
+	s, _ := Open("")
+	s.Secrets, _ = secrets.OpenKey(filepath.Join(t.TempDir(), "pbx.key"))
+	var pushed int
+	h := NewAdminHandler(s, "admin", Link{}, Hooks{OnConfig: func(string, DeviceConfig) { pushed++ }})
+	if rec, _ := adminDo(h, "POST", "/v1/admin/devices", `{"device_id":"dev-a","user":"201","description":"A"}`); rec.Code != 201 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	if rec, e := adminDo(h, "POST", "/v1/admin/devices", `{"device_id":"dev-a","user":"201"}`); rec.Code != 409 || e.Error != admin.CodeDeviceExists {
+		t.Fatalf("re-post without token: %d %s", rec.Code, rec.Body)
+	}
+	if rec, e := adminDo(h, "POST", "/v1/admin/devices", `{"device_id":"dev-b","user":"201"}`); rec.Code != 409 || e.Error != admin.CodeUserTaken {
+		t.Fatalf("taken user: %d %s", rec.Code, rec.Body)
+	}
+	if rec, _ := adminDo(h, "PUT", "/v1/admin/devices/dev-a/config", `{"ssids":["Office"]}`); rec.Code != 200 || pushed != 1 {
+		t.Fatalf("config: %d pushed %d", rec.Code, pushed)
+	}
+	if rec, _ := adminDo(h, "PUT", "/v1/admin/devices/dev-a/config", `{"ssids":["Office"]}`); rec.Code != 200 || pushed != 1 {
+		t.Fatalf("identical config must not push: %d pushed %d", rec.Code, pushed)
+	}
+	if rec, _ := adminDo(h, "PUT", "/v1/admin/devices/dev-a/pbx-line", `{"digest_user":"u","secret":"s"}`); rec.Code != 200 {
+		t.Fatalf("line: %d %s", rec.Code, rec.Body)
+	}
+	if rec, _ := adminDo(h, "DELETE", "/v1/admin/devices/dev-a", ""); rec.Code != 204 {
+		t.Fatalf("revoke: %d", rec.Code)
+	}
+	for _, p := range []string{"/v1/admin/devices/dev-a/config", "/v1/admin/devices/dev-a/pbx-line"} {
+		if rec, _ := adminDo(h, "GET", p, ""); rec.Code != 200 {
+			t.Fatalf("GET %s on a revoked device: %d %s", p, rec.Code, rec.Body)
+		}
+	}
+	if rec, _ := adminDo(h, "PUT", "/v1/admin/devices/dev-a/pbx-line", `{"digest_user":"u2","secret":"s2"}`); rec.Code != 200 {
+		t.Fatalf("line on a revoked device: %d %s", rec.Code, rec.Body)
+	}
+	// The harness re-provisions with a fixed token: credential only.
+	rec, _ := adminDo(h, "POST", "/v1/admin/devices", `{"device_id":"dev-a","user":"201","token":"tok_fixed_0123456789"}`)
+	if rec.Code != 201 {
+		t.Fatalf("re-post with token: %d %s", rec.Code, rec.Body)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["token"] != "tok_fixed_0123456789" || out["description"] != "A" {
+		t.Fatalf("re-post reply: %v", out)
+	}
+	d, _ := s.Device("dev-a")
+	if d.Description != "A" || d.Config == nil || d.PBXLine == nil || d.PBXLine.DigestUser != "u2" || !d.Revoked {
+		t.Fatalf("re-post disturbed the record: %+v", d)
+	}
+	if rec, e := adminDo(h, "POST", "/v1/admin/devices", `{"device_id":"dev-a","user":"999","token":"tok_fixed_0123456789"}`); rec.Code != 409 || e.Error != admin.CodeImmutable {
+		t.Fatalf("user change: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestAdminBodyLimitsAndContentType(t *testing.T) {
 	s, _ := Open("")
 	h := NewAdminHandler(s, "admin", Link{}, Hooks{})
-	big := `{"user":"201","label":"` + strings.Repeat("x", 5000) + `"}`
+	big := `{"user":"201","description":"` + strings.Repeat("x", 5000) + `"}`
 	rec, e := adminDo(h, "POST", "/v1/admin/devices", big)
 	if rec.Code != 413 || e.Error != admin.CodeTooLarge {
 		t.Fatalf("over the limit: %d %s", rec.Code, rec.Body)
@@ -143,7 +199,7 @@ func FuzzAdminWrites(f *testing.F) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		switch rec.Code {
-		case 200, 201, 204, 400, 404, 413, 415:
+		case 200, 201, 204, 400, 404, 409, 413, 415:
 		default:
 			t.Fatalf("status %d for %q", rec.Code, body)
 		}

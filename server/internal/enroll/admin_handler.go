@@ -18,12 +18,12 @@ const (
 
 // Field bounds (ADMIN-API.md §5.1, §5.3, §5.4).
 const (
-	maxLabel      = 120
-	maxSSID       = 32
-	maxSSIDs      = 32
-	maxLineField  = 128
-	maxDN         = 32
-	minFixedToken = 16
+	maxDescription = 120
+	maxSSID        = 32
+	maxSSIDs       = 32
+	maxLineField   = 128
+	maxDN          = 32
+	minFixedToken  = 16
 )
 
 var dnRe = regexp.MustCompile(`^[0-9+*#]{1,32}$`)
@@ -74,9 +74,9 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 
 	mux.HandleFunc("POST /v1/admin/devices", guard(func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			DeviceID string `json:"device_id"`
-			User     string `json:"user"`
-			Label    string `json:"label"`
+			DeviceID    string `json:"device_id"`
+			User        string `json:"user"`
+			Description string `json:"description"`
 			// Optional fixed token (dev fixtures); no credential is issued
 			// when absent — the device claims its code for one.
 			Token string `json:"token"`
@@ -94,19 +94,34 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 		case in.DeviceID != "" && !admin.DeviceIDRe.MatchString(in.DeviceID):
 			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, "device_id must be 1–64 characters of letters, digits, _ -", "device_id")
 			return
-		case !admin.Clean(in.Label, maxLabel):
-			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("label must be at most %d characters with no control characters", maxLabel), "label")
+		case !admin.Clean(in.Description, maxDescription):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("description must be at most %d characters with no control characters", maxDescription), "description")
 			return
 		case in.Token != "" && (len(in.Token) < minFixedToken || !admin.Clean(in.Token, 512)):
 			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("token must be at least %d characters", minFixedToken), "token")
 			return
 		}
-		id, err := store.Create(in.DeviceID, in.User, in.Label)
-		if err != nil {
-			storeError(w, err)
+		// ADMIN-API.md §5.1: an existing id without a token is a mistake
+		// (409); with a token it is the harness re-provisioning, which
+		// replaces the credential and keeps everything else.
+		id := in.DeviceID
+		exists := id != "" && store.Exists(id)
+		if exists && in.Token == "" {
+			admin.WriteFieldError(w, http.StatusConflict, admin.CodeDeviceExists, id+" already exists; mint it a code or purge it first", "device_id")
 			return
 		}
-		out := map[string]any{"device_id": id, "user": in.User, "label": in.Label}
+		description := in.Description
+		if !exists {
+			var err error
+			id, err = store.Create(id, in.User, in.Description)
+			if err != nil {
+				storeError(w, err)
+				return
+			}
+		} else if d, ok := store.Device(id); ok {
+			description = d.Description
+		}
+		out := map[string]any{"device_id": id, "user": in.User, "description": description}
 		if in.Token != "" {
 			tok, err := store.IssueToken(id, in.User, in.Token)
 			if err != nil {
@@ -173,7 +188,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 		if !ok {
 			return
 		}
-		if _, ok := store.UserFor(id); !ok {
+		if !store.Exists(id) {
 			admin.NotFound(w, "device")
 			return
 		}
@@ -209,7 +224,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 				return
 			}
 		}
-		cfg, err := store.SetConfig(id, in.SSIDs)
+		cfg, changed, err := store.SetConfig(id, in.SSIDs)
 		if errors.Is(err, ErrInvalid) {
 			admin.NotFound(w, "device")
 			return
@@ -218,7 +233,8 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			storeError(w, err)
 			return
 		}
-		if hooks.OnConfig != nil {
+		// An identical list is a no-op: nothing is pushed (§5.3).
+		if changed && hooks.OnConfig != nil {
 			hooks.OnConfig(id, cfg)
 		}
 		admin.WriteJSON(w, http.StatusOK, cfg)
@@ -232,7 +248,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 		if !ok {
 			return
 		}
-		if _, ok := store.UserFor(id); !ok {
+		if !store.Exists(id) {
 			admin.NotFound(w, "device")
 			return
 		}
@@ -275,7 +291,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("dn is at most %d of digits, + * #", maxDN), "dn")
 			return
 		}
-		if _, ok := store.UserFor(id); !ok {
+		if !store.Exists(id) {
 			admin.NotFound(w, "device")
 			return
 		}
@@ -331,9 +347,16 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 // a 500, so the fuzzer's finding is visible as such), anything else is
 // the disk.
 func storeError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrInvalid) {
+	switch {
+	case errors.Is(err, ErrInvalid):
 		admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
-		return
+	case errors.Is(err, ErrExists):
+		admin.WriteFieldError(w, http.StatusConflict, admin.CodeDeviceExists, err.Error(), "device_id")
+	case errors.Is(err, ErrUserTaken):
+		admin.WriteFieldError(w, http.StatusConflict, admin.CodeUserTaken, err.Error(), "user")
+	case errors.Is(err, ErrImmutable):
+		admin.WriteFieldError(w, http.StatusConflict, admin.CodeImmutable, err.Error(), "user")
+	default:
+		admin.StoreError(w, err)
 	}
-	admin.StoreError(w, err)
 }

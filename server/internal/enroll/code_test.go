@@ -32,7 +32,7 @@ func TestMintClaimRotateAndExpire(t *testing.T) {
 	if ok, _ := s.Authenticate(context.Background(), id, ""); ok {
 		t.Fatal("a device with no credential must not authenticate with an empty token")
 	}
-	if d := s.Devices()[0]; d.Label != "Matt's iPhone" || d.Enrolled || d.CodePending {
+	if d := s.Devices()[0]; d.Description != "Matt's iPhone" || d.Enrolled || d.CodePending {
 		t.Fatalf("device view: %+v", d)
 	}
 
@@ -229,14 +229,14 @@ func TestAdminMintsCodesAndLinks(t *testing.T) {
 		return rec.Result(), rec.Body.Bytes()
 	}
 	// No token given: created without a credential, code minted.
-	resp, body := do("POST", "/v1/admin/devices", `{"user":"205","label":"Warehouse 3"}`)
+	resp, body := do("POST", "/v1/admin/devices", `{"user":"205","description":"Warehouse 3"}`)
 	if resp.StatusCode != 201 {
 		t.Fatalf("create: %d %s", resp.StatusCode, body)
 	}
 	var out map[string]any
 	_ = json.Unmarshal(body, &out)
 	id, _ := out["device_id"].(string)
-	if !strings.HasPrefix(id, "dev_") || out["token"] != nil || out["label"] != "Warehouse 3" {
+	if !strings.HasPrefix(id, "dev_") || out["token"] != nil || out["description"] != "Warehouse 3" {
 		t.Fatalf("create response: %v", out)
 	}
 	code, _ := out["code"].(string)

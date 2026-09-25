@@ -1,6 +1,6 @@
 # Dialler admin contract — v1 (SPEC §6 item 9a)
 
-*Written 2026-09-25 on `feature/admin-api`; awaiting approval.* This is the
+*Written 2026-09-25 on `feature/admin-api`; approved 2026-09-25.* This is the
 deliverable of item 9a: the configurables an operator needs to run and
 maintain a Dialler site, and the call server's admin API that follows from
 them. Item 9b builds and hardens exactly this API; item 9c builds

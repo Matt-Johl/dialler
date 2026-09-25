@@ -1303,7 +1303,7 @@ on by config — see §7.4.
      inventory requires, so that 9b builds and tests exactly that API and
      9c is written afterwards against it. The pages below survive as the
      seed of the inventory, not its bound.
-     *Written 2026-09-25 (this branch, awaiting approval):*
+     *Written 2026-09-25 (this branch); approved 2026-09-25:*
      [protocol/ADMIN-API.md](protocol/ADMIN-API.md). Its inventory sorts
      configurables into three classes — deployment (the startup flags,
      read-only through the API), per device (the API's whole writable
@@ -1448,6 +1448,85 @@ on by config — see §7.4.
      re-INVITE, no `directory_changed`. That is §4.8's isolation rule
      turned into a test, and it is what protects the product. There are
      **no fuzz tests in the repository today**.
+     *Plan (2026-09-25, from the approved contract
+     [protocol/ADMIN-API.md](protocol/ADMIN-API.md)).* Ten steps on
+     `feature/admin-api`, each a commit that leaves `go test ./...` and
+     `make harness-test` green, in this order because each is tested
+     through the one before it. The contract's section numbers are given
+     so nothing here is a second source of truth.
+     1. **The admin listener** (contract §4.1, §4.6, §4.7 bounds).
+        `-admin-addr` (default `127.0.0.1:8081`) and `-admin-token-file`;
+        `/v1/admin/` moves there and is 404 on `-http-addr`; a
+        connection-limiting listener (64), an in-flight semaphore (4,
+        503 `busy` after 2 s), per-source and global token buckets,
+        `http.Server` timeouts on both listeners; `GET /healthz` and
+        `GET /v1/admin/whoami`. Harness: `docker-compose.yml` publishes
+        8081, `provision.sh`, `set_pbx_line.sh`, `wake_test.sh` and both
+        READMEs point admin calls at it, and `provision.sh` line 73
+        becomes an `enrol-code` mint. Tests: the limiter and semaphore
+        in isolation; a 65th connection waits; a flood gets 429 and 503,
+        never a hang.
+     2. **Strict decoding and the error envelope** (§4.2–§4.4). One
+        request struct per endpoint, `DisallowUnknownFields`, duplicate
+        keys detected by a token walk (the standard decoder accepts
+        them), trailing data refused, identifier grammar checked before
+        any store call, JSON errors with the stable codes. The fuzz
+        targets start here, one per write route, and run in CI for a
+        fixed budget. Nothing in this step changes a success body.
+     3. **The device store** (§6.2, §4.7 lock discipline, §5.1
+        semantics). Schema version and `updated_at` on the record;
+        `label` renamed `description` with the read-old-write-new
+        migration; a write mutates memory under the store lock and
+        serialises to disk under a separate writer mutex, so a digest
+        verification never waits on an fsync; round-trip property tests
+        on every store; the p99-under-one-millisecond digest-read test
+        under a continuous replace. Same rewrite for the directory
+        store. Then the semantics the contract fixes: revoked is an
+        authentication state and every admin route works on a revoked
+        record; re-POST of an existing id is 409 without a token and a
+        credential-only replace with one; an identical settings write is
+        a no-op.
+     4. **Device routes** (§5.1, §5.2). `GET …/{id}`, `PATCH …/{id}`
+        for the description, `DELETE …?purge=1` removing record,
+        directory, line and diagnostics, `DELETE …/enrol-code`, and
+        `If-Match` on the record's `updated_at`.
+     5. **Directory routes** (§5.5). `?dry_run=1`, the limits (5,000
+        contacts, field lengths, duplicate URI in one request named by
+        index), `If-Match` on the directory version.
+     6. **Live state** (§3, §5.6–§5.8). The gateway keeps `since`,
+        remote address and `app_version` per session and gains a
+        snapshot method; the trunk qualifier exposes up / down / off
+        with `since` and last error; the B2BUA gains a registry of live
+        calls with their legs, state and pump counters; the line manager
+        is passed to the handler. Then `GET /v1/admin/status`, `/calls`
+        and `/server` (with `-X main.version` in the Makefile and
+        `-version`), served from a one-second cached snapshot. Tests: a
+        snapshot under concurrent registrations and a bridged call in
+        the b2bua test rig; the cache coalesces concurrent callers.
+     7. **Events** (§5.9). The bounded ring, its `since` / `limit` /
+        `truncated` contract, non-blocking append with a drop counter,
+        and an emitter at each of the sites that only log today:
+        presence, registration, line, trunk, call start and end, wake,
+        enrolment, every admin write.
+     8. **Log level** (§5.10). A `slog.LevelVar` for the process, the SIP
+        trace global behind it, the revert timer, `for_seconds` required
+        for `debug` and for the trace.
+     9. **Diagnostics** (§5.11). List, download with the name grammar and
+        no symlink following, delete one and all, `-diag-retain` with
+        the hourly per-device sweeper that yields between files.
+     10. **The gates** (contract §4.7 and §7). In `make harness-test`:
+        the isolation check (revoke dev-s, replace dev-a's directory,
+        mint dev-a a code, set the log level, read status, events and
+        calls while dev-ha ↔ dev-hb is bridged, and nothing reaches
+        either phone); the load gate (sixty seconds of the four floods
+        while the call is bridged and dev-s registers and dials every
+        five seconds, with the audio gate holding and dev-s's REGISTER
+        and INVITE latency within twice its idle baseline); and the
+        adversarial suite run against the live server rather than a
+        test mux. Then the README's admin examples move to 8081.
+     *Not in 9b:* mutual TLS, certificate rollover, live trunk settings
+     (contract §10). *After 9b:* 9c builds `dialler-admin` against this
+     API and nothing else.
 
   9c. **`dialler-admin`, the web UI (needs 9a and 9b).**
      `server/cmd/dialler-admin`, the same Go module, standard library

@@ -3,10 +3,12 @@ package directory
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
-	"dialler/server/internal/enroll"
+	"dialler/server/internal/admin"
 )
 
 // SyncResponse is the body of GET /v1/directory.
@@ -17,11 +19,21 @@ type SyncResponse struct {
 }
 
 // ListResponse is the body of GET /v1/admin/devices/{id}/directory and the
-// request body of PUT on the same path.
+// request body of PUT on the same path (version is accepted there so a
+// GET body can be sent straight back, and ignored).
 type ListResponse struct {
 	Version  int64     `json:"version"`
 	Contacts []Contact `json:"contacts"`
 }
+
+// Body limits and bounds (ADMIN-API.md §5.5).
+const (
+	replaceBodyLimit = 4 << 20
+	contactBodyLimit = 64 << 10
+	maxContacts      = 5000
+	maxDisplayName   = 120
+	maxURI           = 256
+)
 
 // NewHandler serves the device-facing directory API. Every route is
 // device-authenticated and scoped to the calling device's own directory
@@ -34,7 +46,8 @@ type ListResponse struct {
 //
 // A write answers with the contact as stored; the device then syncs from
 // its cursor as usual (the server also pushes directory_changed to it), so
-// the by-URI collapse of duplicates reaches it as tombstones.
+// the by-URI collapse of duplicates reaches it as tombstones. This API is
+// unchanged by the admin contract: plain-text errors, lenient decoding.
 func NewHandler(store *Store, deviceAuth func(http.Handler) http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	device := func(h func(w http.ResponseWriter, r *http.Request, deviceID string)) http.Handler {
@@ -52,80 +65,30 @@ func NewHandler(store *Store, deviceAuth func(http.Handler) http.Handler) http.H
 		writeJSON(w, http.StatusOK, SyncResponse{Version: version, Since: since, Contacts: contacts})
 	}))
 	mux.Handle("POST /v1/directory", device(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		upsert(store, w, r, deviceID, "")
+		deviceUpsert(store, w, r, deviceID, "")
 	}))
 	mux.Handle("PUT /v1/directory/{id}", device(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		upsert(store, w, r, deviceID, r.PathValue("id"))
+		deviceUpsert(store, w, r, deviceID, r.PathValue("id"))
 	}))
 	mux.Handle("DELETE /v1/directory/{id}", device(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		remove(store, w, r, deviceID, r.PathValue("id"))
-	}))
-	return mux
-}
-
-// NewAdminHandler serves the operator's view of every device's directory,
-// guarded by the static admin bearer token (SPEC §4.8). knownDevice says
-// whether a device id is enrolled; writes to an unknown one are 404, so a
-// typo cannot create a directory nobody will ever read.
-//
-//	GET    /v1/admin/devices/{id}/directory         → ListResponse (live contacts)
-//	PUT    /v1/admin/devices/{id}/directory         {contacts:[…]} → ReplaceResult (replace-all)
-//	POST   /v1/admin/devices/{id}/directory         → Contact
-//	PUT    /v1/admin/devices/{id}/directory/{cid}   → Contact
-//	DELETE /v1/admin/devices/{id}/directory/{cid}   → 204
-func NewAdminHandler(store *Store, adminToken string, knownDevice func(deviceID string) bool) http.Handler {
-	mux := http.NewServeMux()
-	admin := func(h func(w http.ResponseWriter, r *http.Request, deviceID string)) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if adminToken == "" || !enroll.BearerMatches(r, adminToken) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			id := r.PathValue("id")
-			if knownDevice != nil && !knownDevice(id) {
-				http.Error(w, "unknown device", http.StatusNotFound)
-				return
-			}
-			h(w, r, id)
-		}
-	}
-
-	mux.HandleFunc("GET /v1/admin/devices/{id}/directory", admin(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		contacts, version := store.Contacts(deviceID)
-		writeJSON(w, http.StatusOK, ListResponse{Version: version, Contacts: contacts})
-	}))
-	mux.HandleFunc("PUT /v1/admin/devices/{id}/directory", admin(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		var in ListResponse
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<20)).Decode(&in); err != nil {
-			http.Error(w, "bad json", http.StatusBadRequest)
-			return
-		}
-		res, err := store.Replace(deviceID, in.Contacts)
-		if errors.Is(err, ErrInvalid) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+		ok, err := store.Delete(deviceID, r.PathValue("id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, res)
-	}))
-	mux.HandleFunc("POST /v1/admin/devices/{id}/directory", admin(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		upsert(store, w, r, deviceID, "")
-	}))
-	mux.HandleFunc("PUT /v1/admin/devices/{id}/directory/{cid}", admin(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		upsert(store, w, r, deviceID, r.PathValue("cid"))
-	}))
-	mux.HandleFunc("DELETE /v1/admin/devices/{id}/directory/{cid}", admin(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		remove(store, w, r, deviceID, r.PathValue("cid"))
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	return mux
 }
 
-func upsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID, id string) {
+// deviceUpsert is the device-facing write, as it has always been.
+func deviceUpsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID, id string) {
 	var c Contact
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&c); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, contactBodyLimit)).Decode(&c); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
@@ -144,17 +107,159 @@ func upsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID, id s
 	writeJSON(w, http.StatusOK, out)
 }
 
-func remove(store *Store, w http.ResponseWriter, r *http.Request, deviceID, id string) {
-	ok, err := store.Delete(deviceID, id)
+// NewAdminHandler serves the operator's view of every device's directory
+// (ADMIN-API.md §5.5), behind the listener's bearer guard and its own.
+// knownDevice says whether a device id exists; writes to an unknown one
+// are 404, so a typo cannot create a directory nobody will ever read.
+//
+//	GET    /v1/admin/devices/{id}/directory         → ListResponse (live contacts)
+//	PUT    /v1/admin/devices/{id}/directory         {contacts:[…]} → ReplaceResult (replace-all)
+//	POST   /v1/admin/devices/{id}/directory         → Contact
+//	PUT    /v1/admin/devices/{id}/directory/{cid}   → Contact
+//	DELETE /v1/admin/devices/{id}/directory/{cid}   → 204
+//
+// Bodies are decoded strictly and validated in full before the store is
+// touched; errors are the §4.4 envelope naming the field.
+func NewAdminHandler(store *Store, adminToken string, knownDevice func(deviceID string) bool) http.Handler {
+	mux := http.NewServeMux()
+	guarded := func(h func(w http.ResponseWriter, r *http.Request, deviceID string)) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if adminToken == "" || !admin.BearerMatches(r, adminToken) {
+				admin.WriteError(w, http.StatusUnauthorized, admin.CodeUnauthorized, "unauthorized")
+				return
+			}
+			id := r.PathValue("id")
+			if !admin.DeviceIDRe.MatchString(id) || (knownDevice != nil && !knownDevice(id)) {
+				admin.NotFound(w, "device")
+				return
+			}
+			h(w, r, id)
+		}
+	}
+	// contactID checks {cid} against its grammar before the store is asked.
+	contactID := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		cid := r.PathValue("cid")
+		if !admin.ContactIDRe.MatchString(cid) {
+			admin.NotFound(w, "contact")
+			return "", false
+		}
+		return cid, true
+	}
+
+	mux.HandleFunc("GET /v1/admin/devices/{id}/directory", guarded(func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		contacts, version := store.Contacts(deviceID)
+		admin.WriteJSON(w, http.StatusOK, ListResponse{Version: version, Contacts: contacts})
+	}))
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/directory", guarded(func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		var in ListResponse
+		if !admin.Decode(w, r, replaceBodyLimit, &in) {
+			return
+		}
+		if in.Contacts == nil {
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "contacts is required (an empty list removes every contact)", "contacts")
+			return
+		}
+		if len(in.Contacts) > maxContacts {
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("at most %d contacts", maxContacts), "contacts")
+			return
+		}
+		seen := make(map[string]int, len(in.Contacts))
+		for i, c := range in.Contacts {
+			if !validateContact(w, c, fmt.Sprintf("contacts[%d]", i)) {
+				return
+			}
+			key := strings.ToLower(c.URI)
+			if j, dup := seen[key]; dup {
+				admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("duplicate uri, same as contacts[%d]", j), fmt.Sprintf("contacts[%d].uri", i))
+				return
+			}
+			seen[key] = i
+		}
+		res, err := store.Replace(deviceID, in.Contacts)
+		if errors.Is(err, ErrInvalid) {
+			admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
+			return
+		}
+		if err != nil {
+			admin.StoreError(w, err)
+			return
+		}
+		admin.WriteJSON(w, http.StatusOK, res)
+	}))
+	mux.HandleFunc("POST /v1/admin/devices/{id}/directory", guarded(func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		adminUpsert(store, w, r, deviceID, "")
+	}))
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/directory/{cid}", guarded(func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		cid, ok := contactID(w, r)
+		if !ok {
+			return
+		}
+		adminUpsert(store, w, r, deviceID, cid)
+	}))
+	mux.HandleFunc("DELETE /v1/admin/devices/{id}/directory/{cid}", guarded(func(w http.ResponseWriter, r *http.Request, deviceID string) {
+		cid, ok := contactID(w, r)
+		if !ok {
+			return
+		}
+		ok, err := store.Delete(deviceID, cid)
+		if err != nil {
+			admin.StoreError(w, err)
+			return
+		}
+		if !ok {
+			admin.NotFound(w, "contact")
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	return mux
+}
+
+// validateContact is the §5.5 field check; on a fault it has written the
+// error, with prefix naming the contact in a list, and returns false.
+func validateContact(w http.ResponseWriter, c Contact, prefix string) bool {
+	field := func(name string) string {
+		if prefix == "" {
+			return name
+		}
+		return prefix + "." + name
+	}
+	switch {
+	case c.URI == "":
+		admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "uri is required", field("uri"))
+	case !admin.Clean(c.URI, maxURI) || strings.ContainsAny(c.URI, " \t"):
+		admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("uri is at most %d bytes with no spaces or control characters", maxURI), field("uri"))
+	case c.Mode != ModeLocal && c.Mode != ModeTrunk:
+		admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, `mode must be "local" or "trunk"`, field("mode"))
+	case !admin.Clean(c.DisplayName, maxDisplayName):
+		admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("display_name is at most %d characters with no control characters", maxDisplayName), field("display_name"))
+	default:
+		return true
+	}
+	return false
+}
+
+func adminUpsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID, id string) {
+	var c Contact
+	if !admin.Decode(w, r, contactBodyLimit, &c) {
+		return
+	}
+	if !validateContact(w, c, "") {
+		return
+	}
+	if id != "" {
+		c.ID = id
+	}
+	out, err := store.Upsert(deviceID, c)
+	if errors.Is(err, ErrInvalid) {
+		admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
+		return
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		admin.StoreError(w, err)
 		return
 	}
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	admin.WriteJSON(w, http.StatusOK, out)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

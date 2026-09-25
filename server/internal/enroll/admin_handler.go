@@ -1,0 +1,339 @@
+package enroll
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+
+	"dialler/server/internal/admin"
+)
+
+// Body limits per route (ADMIN-API.md §5).
+const (
+	deviceBodyLimit = 4 << 10
+	configBodyLimit = 16 << 10
+	lineBodyLimit   = 4 << 10
+)
+
+// Field bounds (ADMIN-API.md §5.1, §5.3, §5.4).
+const (
+	maxLabel      = 120
+	maxSSID       = 32
+	maxSSIDs      = 32
+	maxLineField  = 128
+	maxDN         = 32
+	minFixedToken = 16
+)
+
+var dnRe = regexp.MustCompile(`^[0-9+*#]{1,32}$`)
+
+// NewAdminHandler serves the admin enrolment API (ADMIN-API.md §5.1–§5.4),
+// behind the listener's bearer guard and again behind its own, since a
+// handler mounted without the front door must still refuse strangers:
+//
+//	POST   /v1/admin/devices                  {"user"[,"device_id","label","token"]}
+//	                                          → 201 {"device_id","user","label","code","expires_at","url"[,"token"]}
+//	GET    /v1/admin/devices                  → [Device]
+//	DELETE /v1/admin/devices/{id}             → 204 (revoke)
+//	POST   /v1/admin/devices/{id}/enrol-code  → {"code","expires_at","url"}
+//	GET    /v1/admin/devices/{id}/config      → {"version","ssids"} (404 until set)
+//	PUT    /v1/admin/devices/{id}/config      {"ssids":[…]} → {"version","ssids"}   (POST accepted too)
+//	GET    /v1/admin/devices/{id}/pbx-line    → {"dn","digest_user","configured"}  (404 until set)
+//	PUT    /v1/admin/devices/{id}/pbx-line    {"digest_user","secret"[,"dn"]} → the same view (POST too)
+//	DELETE /v1/admin/devices/{id}/pbx-line    → 204
+//
+// Every body is decoded strictly (admin.Decode) and validated before the
+// store is touched; every error is the §4.4 envelope. The PBX line's
+// secret is write-only: it goes in, and nothing — no read, no device, no
+// log — gets it back out (SPEC §6 item 3c).
+//
+// Adding a device mints its enrolment code; a "token" in the request (the
+// harness's fixed fixtures) also issues that credential at once.
+func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) http.Handler {
+	mux := http.NewServeMux()
+	guard := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if adminToken == "" || !admin.BearerMatches(r, adminToken) {
+				admin.WriteError(w, http.StatusUnauthorized, admin.CodeUnauthorized, "unauthorized")
+				return
+			}
+			h(w, r)
+		}
+	}
+	// deviceID checks the path's {id} against its grammar (§4.3) before any
+	// store call; one that cannot name a device is 404.
+	deviceID := func(w http.ResponseWriter, r *http.Request) (string, bool) {
+		id := r.PathValue("id")
+		if !admin.DeviceIDRe.MatchString(id) {
+			admin.NotFound(w, "device")
+			return "", false
+		}
+		return id, true
+	}
+
+	mux.HandleFunc("POST /v1/admin/devices", guard(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			DeviceID string `json:"device_id"`
+			User     string `json:"user"`
+			Label    string `json:"label"`
+			// Optional fixed token (dev fixtures); no credential is issued
+			// when absent — the device claims its code for one.
+			Token string `json:"token"`
+		}
+		if !admin.Decode(w, r, deviceBodyLimit, &in) {
+			return
+		}
+		switch {
+		case in.User == "":
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "user is required", "user")
+			return
+		case !admin.UserRe.MatchString(in.User):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, "user must be 1–64 characters of letters, digits, . _ + -", "user")
+			return
+		case in.DeviceID != "" && !admin.DeviceIDRe.MatchString(in.DeviceID):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, "device_id must be 1–64 characters of letters, digits, _ -", "device_id")
+			return
+		case !admin.Clean(in.Label, maxLabel):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("label must be at most %d characters with no control characters", maxLabel), "label")
+			return
+		case in.Token != "" && (len(in.Token) < minFixedToken || !admin.Clean(in.Token, 512)):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("token must be at least %d characters", minFixedToken), "token")
+			return
+		}
+		id, err := store.Create(in.DeviceID, in.User, in.Label)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		out := map[string]any{"device_id": id, "user": in.User, "label": in.Label}
+		if in.Token != "" {
+			tok, err := store.IssueToken(id, in.User, in.Token)
+			if err != nil {
+				storeError(w, err)
+				return
+			}
+			out["token"] = tok
+		}
+		code, expires, err := store.MintCode(id)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		out["code"], out["expires_at"], out["url"] = code, expires, link.URL(code)
+		if hooks.OnIssue != nil {
+			hooks.OnIssue(id, in.User)
+		}
+		admin.WriteJSON(w, http.StatusCreated, out)
+	}))
+
+	mux.HandleFunc("GET /v1/admin/devices", guard(func(w http.ResponseWriter, r *http.Request) {
+		admin.WriteJSON(w, http.StatusOK, store.Devices())
+	}))
+
+	mux.HandleFunc("DELETE /v1/admin/devices/{id}", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		ok, err := store.Revoke(id)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		if !ok {
+			admin.NotFound(w, "device")
+			return
+		}
+		if hooks.OnRevoke != nil {
+			hooks.OnRevoke(id)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	mux.HandleFunc("POST /v1/admin/devices/{id}/enrol-code", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		code, expires, err := store.MintCode(id)
+		if errors.Is(err, ErrInvalid) {
+			admin.NotFound(w, "device")
+			return
+		}
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		admin.WriteJSON(w, http.StatusOK, codeResponse{Code: code, ExpiresAt: expires, URL: link.URL(code)})
+	}))
+
+	mux.HandleFunc("GET /v1/admin/devices/{id}/config", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		if _, ok := store.UserFor(id); !ok {
+			admin.NotFound(w, "device")
+			return
+		}
+		cfg := store.Config(id)
+		if cfg == nil {
+			admin.NotFound(w, "settings for this device")
+			return
+		}
+		admin.WriteJSON(w, http.StatusOK, cfg)
+	}))
+	setConfig := guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		var in struct {
+			SSIDs []string `json:"ssids"`
+		}
+		if !admin.Decode(w, r, configBodyLimit, &in) {
+			return
+		}
+		if in.SSIDs == nil {
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "ssids is required (an empty list removes Local Push on the phone)", "ssids")
+			return
+		}
+		if len(in.SSIDs) > maxSSIDs {
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("at most %d ssids", maxSSIDs), "ssids")
+			return
+		}
+		for i, s := range in.SSIDs {
+			if !admin.Clean(s, maxSSID) {
+				admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("an SSID is at most %d bytes with no control characters", maxSSID), fmt.Sprintf("ssids[%d]", i))
+				return
+			}
+		}
+		cfg, err := store.SetConfig(id, in.SSIDs)
+		if errors.Is(err, ErrInvalid) {
+			admin.NotFound(w, "device")
+			return
+		}
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		if hooks.OnConfig != nil {
+			hooks.OnConfig(id, cfg)
+		}
+		admin.WriteJSON(w, http.StatusOK, cfg)
+	})
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/config", setConfig)
+	// busybox wget (the harness's in-network helper) has no PUT.
+	mux.HandleFunc("POST /v1/admin/devices/{id}/config", setConfig)
+
+	mux.HandleFunc("GET /v1/admin/devices/{id}/pbx-line", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		if _, ok := store.UserFor(id); !ok {
+			admin.NotFound(w, "device")
+			return
+		}
+		line, ok := store.PBXLine(id)
+		if !ok {
+			admin.NotFound(w, "PBX line for this device")
+			return
+		}
+		// Deliberately the view type: there is no query parameter, no
+		// header and no debug mode that returns the secret.
+		admin.WriteJSON(w, http.StatusOK, line)
+	}))
+	setLine := guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		var in struct {
+			DN         string `json:"dn"`
+			DigestUser string `json:"digest_user"`
+			Secret     string `json:"secret"`
+		}
+		if !admin.Decode(w, r, lineBodyLimit, &in) {
+			return
+		}
+		switch {
+		case in.DigestUser == "":
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "digest_user is required", "digest_user")
+			return
+		case in.Secret == "":
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeMissing, "secret is required", "secret")
+			return
+		case !admin.Clean(in.DigestUser, maxLineField):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("digest_user is at most %d bytes with no control characters", maxLineField), "digest_user")
+			return
+		case !admin.Clean(in.Secret, maxLineField):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("secret is at most %d bytes with no control characters", maxLineField), "secret")
+			return
+		case in.DN != "" && !dnRe.MatchString(in.DN):
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, fmt.Sprintf("dn is at most %d of digits, + * #", maxDN), "dn")
+			return
+		}
+		if _, ok := store.UserFor(id); !ok {
+			admin.NotFound(w, "device")
+			return
+		}
+		line, err := store.SetPBXLine(id, in.DN, in.DigestUser, in.Secret)
+		switch {
+		case errors.Is(err, ErrInvalid):
+			admin.NotFound(w, "device")
+			return
+		case errors.Is(err, ErrNoSecretKey):
+			admin.WriteError(w, http.StatusServiceUnavailable, admin.CodeUnavailable, err.Error())
+			return
+		case err != nil:
+			storeError(w, err)
+			return
+		}
+		if hooks.OnPBXLine != nil {
+			cred, ok, err := store.PBXCredential(id)
+			if err != nil || !ok {
+				admin.WriteError(w, http.StatusInternalServerError, admin.CodeStore, "the line was saved but cannot be read back")
+				return
+			}
+			hooks.OnPBXLine(id, &cred)
+		}
+		admin.WriteJSON(w, http.StatusOK, line)
+	})
+	mux.HandleFunc("PUT /v1/admin/devices/{id}/pbx-line", setLine)
+	mux.HandleFunc("POST /v1/admin/devices/{id}/pbx-line", setLine)
+
+	mux.HandleFunc("DELETE /v1/admin/devices/{id}/pbx-line", guard(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deviceID(w, r)
+		if !ok {
+			return
+		}
+		ok, err := store.DeletePBXLine(id)
+		if err != nil {
+			storeError(w, err)
+			return
+		}
+		if !ok {
+			admin.NotFound(w, "device")
+			return
+		}
+		if hooks.OnPBXLine != nil {
+			hooks.OnPBXLine(id, nil)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	return mux
+}
+
+// storeError maps a store failure: ErrInvalid is the store refusing
+// arguments the handler should already have validated (a 400 rather than
+// a 500, so the fuzzer's finding is visible as such), anything else is
+// the disk.
+func storeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrInvalid) {
+		admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
+		return
+	}
+	admin.StoreError(w, err)
+}

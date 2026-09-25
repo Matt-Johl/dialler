@@ -3,8 +3,13 @@
 {{$ro := $.ReadOnly}}
 {{$upd := rfc3339 .Device.UpdatedAt}}
 <p class="crumb"><a href="/fleet">Fleet</a> ›</p>
-<h1>{{.Device.User}} <small>{{.Device.Description}}</small></h1>
-<p class="mono">device id {{.Device.DeviceID}} · {{if .Device.Revoked}}<strong>revoked</strong>{{else if .Device.Enrolled}}enrolled{{else}}not enrolled yet{{end}}{{if .Device.CodePending}} · code pending until {{when .Device.CodeExpiresAt}}{{end}}</p>
+<div class="device-head">
+  <span class="avatar lg">{{initials .Device.Description .Device.User}}</span>
+  <div>
+    <h1>{{if .Device.Description}}{{.Device.Description}}{{else}}Ext {{.Device.User}}{{end}}</h1>
+    <div class="meta"><span>Ext <strong>{{.Device.User}}</strong></span><span class="mono">device id {{.Device.DeviceID}}</span>{{if .Device.Revoked}}<span class="chip bad">Revoked</span>{{else if .Device.Enrolled}}<span class="chip ok">Enrolled</span>{{else}}<span class="chip warn">Not enrolled yet</span>{{end}}{{if .Device.CodePending}}<span class="chip">Code pending until {{clock .Device.CodeExpiresAt}}</span>{{end}}</div>
+  </div>
+</div>
 
 {{if .Code}}
 <section class="card code">
@@ -14,20 +19,20 @@
     <div>
       <p class="bigcode">{{.Code.Code}}</p>
       <p>Scan the QR with the phone's Camera, or in the app choose <em>Enter manually</em> and type the server address and this code. Valid until <strong>{{when .Code.ExpiresAt}}</strong>, single use.</p>
-      <p class="mono small">{{.Code.URL}}</p>
+      <p class="mono small link">{{.Code.URL}}</p>
     </div>
   </div>
 </section>
 {{end}}
 
-<div class="grid">
+<div class="grid grid-2">
 <section class="card">
   <h2>Live</h2>
   <dl>
-    <dt>App</dt><dd>{{with index .Live.Sessions "app"}}connected {{since .Since}} ago from {{.Addr}}{{if .AppVersion}}, version {{.AppVersion}}{{end}}{{else}}offline{{end}}</dd>
-    <dt>Wake extension</dt><dd>{{with index .Live.Sessions "extension"}}connected {{since .Since}} ago from {{.Addr}}{{else}}offline{{end}}</dd>
-    <dt>SIP</dt><dd>{{with .Live.SIP}}registered until {{when .ExpiresAt}}<br><span class="mono small">{{.Contact}}</span>{{else}}not registered{{end}}</dd>
-    {{with .Live.Line}}<dt>PBX line</dt><dd><span class="line {{.State}}">{{.State}}</span> since {{when .Since}}{{if .Realm}} · realm {{.Realm}}{{end}}{{if .ExpiresAt.IsZero}}{{else}} · expires {{when .ExpiresAt}}{{end}}{{if .Error}}<br><small>{{.Error}}{{if .Attempts}} ({{.Attempts}} attempts){{end}}</small>{{end}}</dd>{{end}}
+    <dt>App</dt><dd>{{with index .Live.Sessions "app"}}<span class="status"><i class="dot"></i> Connected {{since .Since}} ago</span><span class="sub-line">{{.Addr}}{{if .AppVersion}} · version {{.AppVersion}}{{end}}</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}</dd>
+    <dt>Wake extension</dt><dd>{{with index .Live.Sessions "extension"}}<span class="status"><i class="dot"></i> Connected {{since .Since}} ago</span><span class="sub-line">{{.Addr}}</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}</dd>
+    <dt>SIP</dt><dd>{{with .Live.SIP}}<span class="status"><i class="dot"></i> Registered until {{when .ExpiresAt}}</span><span class="sub-line mono">{{.Contact}}</span>{{else}}<span class="status off"><i class="dot"></i> Not registered</span>{{end}}</dd>
+    {{with .Live.Line}}<dt>PBX line</dt><dd><span class="chip {{if eq .State "registered"}}ok{{else if eq .State "refused"}}bad{{else}}warn{{end}}">{{.State}}</span> since {{when .Since}}{{if .Realm}} · realm {{.Realm}}{{end}}{{if .ExpiresAt.IsZero}}{{else}} · expires {{when .ExpiresAt}}{{end}}{{if .Error}}<br><small>{{.Error}}{{if .Attempts}} ({{.Attempts}} attempts){{end}}</small>{{end}}</dd>{{end}}
     {{with .Live.Call}}<dt>Call</dt><dd><a href="/calls">on a call</a> for {{since .Since}}</dd>{{end}}
   </dl>
 </section>
@@ -39,8 +44,8 @@
     <input name="description" maxlength="120" value="{{with .Form}}{{index . "description"}}{{else}}{{.Device.Description}}{{end}}" {{if $ro}}disabled{{end}}>
     <button {{if $ro}}disabled{{end}}>Save</button>
   </form>
-  <h2>Enrolment</h2>
-  <div class="row">
+  <h2 style="margin-top:22px">Enrolment</h2>
+  <div class="actions-row">
     <form method="post" action="/devices/{{.Device.DeviceID}}/code"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button {{if $ro}}disabled{{end}}>New code</button></form>
     {{if .Device.CodePending}}<form method="post" action="/devices/{{.Device.DeviceID}}/code/cancel"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="quiet" {{if $ro}}disabled{{end}}>Cancel pending code</button></form>{{end}}
     {{if not .Device.Revoked}}<form method="post" action="/devices/{{.Device.DeviceID}}/revoke" onsubmit="return confirm('Revoke {{.Device.User}}? The phone is disconnected and cannot register until re-enrolled.')"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger" {{if $ro}}disabled{{end}}>Revoke</button></form>{{end}}
@@ -77,6 +82,7 @@
 
 <section class="card">
   <h2>Directory <small>version {{.Directory.Version}} · {{len .Directory.Contacts}} contacts</small></h2>
+  <div class="scroll">
   <table class="directory">
     <thead><tr><th></th><th>Name</th><th>Number or URI</th><th>Via</th><th></th></tr></thead>
     <tbody>
@@ -88,7 +94,7 @@
       <td><input name="display_name" value="{{.DisplayName}}" maxlength="120" {{if $ro}}disabled{{end}}></td>
       <td><input name="uri" value="{{.URI}}" maxlength="256" {{if $ro}}disabled{{end}}></td>
       <td><select name="mode" {{if $ro}}disabled{{end}}><option value="local" {{if eq .Mode "local"}}selected{{end}}>this server</option><option value="trunk" {{if eq .Mode "trunk"}}selected{{end}}>PBX</option></select></td>
-      <td class="actions"><button name="action" value="save" {{if $ro}}disabled{{end}}>Save</button> <button name="action" value="delete" class="quiet" {{if $ro}}disabled{{end}}>Delete</button></td>
+      <td class="actions"><button name="action" value="save" class="quiet" {{if $ro}}disabled{{end}}>Save</button> <button name="action" value="delete" class="link del" {{if $ro}}disabled{{end}}>Delete</button></td>
       </form>
     </tr>
     {{end}}
@@ -104,6 +110,7 @@
     </tr>
     </tbody>
   </table>
+  </div>
   <div class="row tools">
     <a class="button" href="/devices/{{.Device.DeviceID}}/directory.csv">Download CSV</a>
     <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" class="inline">
@@ -145,7 +152,7 @@
   <h2>Purge</h2>
   <form method="post" action="/devices/{{.Device.DeviceID}}/purge" class="row">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <label>Type <span class="mono">{{.Device.DeviceID}}</span> to confirm <input name="confirm" autocomplete="off" {{if $ro}}disabled{{end}}></label>
+    <label><span>Type <span class="mono">{{.Device.DeviceID}}</span> to confirm</span><input name="confirm" autocomplete="off" size="20" {{if $ro}}disabled{{end}}></label>
     <button class="danger" {{if $ro}}disabled{{end}}>Purge device</button>
   </form>
   <p class="hint">Deletes the record, its directory and its diagnostics, unregisters its line and disconnects the phone. The extension is free again at once.</p>

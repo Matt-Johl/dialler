@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"dialler/server/internal/status"
 )
@@ -98,7 +99,33 @@ func New(cfg Config) (*UI, error) {
 		"rfc3339": func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) },
 		"join":    strings.Join,
 		"list":    func(a ...string) []string { return a },
-		"lower":   strings.ToLower,
+		"initials": func(description, user string) string {
+			var out []rune
+			for _, w := range strings.Fields(description) {
+				r := []rune(w)[0]
+				if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+					continue
+				}
+				out = append(out, unicode.ToUpper(r))
+				if len(out) == 2 {
+					break
+				}
+			}
+			if len(out) == 0 {
+				if len(user) > 3 {
+					return user[len(user)-3:]
+				}
+				return user
+			}
+			return string(out)
+		},
+		"lower": strings.ToLower,
+		"clock": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.Local().Format("15:04")
+		},
 		"seconds": func(n any) string {
 			var d time.Duration
 			switch v := n.(type) {
@@ -107,7 +134,16 @@ func New(cfg Config) (*UI, error) {
 			case int64:
 				d = time.Duration(v)
 			}
-			return (d * time.Second).String()
+			d *= time.Second
+			switch {
+			case d == 0:
+				return "off"
+			case d >= 48*time.Hour && d%(24*time.Hour) == 0:
+				return fmt.Sprintf("%d days", int(d.Hours()/24))
+			case d >= time.Hour && d%time.Hour == 0:
+				return fmt.Sprintf("%d h", int(d.Hours()))
+			}
+			return d.String()
 		},
 	}
 	t, err := template.New("").Funcs(funcs).ParseFS(assets, "templates/*.html")
@@ -261,7 +297,7 @@ func (u *UI) render(w http.ResponseWriter, name string, p page) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'")
 	var buf strings.Builder
 	if err := u.tmpl.ExecuteTemplate(&buf, name, p); err != nil {
 		u.cfg.Logger.Error("template", "name", name, "err", err)
@@ -453,7 +489,7 @@ func (u *UI) loadServer(ctx context.Context) (serverData, error) {
 	} else {
 		d.Log.Err = describe(err)
 	}
-	ev, err := u.cfg.Client.Events(ctx, 0, 200)
+	ev, err := u.cfg.Client.Events(ctx, 0, 100)
 	if err != nil {
 		return d, err
 	}

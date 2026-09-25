@@ -319,7 +319,7 @@ func TestFleetPage(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("fleet: %d", rec.Code)
 	}
-	mustContain(t, rec, "<h1>Fleet</h1>", "dev-a", "Matt", "201", "202", "trunk up", "Add a device", `name="csrf" value="`+h.csrf+`"`)
+	mustContain(t, rec, "<h1>Fleet</h1>", "dev-a", "Matt", "201", "202", "up</span>", "<span>trunk", "Add a device", `name="csrf" value="`+h.csrf+`"`)
 	if strings.Contains(rec.Body.String(), "Overview") {
 		t.Fatal("the page is named Fleet, not Overview")
 	}

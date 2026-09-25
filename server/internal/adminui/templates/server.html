@@ -1,5 +1,6 @@
 {{template "header" .}}
 <h1>Server</h1>
+<p class="lede">The call server's identity, what it was started with, and what it has been doing.</p>
 {{with .Data}}
 {{$ro := $.ReadOnly}}
 <div class="grid">
@@ -32,7 +33,7 @@
   <h2>Trunk</h2>
   <dl>
     <dt>PBX</dt><dd class="mono small">{{.URI}}</dd>
-    <dt>State</dt><dd><span class="trunk {{.Qualify}}">{{.Qualify}}</span>{{if .QualifySince.IsZero}}{{else}} since {{when .QualifySince}}{{end}}{{if .QualifyLastError}} · {{.QualifyLastError}}{{end}}</dd>
+    <dt>State</dt><dd><span class="chip {{if eq .Qualify "up"}}ok{{else if eq .Qualify "down"}}bad{{end}}">{{.Qualify}}</span>{{if .QualifySince.IsZero}}{{else}} since {{when .QualifySince}}{{end}}{{if .QualifyLastError}} · {{.QualifyLastError}}{{end}}</dd>
     <dt>Media</dt><dd>SRTP {{.SRTP}} · codecs {{join .Codecs ", "}}</dd>
     <dt>TLS</dt><dd>{{if eq .Transport "tls"}}min {{.TLS.MinVersion}}{{if .TLS.Insecure}} · <strong>certificate not verified</strong>{{end}}{{if not .TLS.CertSet}} · no certificate: inbound calls cannot complete{{end}}{{else}}not TLS ({{.Transport}}){{end}}</dd>
   </dl>
@@ -51,7 +52,7 @@
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
     <label>Level <select name="level" {{if $ro}}disabled{{end}}>{{range $l := list "debug" "info" "warn" "error"}}<option value="{{$l}}" {{if eq $l $.Data.Log.Level}}selected{{end}}>{{$l}}</option>{{end}}</select></label>
     <label class="check"><input type="checkbox" name="sip_trace" {{if .Log.SIPTrace}}checked{{end}} {{if $ro}}disabled{{end}}> SIP trace</label>
-    <label>For <input name="for_seconds" size="5" placeholder="600" value="{{with .Form}}{{index . "for_seconds"}}{{end}}" {{if $ro}}disabled{{end}}> seconds</label>
+    <label>Revert after (seconds) <input name="for_seconds" size="6" placeholder="600" value="{{with .Form}}{{index . "for_seconds"}}{{end}}" {{if $ro}}disabled{{end}}></label>
     <button {{if $ro}}disabled{{end}}>Apply</button>
   </form>
   <p class="hint">Debug and SIP trace cost the call path CPU, so they need a duration (at most an hour) and revert on their own.</p>
@@ -59,7 +60,7 @@
 </div>
 
 <section class="card">
-  <h2>Recent events</h2>
+  <h2>Recent events <small>the latest 100</small></h2>
   <table class="events">
     <thead><tr><th>When</th><th>Event</th><th>Device</th><th>Ext</th><th>Detail</th></tr></thead>
     <tbody>

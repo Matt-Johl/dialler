@@ -1547,12 +1547,17 @@ on by config — see §7.4.
      `wake_test.sh` now runs `fake-app` from the compose image tag
      because Docker Desktop's image store, after the restart, refused the
      sha id it used to look up (the server's wake path is untouched).
-     Two things the harness gate does not yet measure, recorded rather
-     than hidden: a third
-     phone's REGISTER and INVITE latency during the flood (needs a third
-     baresip in compose and a timing probe) and the `by` field on
-     `directory_changed` events (the store's change hook does not know
-     whether the admin or the device wrote). Decided in the building:
+     *Two gaps closed the same day:* the gate now measures a third
+     party's latency — SIPp as dev-hc/213 (an identity no phone uses)
+     REGISTERs and INVITEs dev-hd/214 (a user with no phone, answered 480
+     by the wake path) six times idle and then every five seconds
+     through the flood; the loaded median must stay within twice the
+     idle median, with a 10 ms floor because SIPp reports whole
+     milliseconds and idle is about one. Measured: REGISTER 0–1 ms idle
+     and 1 ms loaded, INVITE→480 0 ms idle and 1 ms loaded. And every
+     directory write names its writer (`directory.By`: admin, device or
+     server), so `directory_changed` events carry `by`; the gate asserts
+     it. Decided in the building:
      the `calls` view lists calls waiting on a wake with only their id
      and start time, since nothing else is known before the INVITE; a
      call's end reason is `bye`, `peer_gone` or `failed` (the wake and

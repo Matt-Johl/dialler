@@ -79,6 +79,11 @@ post /v1/admin/devices "{\"device_id\":\"dev-ha\",\"user\":\"211\",\"token\":\"$
 post /v1/admin/devices "{\"device_id\":\"dev-hb\",\"user\":\"212\",\"token\":\"$DEV_HB_TOKEN\"}"
 # The simulator harness (sim_call.sh) and the Mac engine probe: 203 → dev-s.
 post /v1/admin/devices "{\"device_id\":\"dev-s\",\"user\":\"203\",\"token\":\"${DEV_S_TOKEN:-tok_dev_s_harness_fixed}\"}"
+# The admin gate's latency probe (admin_test.sh): dev-hc/213 is the SIPp
+# prober's own identity and dev-hd/214 a user with no phone at all, so the
+# probe registers and dials without touching any phone on a call.
+post /v1/admin/devices '{"device_id":"dev-hc","user":"213","token":"tok_dev_hc_harness_fixed"}'
+post /v1/admin/devices '{"device_id":"dev-hd","user":"214","token":"tok_dev_hd_harness_fixed"}'
 
 # PBX lines (SPEC §6 item 3c): PBX_LINES=1 gives the two docker phones the
 # credentials harness/asterisk/pjsip-lines.conf expects, so the server can

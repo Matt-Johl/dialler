@@ -16,9 +16,12 @@
 # directory_changed, the server neither panics nor grows past LIMIT_RSS_MB,
 # and the admin listener answers with 429s and 503s rather than hanging.
 #
-# Not measured here (contract §4.7 asks for it): a third phone's REGISTER
-# and INVITE latency during the flood. That needs a third baresip in
-# compose and a timing probe, and is recorded in SPEC 9b as outstanding.
+# A third party's latency (contract §4.7): SIPp, as dev-hc/213 (no phone
+# uses it), REGISTERs and INVITEs 214 (a user with no phone, answered 480
+# by the wake path) every PROBE_INTERVAL seconds, idle first and then
+# throughout the flood. The median under load must stay within twice the
+# idle median, with a PROBE_FLOOR_MS floor because SIPp reports whole
+# milliseconds and the idle figure is about one.
 #
 # Exit 0 = pass. Driven inside the compose network like call_test.sh.
 set -eu
@@ -28,6 +31,8 @@ COMPOSE_FILE="${COMPOSE_FILE:-harness/docker-compose.yml}"
 PROJECT="${PROJECT:-dialler-harness}"
 MEDIA_DIR="${MEDIA_DIR:-harness/baresip/media}"
 LOAD_SECONDS="${LOAD_SECONDS:-60}"
+PROBE_INTERVAL="${PROBE_INTERVAL:-5}"
+PROBE_FLOOR_MS="${PROBE_FLOOR_MS:-10}"
 LIMIT_RSS_MB="${LIMIT_RSS_MB:-64}"
 KEEP="${KEEP:-0}"
 TOKEN="${DIALLER_ADMIN_TOKEN:-harness}"
@@ -59,12 +64,23 @@ ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
+# probe COUNT INTERVAL — the SIPp latency probe (harness/sipp/probe.sh),
+# one "<register ms> <invite ms>" line per round.
+probe() {
+  $COMPOSE run --rm --entrypoint /work/probe.sh sipp "$1" "$2" 2>/dev/null | grep -E '^ *[0-9?]+ +[0-9?]+$|^FAIL' || true
+}
+# median FILE COLUMN — of the integer values in that column.
+median() {
+  awk -v c="$2" '$c ~ /^[0-9]+$/ {print $c}' "$1" | sort -n | awk '{v[NR]=$1} END {if (!NR) print "?"; else print v[int((NR+1)/2)]}'
+}
 rss_mb() {
   docker stats --no-stream --format '{{.MemUsage}}' "${PROJECT}-dialler-1" 2>/dev/null | awk '{v=$1; if (v ~ /GiB/) {sub(/GiB/,"",v); v*=1024} else {sub(/MiB/,"",v)} printf "%d", v}'
 }
 
 echo "== up"
 $COMPOSE up --build -d dialler >/dev/null 2>&1
+# The probe lives in the sipp image; build it now so `compose run` finds it.
+$COMPOSE build sipp >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
@@ -79,6 +95,13 @@ fi
 LOGS_BEFORE_A="$($COMPOSE logs --no-log-prefix baresip-a 2>&1 | wc -l | tr -d ' ')"
 LOGS_BEFORE_B="$($COMPOSE logs --no-log-prefix baresip-b 2>&1 | wc -l | tr -d ' ')"
 RSS_BEFORE="$(rss_mb)"
+
+echo "== idle baseline: the probe registers and dials beside the call"
+IDLE="$(mktemp)"
+probe 6 1 > "$IDLE"
+if grep -q FAIL "$IDLE"; then echo "FAIL: the probe cannot register or dial while idle:"; cat "$IDLE"; exit 1; fi
+IDLE_REG="$(median "$IDLE" 1)"; IDLE_INV="$(median "$IDLE" 2)"
+echo "   idle medians: REGISTER ${IDLE_REG} ms, INVITE→480 ${IDLE_INV} ms ($(wc -l < "$IDLE" | tr -d ' ') rounds)"
 
 echo "== isolation: admin actions on OTHER devices while the call runs"
 expect() { # expect STATUS METHOD PATH [BODY]
@@ -102,6 +125,10 @@ expect 200 GET /v1/admin/server
 if ! admin GET /v1/admin/calls | grep -q '"state":"bridged"'; then
   echo "FAIL: the calls view does not show the bridged call"; exit 1
 fi
+# The replace-all above is recorded as the admin's write (ADMIN-API.md §5.9).
+if ! admin GET '/v1/admin/events?limit=1000' | grep -q '"kind":"directory_changed"[^}]*"by":"admin"'; then
+  echo "FAIL: no directory_changed event names the admin as the writer"; exit 1
+fi
 
 echo "== load: $LOAD_SECONDS s of floods against the admin listener"
 flood() { # flood NAME SCRIPT — a container running SCRIPT until the deadline
@@ -121,10 +148,27 @@ flood "big" "awk 'BEGIN{printf \"{\\\"contacts\\\":[\"; for(i=0;i<4900;i++){if(i
 flood "idle" "while [ \$(date +%s) -lt \$end ]; do for j in \$(seq 1 200); do (sleep 20 | nc dialler 8081 >/dev/null 2>&1) & done; sleep 20; done"
 # One source sending the adversarial bodies to every write route.
 flood "adv" "while [ \$(date +%s) -lt \$end ]; do for body in '{' '[]' '{\"user\":\"201\",\"user\":\"202\"}' '{\"ssids\":[\"a\\u0000b\"]}' '{\"contacts\":[{\"uri\":\"../../etc\",\"mode\":\"local\"}]}' \"\$(head -c 70000 /dev/zero | tr '\\0' '[')\" '{\"digest_user\":\"u\",\"secret\":\"s\",\"dn\":\"../x\"}'; do for p in /v1/admin/devices /v1/admin/devices/dev-a/config /v1/admin/devices/dev-a/pbx-line /v1/admin/devices/dev-a/directory /v1/admin/devices/../pbx.key/config; do curl -sk -o /dev/null -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -X PUT \"$API\$p\" -d \"\$body\"; done; done; done"
+LOADED="$(mktemp)"
+probe "$((LOAD_SECONDS / PROBE_INTERVAL))" "$PROBE_INTERVAL" > "$LOADED" &
+PROBE_PID=$!
 sleep "$LOAD_SECONDS"
+wait $PROBE_PID || true
 sleep 3
 for c in $FLOODERS; do docker rm -f "$c" >/dev/null 2>&1 || true; done
 FLOODERS=""
+
+echo "== latency under load"
+if grep -q FAIL "$LOADED"; then echo "FAIL: the probe could not register or dial during the flood:"; grep FAIL "$LOADED" | head -3; exit 1; fi
+LOAD_REG="$(median "$LOADED" 1)"; LOAD_INV="$(median "$LOADED" 2)"
+echo "   loaded medians: REGISTER ${LOAD_REG} ms, INVITE→480 ${LOAD_INV} ms ($(wc -l < "$LOADED" | tr -d ' ') rounds)"
+bound() { b=$(( $1 * 2 )); [ "$b" -lt "$PROBE_FLOOR_MS" ] && b="$PROBE_FLOOR_MS"; echo "$b"; }
+for pair in "REGISTER $IDLE_REG $LOAD_REG" "INVITE $IDLE_INV $LOAD_INV"; do
+  set -- $pair
+  case "$2$3" in *\?*) echo "FAIL: no $1 measurement"; exit 1 ;; esac
+  if [ "$3" -gt "$(bound "$2")" ]; then
+    echo "FAIL: $1 median rose from $2 ms idle to $3 ms under admin load (bound $(bound "$2") ms)"; exit 1
+  fi
+done
 
 echo "== the listener still answers, and answered with refusals rather than hangs"
 SERVER_JSON="$(admin GET /v1/admin/server | tail -n +2)"

@@ -50,12 +50,36 @@ var ErrNoDevice = errors.New("directory: device id is required")
 // ErrVersionMismatch is returned when a Match precondition fails.
 var ErrVersionMismatch = errors.New("directory: the directory changed since it was read")
 
+// Option qualifies a write: a Match precondition, or By naming the writer.
+type Option interface{ apply(*writeOpts) }
+
+type writeOpts struct {
+	pre []Match
+	by  string
+}
+
+func collect(opts []Option) writeOpts {
+	var o writeOpts
+	for _, opt := range opts {
+		opt.apply(&o)
+	}
+	return o
+}
+
 // Match is an If-Match precondition (ADMIN-API.md §4.5): the write
 // proceeds only if the directory's version is what the caller last read.
 // Checked under the write lock, so two writers cannot both pass.
 type Match struct {
 	Version int64
 }
+
+func (m Match) apply(o *writeOpts) { o.pre = append(o.pre, m) }
+
+// By names who is writing — "admin", "device" or "server" — for the
+// directory_changed event's by field (ADMIN-API.md §5.9).
+type By string
+
+func (b By) apply(o *writeOpts) { o.by = string(b) }
 
 func checkAll(pre []Match, st *state) error {
 	for _, m := range pre {
@@ -99,6 +123,7 @@ type Store struct {
 	devices  map[string]*state
 	now      func() time.Time
 	onChange func(deviceID string, version int64)
+	onWrite  func(deviceID string, version int64, by string)
 }
 
 // Open loads every directory under dir (memory-only if ""), creating the
@@ -183,7 +208,7 @@ func (s *Store) Migrate(legacyPath string, deviceIDs []string) (contacts, device
 			// A star the device already gave this number is the user's; the
 			// global list never had one, so keep it.
 			c.Favourite = s.favourite(id, c.URI)
-			if _, err := s.Upsert(id, c); err != nil {
+			if _, err := s.Upsert(id, c, By("server")); err != nil {
 				return 0, 0, fmt.Errorf("migrating into %s: %w", id, err)
 			}
 		}
@@ -213,6 +238,24 @@ func (s *Store) OnChange(fn func(deviceID string, version int64)) {
 	s.mu.Lock()
 	s.onChange = fn
 	s.mu.Unlock()
+}
+
+// OnWrite is OnChange with the writer named (By, or "" when the caller
+// gave none), for the event ring.
+func (s *Store) OnWrite(fn func(deviceID string, version int64, by string)) {
+	s.mu.Lock()
+	s.onWrite = fn
+	s.mu.Unlock()
+}
+
+// notify calls the hooks, outside the lock.
+func (s *Store) notify(deviceID string, version int64, by string, fn func(string, int64), wr func(string, int64, string)) {
+	if fn != nil {
+		fn(deviceID, version)
+	}
+	if wr != nil {
+		wr(deviceID, version, by)
+	}
 }
 
 // Version is the current version of deviceID's directory (0 if it has none).
@@ -305,7 +348,8 @@ func (s *Store) upsertLocked(st *state, c Contact, v int64) (Contact, bool) {
 
 // Upsert creates or replaces a contact in deviceID's directory (see
 // upsertLocked for the by-URI rule).
-func (s *Store) Upsert(deviceID string, c Contact, pre ...Match) (Contact, error) {
+func (s *Store) Upsert(deviceID string, c Contact, opts ...Option) (Contact, error) {
+	wo := collect(opts)
 	if deviceID == "" {
 		return Contact{}, ErrNoDevice
 	}
@@ -320,26 +364,25 @@ func (s *Store) Upsert(deviceID string, c Contact, pre ...Match) (Contact, error
 	s.mu.Lock()
 	backup := s.backupLocked(deviceID)
 	st := s.stateLocked(deviceID)
-	if err := checkAll(pre, st); err != nil {
+	if err := checkAll(wo.pre, st); err != nil {
 		s.mu.Unlock()
 		return Contact{}, err
 	}
 	out, _ := s.upsertLocked(st, c, 0)
 	raw, err := marshal(st)
-	v, fn := st.Version, s.onChange
+	v, fn, wr := st.Version, s.onChange, s.onWrite
 	s.mu.Unlock()
 	if err := s.write(deviceID, raw, err, backup); err != nil {
 		return Contact{}, err
 	}
-	if fn != nil {
-		fn(deviceID, v)
-	}
+	s.notify(deviceID, v, wo.by, fn, wr)
 	return out, nil
 }
 
 // Delete tombstones a contact in deviceID's directory. Returns false if
 // unknown or already deleted.
-func (s *Store) Delete(deviceID, id string, pre ...Match) (bool, error) {
+func (s *Store) Delete(deviceID, id string, opts ...Option) (bool, error) {
+	wo := collect(opts)
 	if deviceID == "" {
 		return false, ErrNoDevice
 	}
@@ -354,7 +397,7 @@ func (s *Store) Delete(deviceID, id string, pre ...Match) (bool, error) {
 		s.mu.Unlock()
 		return false, nil
 	}
-	if err := checkAll(pre, st); err != nil {
+	if err := checkAll(wo.pre, st); err != nil {
 		s.mu.Unlock()
 		return false, err
 	}
@@ -369,14 +412,12 @@ func (s *Store) Delete(deviceID, id string, pre ...Match) (bool, error) {
 	c.Version = st.Version
 	c.UpdatedAt = s.now()
 	raw, err := marshal(st)
-	v, fn := st.Version, s.onChange
+	v, fn, wr := st.Version, s.onChange, s.onWrite
 	s.mu.Unlock()
 	if err := s.write(deviceID, raw, err, backup); err != nil {
 		return false, err
 	}
-	if fn != nil {
-		fn(deviceID, v)
-	}
+	s.notify(deviceID, v, wo.by, fn, wr)
 	return true, nil
 }
 
@@ -393,7 +434,8 @@ type ReplaceResult struct {
 // among them is tombstoned, and the directory's version is bumped once for
 // the lot, so a client syncs the whole change as one delta. A contact that
 // is already present and identical is left alone (and not counted).
-func (s *Store) Replace(deviceID string, contacts []Contact, pre ...Match) (ReplaceResult, error) {
+func (s *Store) Replace(deviceID string, contacts []Contact, opts ...Option) (ReplaceResult, error) {
+	wo := collect(opts)
 	if deviceID == "" {
 		return ReplaceResult{}, ErrNoDevice
 	}
@@ -410,7 +452,7 @@ func (s *Store) Replace(deviceID string, contacts []Contact, pre ...Match) (Repl
 	s.mu.Lock()
 	backup := s.backupLocked(deviceID)
 	st := s.stateLocked(deviceID)
-	if err := checkAll(pre, st); err != nil {
+	if err := checkAll(wo.pre, st); err != nil {
 		if backup == nil {
 			delete(s.devices, deviceID)
 		}
@@ -423,15 +465,13 @@ func (s *Store) Replace(deviceID string, contacts []Contact, pre ...Match) (Repl
 	if changed {
 		raw, err = marshal(st)
 	}
-	fn := s.onChange
+	fn, wr := s.onChange, s.onWrite
 	s.mu.Unlock()
 	if changed {
 		if err := s.write(deviceID, raw, err, backup); err != nil {
 			return ReplaceResult{}, err
 		}
-	}
-	if changed && fn != nil {
-		fn(deviceID, res.Version)
+		s.notify(deviceID, res.Version, wo.by, fn, wr)
 	}
 	return res, nil
 }

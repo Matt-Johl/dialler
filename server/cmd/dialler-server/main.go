@@ -402,9 +402,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			return &wire.DeviceConfig{Version: c.Version, SSIDs: c.SSIDs}
 		},
 	}, devices)
-	dir.OnChange(func(deviceID string, version int64) {
-		gw.NotifyDirectory(deviceID, version)
-		ring.Emit(events.KindDirectoryChanged, deviceID, "", map[string]any{"version": version})
+	dir.OnChange(gw.NotifyDirectory)
+	dir.OnWrite(func(deviceID string, version int64, by string) {
+		ring.Emit(events.KindDirectoryChanged, deviceID, "", map[string]any{"version": version, "by": by})
 	})
 	gw.OnPresence(func(ev gateway.PresenceEvent) {
 		log.Info("presence", "device", ev.DeviceID, "kind", ev.Kind, "online", ev.Online)

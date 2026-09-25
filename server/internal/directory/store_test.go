@@ -79,3 +79,30 @@ func TestFailedWriteRestoresMemory(t *testing.T) {
 		t.Fatalf("notified %d times; only the successful write may notify", notified)
 	}
 }
+
+// Every write names its writer for the directory_changed event: the admin,
+// the device, or the server's own migration (ADMIN-API.md §5.9).
+func TestOnWriteNamesTheWriter(t *testing.T) {
+	s, _ := Open("")
+	var got []string
+	s.OnWrite(func(_ string, _ int64, by string) { got = append(got, by) })
+	var changes int
+	s.OnChange(func(string, int64) { changes++ })
+	c, _ := s.Upsert("dev-a", Contact{URI: "sip:1@x", Mode: ModeLocal}, By("device"))
+	s.Replace("dev-a", []Contact{{URI: "sip:2@x", Mode: ModeLocal}}, By("admin"))
+	s.Delete("dev-a", c.ID, By("admin")) // already tombstoned by the replace: no write, no event
+	s.Upsert("dev-a", Contact{URI: "sip:3@x", Mode: ModeLocal}, By("server"), Match{Version: 2})
+	s.Upsert("dev-a", Contact{URI: "sip:4@x", Mode: ModeLocal}) // no By: ""
+	want := []string{"device", "admin", "server", ""}
+	if len(got) != len(want) {
+		t.Fatalf("writers %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("writers %v, want %v", got, want)
+		}
+	}
+	if changes != len(got) {
+		t.Fatalf("OnChange fired %d times, OnWrite %d", changes, len(got))
+	}
+}

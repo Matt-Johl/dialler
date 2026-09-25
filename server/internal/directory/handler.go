@@ -71,7 +71,7 @@ func NewHandler(store *Store, deviceAuth func(http.Handler) http.Handler) http.H
 		deviceUpsert(store, w, r, deviceID, r.PathValue("id"))
 	}))
 	mux.Handle("DELETE /v1/directory/{id}", device(func(w http.ResponseWriter, r *http.Request, deviceID string) {
-		ok, err := store.Delete(deviceID, r.PathValue("id"))
+		ok, err := store.Delete(deviceID, r.PathValue("id"), By("device"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -95,7 +95,7 @@ func deviceUpsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID
 	if id != "" {
 		c.ID = id
 	}
-	out, err := store.Upsert(deviceID, c)
+	out, err := store.Upsert(deviceID, c, By("device"))
 	if errors.Is(err, ErrInvalid) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -195,7 +195,7 @@ func NewAdminHandler(store *Store, adminToken string, knownDevice func(deviceID 
 			if done {
 				return
 			}
-			res, err = store.Replace(deviceID, in.Contacts, pre...)
+			res, err = store.Replace(deviceID, in.Contacts, append(pre, By("admin"))...)
 		}
 		if err != nil {
 			storeError(w, err)
@@ -222,7 +222,7 @@ func NewAdminHandler(store *Store, adminToken string, knownDevice func(deviceID 
 		if done {
 			return
 		}
-		ok, err := store.Delete(deviceID, cid, pre...)
+		ok, err := store.Delete(deviceID, cid, append(pre, By("admin"))...)
 		if err != nil {
 			storeError(w, err)
 			return
@@ -275,7 +275,7 @@ func adminUpsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID,
 	if done {
 		return
 	}
-	out, err := store.Upsert(deviceID, c, pre...)
+	out, err := store.Upsert(deviceID, c, append(pre, By("admin"))...)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -285,7 +285,7 @@ func adminUpsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID,
 
 // versionMatch reads an If-Match carrying the directory's version (§4.5).
 // done means a malformed header has been answered.
-func versionMatch(w http.ResponseWriter, r *http.Request) (pre []Match, done bool) {
+func versionMatch(w http.ResponseWriter, r *http.Request) (pre []Option, done bool) {
 	v, sent, done := admin.IfMatchInt(w, r)
 	if done {
 		return nil, true

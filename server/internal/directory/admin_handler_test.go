@@ -75,6 +75,83 @@ func TestAdminDirectoryErrorsAreTheEnvelope(t *testing.T) {
 	}
 }
 
+// Step 5: the dry run counts without applying, and If-Match on every
+// write is the directory's version.
+func TestAdminDirectoryDryRunAndIfMatch(t *testing.T) {
+	s, _ := Open("")
+	var notified int
+	s.OnChange(func(string, int64) { notified++ })
+	h := NewAdminHandler(s, "admin", func(string) bool { return true })
+	adminDo(h, "POST", "/v1/admin/devices/dev-a/directory", `{"display_name":"A","uri":"sip:1@x","mode":"local"}`)
+	adminDo(h, "POST", "/v1/admin/devices/dev-a/directory", `{"display_name":"B","uri":"sip:2@x","mode":"local"}`)
+	if notified != 2 {
+		t.Fatalf("notified %d", notified)
+	}
+	upload := `{"contacts":[{"display_name":"A2","uri":"sip:1@x","mode":"local"},{"display_name":"C","uri":"sip:3@x","mode":"trunk"}]}`
+	rec, _ := adminDo(h, "PUT", "/v1/admin/devices/dev-a/directory?dry_run=1", upload)
+	if rec.Code != 200 {
+		t.Fatalf("dry run: %d %s", rec.Code, rec.Body)
+	}
+	var res ReplaceResult
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Version != 2 || res.Added != 1 || res.Changed != 1 || res.Removed != 1 {
+		t.Fatalf("dry run counts: %+v", res)
+	}
+	if contacts, v := s.Contacts("dev-a"); v != 2 || len(contacts) != 2 || notified != 2 {
+		t.Fatalf("dry run applied something: v%d %d contacts, notified %d", v, len(contacts), notified)
+	}
+	if rec, _ := adminDo(h, "PUT", "/v1/admin/devices/dev-a/directory?dry_run=yes", upload); rec.Code != 400 {
+		t.Fatalf("bad dry_run value: %d", rec.Code)
+	}
+	// A stale If-Match is refused with nothing changed; the current one applies.
+	put := func(ifMatch string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PUT", "/v1/admin/devices/dev-a/directory", strings.NewReader(upload))
+		req.Header.Set("Authorization", "Bearer admin")
+		req.Header.Set("If-Match", ifMatch)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := put(`"1"`); rec.Code != 412 || errorBodyOf(t, rec).Error != admin.CodeVersionMismatch {
+		t.Fatalf("stale If-Match: %d %s", rec.Code, rec.Body)
+	}
+	if _, v := s.Contacts("dev-a"); v != 2 || notified != 2 {
+		t.Fatal("a refused replace changed something")
+	}
+	if rec := put(`"2"`); rec.Code != 200 {
+		t.Fatalf("current If-Match: %d %s", rec.Code, rec.Body)
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Version != 3 || res.Added != 1 || res.Changed != 1 || res.Removed != 1 || notified != 3 {
+		t.Fatalf("applied: %+v notified %d", res, notified)
+	}
+	// Per-contact writes take the same header.
+	contacts, _ := s.Contacts("dev-a")
+	req := httptest.NewRequest("DELETE", "/v1/admin/devices/dev-a/directory/"+contacts[0].ID, nil)
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"2"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 412 {
+		t.Fatalf("delete with stale If-Match: %d", rec.Code)
+	}
+	req = httptest.NewRequest("POST", "/v1/admin/devices/dev-a/directory", strings.NewReader(`{"uri":"sip:9@x","mode":"local"}`))
+	req.Header.Set("Authorization", "Bearer admin")
+	req.Header.Set("If-Match", `"3"`)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("add with current If-Match: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func errorBodyOf(t *testing.T, rec *httptest.ResponseRecorder) admin.ErrorBody {
+	t.Helper()
+	var e admin.ErrorBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &e)
+	return e
+}
+
 func TestAdminDirectoryReplaceLimit(t *testing.T) {
 	s, _ := Open("")
 	h := NewAdminHandler(s, "admin", func(string) bool { return true })

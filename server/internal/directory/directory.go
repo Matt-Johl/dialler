@@ -47,6 +47,25 @@ var ErrInvalid = errors.New("directory: uri and mode (local|trunk) are required"
 // ErrNoDevice is returned for an empty device id.
 var ErrNoDevice = errors.New("directory: device id is required")
 
+// ErrVersionMismatch is returned when a Match precondition fails.
+var ErrVersionMismatch = errors.New("directory: the directory changed since it was read")
+
+// Match is an If-Match precondition (ADMIN-API.md §4.5): the write
+// proceeds only if the directory's version is what the caller last read.
+// Checked under the write lock, so two writers cannot both pass.
+type Match struct {
+	Version int64
+}
+
+func checkAll(pre []Match, st *state) error {
+	for _, m := range pre {
+		if m.Version != st.Version {
+			return ErrVersionMismatch
+		}
+	}
+	return nil
+}
+
 // state is one device's directory: the on-disk shape of its file (and of
 // the pre-item-7 global directory.json, which Migrate reads).
 type state struct {
@@ -286,7 +305,7 @@ func (s *Store) upsertLocked(st *state, c Contact, v int64) (Contact, bool) {
 
 // Upsert creates or replaces a contact in deviceID's directory (see
 // upsertLocked for the by-URI rule).
-func (s *Store) Upsert(deviceID string, c Contact) (Contact, error) {
+func (s *Store) Upsert(deviceID string, c Contact, pre ...Match) (Contact, error) {
 	if deviceID == "" {
 		return Contact{}, ErrNoDevice
 	}
@@ -301,6 +320,10 @@ func (s *Store) Upsert(deviceID string, c Contact) (Contact, error) {
 	s.mu.Lock()
 	backup := s.backupLocked(deviceID)
 	st := s.stateLocked(deviceID)
+	if err := checkAll(pre, st); err != nil {
+		s.mu.Unlock()
+		return Contact{}, err
+	}
 	out, _ := s.upsertLocked(st, c, 0)
 	raw, err := marshal(st)
 	v, fn := st.Version, s.onChange
@@ -316,7 +339,7 @@ func (s *Store) Upsert(deviceID string, c Contact) (Contact, error) {
 
 // Delete tombstones a contact in deviceID's directory. Returns false if
 // unknown or already deleted.
-func (s *Store) Delete(deviceID, id string) (bool, error) {
+func (s *Store) Delete(deviceID, id string, pre ...Match) (bool, error) {
 	if deviceID == "" {
 		return false, ErrNoDevice
 	}
@@ -330,6 +353,10 @@ func (s *Store) Delete(deviceID, id string) (bool, error) {
 	if !ok {
 		s.mu.Unlock()
 		return false, nil
+	}
+	if err := checkAll(pre, st); err != nil {
+		s.mu.Unlock()
+		return false, err
 	}
 	c, ok := st.Contacts[id]
 	if !ok || c.Deleted {
@@ -366,7 +393,7 @@ type ReplaceResult struct {
 // among them is tombstoned, and the directory's version is bumped once for
 // the lot, so a client syncs the whole change as one delta. A contact that
 // is already present and identical is left alone (and not counted).
-func (s *Store) Replace(deviceID string, contacts []Contact) (ReplaceResult, error) {
+func (s *Store) Replace(deviceID string, contacts []Contact, pre ...Match) (ReplaceResult, error) {
 	if deviceID == "" {
 		return ReplaceResult{}, ErrNoDevice
 	}
@@ -383,6 +410,64 @@ func (s *Store) Replace(deviceID string, contacts []Contact) (ReplaceResult, err
 	s.mu.Lock()
 	backup := s.backupLocked(deviceID)
 	st := s.stateLocked(deviceID)
+	if err := checkAll(pre, st); err != nil {
+		if backup == nil {
+			delete(s.devices, deviceID)
+		}
+		s.mu.Unlock()
+		return ReplaceResult{}, err
+	}
+	res, changed := s.replaceLocked(st, contacts)
+	var raw []byte
+	var err error
+	if changed {
+		raw, err = marshal(st)
+	}
+	fn := s.onChange
+	s.mu.Unlock()
+	if changed {
+		if err := s.write(deviceID, raw, err, backup); err != nil {
+			return ReplaceResult{}, err
+		}
+	}
+	if changed && fn != nil {
+		fn(deviceID, res.Version)
+	}
+	return res, nil
+}
+
+// DryRun is Replace's answer without Replace's effect: the counts and the
+// current version, nothing written, nobody notified (ADMIN-API.md §5.5).
+// It runs the same reconcile on a copy, so the numbers are exactly what
+// the real thing would do.
+func (s *Store) DryRun(deviceID string, contacts []Contact) (ReplaceResult, error) {
+	if deviceID == "" {
+		return ReplaceResult{}, ErrNoDevice
+	}
+	for _, c := range contacts {
+		if err := validate(c); err != nil {
+			return ReplaceResult{}, err
+		}
+	}
+	s.mu.RLock()
+	st, ok := s.devices[deviceID]
+	var copy *state
+	if ok {
+		copy = st.clone()
+	} else {
+		copy = &state{Contacts: map[string]*Contact{}}
+	}
+	s.mu.RUnlock()
+	current := copy.Version
+	res, _ := s.replaceLocked(copy, contacts)
+	res.Version = current
+	return res, nil
+}
+
+// replaceLocked is the reconcile behind Replace and DryRun, applied to st
+// in place; the caller owns the lock or the copy. Returns what it did and
+// whether anything changed (the version is bumped only then).
+func (s *Store) replaceLocked(st *state, contacts []Contact) (ReplaceResult, bool) {
 	var res ReplaceResult
 	v := st.Version + 1
 	keep := map[string]bool{}
@@ -414,22 +499,7 @@ func (s *Store) Replace(deviceID string, contacts []Contact) (ReplaceResult, err
 		st.Version = v
 	}
 	res.Version = st.Version
-	var raw []byte
-	var err error
-	if changed {
-		raw, err = marshal(st)
-	}
-	fn := s.onChange
-	s.mu.Unlock()
-	if changed {
-		if err := s.write(deviceID, raw, err, backup); err != nil {
-			return ReplaceResult{}, err
-		}
-	}
-	if changed && fn != nil {
-		fn(deviceID, res.Version)
-	}
-	return res, nil
+	return res, changed
 }
 
 // liveByURILocked finds the one live contact with uri, if any. When

@@ -175,13 +175,30 @@ func NewAdminHandler(store *Store, adminToken string, knownDevice func(deviceID 
 			}
 			seen[key] = i
 		}
-		res, err := store.Replace(deviceID, in.Contacts)
-		if errors.Is(err, ErrInvalid) {
-			admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
+		// ?dry_run=1: the counts and the current version, nothing written,
+		// nothing pushed (§5.5) — what a client shows before an upload.
+		dryRun := false
+		switch r.URL.Query().Get("dry_run") {
+		case "":
+		case "1", "true":
+			dryRun = true
+		default:
+			admin.WriteFieldError(w, http.StatusBadRequest, admin.CodeInvalid, "dry_run must be 1 when given", "dry_run")
 			return
 		}
+		var res ReplaceResult
+		var err error
+		if dryRun {
+			res, err = store.DryRun(deviceID, in.Contacts)
+		} else {
+			pre, done := versionMatch(w, r)
+			if done {
+				return
+			}
+			res, err = store.Replace(deviceID, in.Contacts, pre...)
+		}
 		if err != nil {
-			admin.StoreError(w, err)
+			storeError(w, err)
 			return
 		}
 		admin.WriteJSON(w, http.StatusOK, res)
@@ -201,9 +218,13 @@ func NewAdminHandler(store *Store, adminToken string, knownDevice func(deviceID 
 		if !ok {
 			return
 		}
-		ok, err := store.Delete(deviceID, cid)
+		pre, done := versionMatch(w, r)
+		if done {
+			return
+		}
+		ok, err := store.Delete(deviceID, cid, pre...)
 		if err != nil {
-			admin.StoreError(w, err)
+			storeError(w, err)
 			return
 		}
 		if !ok {
@@ -250,16 +271,41 @@ func adminUpsert(store *Store, w http.ResponseWriter, r *http.Request, deviceID,
 	if id != "" {
 		c.ID = id
 	}
-	out, err := store.Upsert(deviceID, c)
-	if errors.Is(err, ErrInvalid) {
-		admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
+	pre, done := versionMatch(w, r)
+	if done {
 		return
 	}
+	out, err := store.Upsert(deviceID, c, pre...)
 	if err != nil {
-		admin.StoreError(w, err)
+		storeError(w, err)
 		return
 	}
 	admin.WriteJSON(w, http.StatusOK, out)
+}
+
+// versionMatch reads an If-Match carrying the directory's version (§4.5).
+// done means a malformed header has been answered.
+func versionMatch(w http.ResponseWriter, r *http.Request) (pre []Match, done bool) {
+	v, sent, done := admin.IfMatchInt(w, r)
+	if done {
+		return nil, true
+	}
+	if sent {
+		pre = append(pre, Match{Version: *v})
+	}
+	return pre, false
+}
+
+// storeError maps a store failure to the §4.4 envelope.
+func storeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrVersionMismatch):
+		admin.PreconditionFailed(w)
+	case errors.Is(err, ErrInvalid):
+		admin.WriteError(w, http.StatusBadRequest, admin.CodeInvalid, err.Error())
+	default:
+		admin.StoreError(w, err)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

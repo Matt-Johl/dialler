@@ -1322,6 +1322,17 @@ on by config — see §7.4.
      an existing id without a token is 409, with a token replaces only
      the credential) and records what it does not do (certificate
      rotation strands every phone; live trunk settings stay flags).
+     *Load isolation (added 2026-09-25, §4.7 of the contract):* the admin
+     API cannot degrade a call under any load. Calls and the app leg are
+     the highest priority in the process and the admin API the lowest,
+     enforced by hard bounds (64 connections, 4 requests in flight,
+     per-source and global rate limits, server timeouts), no disk I/O
+     under any lock the call path takes, one-second cached snapshots for
+     status and calls, and a mandatory revert timer on debug logging. A
+     harness gate floods the admin listener while a call is bridged and
+     a third phone registers and dials; the audio gate must hold and the
+     third phone's REGISTER and INVITE latency must stay within twice
+     its idle baseline.
      *Carried over from the original item 9,* as the seed rather than the
      answer. **Pages: Devices** — label, user, generated id (read-only,
      copyable), app and extension online, SIP registered, revoked; add a

@@ -32,7 +32,9 @@ marks what does not exist yet.
    file atomically and notifies that device's live sessions. Nothing here
    restarts, reloads, re-binds a listener or re-reads a global file. The
    one deliberate exception is §5.10 (the log level), which says what it
-   touches. Nothing in this API ends a call.
+   touches. Nothing in this API ends a call, and nothing in it may slow
+   one: §4.7 bounds the admin API so that no load on it degrades call
+   setup, registration, wakes or media.
 3. **Startup configuration is the deployment's, not the API's.** The
    flags in §2.1 define what this server *is*: its addresses, certificate,
    domain, PBX. They are set in the unit file, read once, and shown by the
@@ -253,6 +255,7 @@ Every non-2xx answer on `/v1/admin/` carries:
 | 429 | `rate_limited` | With `Retry-After` |
 | 500 | `store` | A write to the data directory failed; the entry is unchanged (atomic rename) |
 | 503 | `unavailable` | The server cannot do this now: no sealing key (`pbx.key` unreadable), or lines mode is off for a line route that needs it |
+| 503 | `busy` | More admin requests in flight than §4.7 allows, and this one waited 2 s; with `Retry-After: 2` |
 
 ### 4.5 Concurrency: versions and `If-Match`
 
@@ -271,12 +274,95 @@ forcing the harness to track versions.
 ### 4.6 Rate limit
 
 The admin listener takes at most **50 requests a second per source
-address, burst 100**; over it is 429 with `Retry-After: 1`. This is far
-above any UI and any provisioning script, and below what would let a
-misbehaving caller busy the store lock. The device listener's `/v1/enrol`
-limit is unchanged.
+address, burst 100**, and **200 a second in total**; over either is 429
+with `Retry-After: 1`. This is far above any UI and any provisioning
+script, and below what would let a misbehaving caller busy the store
+lock. The device listener's `/v1/enrol` limit is unchanged.
 
-### 4.7 Scale
+### 4.7 Load isolation: the admin API cannot degrade a call
+
+**Requirement (2026-09-25):** no amount of admin traffic, deliberate or
+accidental, may degrade call setup, registration, wakes or media. The
+call path and the app leg are the highest priority in the process; the
+admin API is the lowest. Go has no goroutine priorities, so this is
+achieved by **bounding admin work hard** and **keeping it off the locks
+and threads the call path uses**. Every rule here is a 9b deliverable
+and is tested by the gate at the end.
+
+*Bounds on the admin listener.* Each is a constant, not a flag.
+
+| Bound | Value | Over it |
+|---|---|---|
+| Concurrent connections accepted | 64 | The listener stops accepting until one closes |
+| Requests in flight (past auth and rate limit) | 4 | Queued; a request waiting more than 2 s is 503 `busy` |
+| Request rate | §4.6 | 429 |
+| Header read, request body read, response write, idle | 5 s, 30 s, 60 s, 60 s; 16 KiB of headers | The connection is closed |
+| Body size | per route, §5 | 413 |
+| Memory in flight | 4 × the largest body (4 MiB) plus one status snapshot | Follows from the above |
+
+The in-flight cap is what protects CPU: however many callers arrive, at
+most four admin handlers run at once, on a machine that runs the relay
+for every call. The rate limit and the connection cap protect the
+accept loop and the TLS handshake path from a flood. The device
+listener gets the same server timeouts; its handlers are already bounded
+per device.
+
+*Lock discipline.* The call path reads the device store on every
+REGISTER and INVITE (digest verification) and on every `hello`; the
+registry and gateway on every call. An admin write must never make those
+wait on disk:
+
+- **No I/O under a lock the call path takes.** A store write mutates
+  memory under the lock, releases it, then serialises and writes the file
+  under a separate writer mutex. Today `enroll.Store.saveLocked` rewrites
+  `devices.json` while holding the store lock, so a REGISTER's digest
+  check can wait on an fsync; 9b changes that. The directory store's
+  per-device file is not on the call path but follows the same rule.
+- **Snapshots, not walks.** `GET /v1/admin/status`, `/calls` and
+  `/server` copy the live state under a read lock in O(n) with no
+  allocation-heavy work inside it, then serialise outside it. The
+  snapshot is **cached for one second** and shared by every concurrent
+  caller, so a client polling at any rate costs the call path one copy a
+  second.
+- **The event ring** appends under its own mutex, O(1), never blocking the
+  emitter; if an emitter would block, the event is dropped and a counter
+  incremented, which is reported in `GET /v1/admin/server`.
+- **Notifications to a device** (`config`, `directory_changed`) are
+  handed to the gateway's per-session writer with its existing write
+  lock; an admin handler never blocks on a phone's TCP window.
+- **Diag downloads and the retention sweeper** do their file I/O on the
+  admin goroutine, counted against the in-flight cap; the sweeper runs
+  hourly, one device at a time, and yields between files.
+
+*The one admin action that costs the call path: debug logging.* A `debug`
+level or SIP trace makes every SIP message and every relay decision a
+log line, which is CPU on the call path by design. So `PUT
+/v1/admin/log` **requires `for_seconds`** (max 3,600) for `debug` and for
+`sip_trace: true`, and the server reverts on its own. There is no way to
+leave it on from the API.
+
+*The gate that proves it (9b, `make harness-test`).* With a dev-ha ↔
+dev-hb call bridged and the audio gate measuring, and dev-s registering
+and placing a call every five seconds, all of the following run at once
+for sixty seconds against the admin listener:
+
+1. `GET /v1/admin/status` and `/devices` from eight source addresses at
+   1,000 requests a second in total (well over the limits);
+2. `PUT …/dev-a/directory` replace-all at the 4 MiB limit, continuously;
+3. 500 connections opened and held with no request;
+4. the adversarial bodies of SPEC 9b (deep nesting, NUL bytes, overflow,
+   traversal) on every write route.
+
+Pass: the bridged call's audio meets the existing gate; dev-s's REGISTER
+round trip and INVITE-to-180 stay within **twice their idle baseline**
+measured in the same run; no session close, no re-INVITE, no
+`directory_changed` on either harness phone; the server's RSS grows by
+less than 64 MiB and returns; the admin listener answers with 429s and
+503s, never a hang. Beside it, a Go test holds the device store under a
+continuous replace and measures the digest-verification read: p99 under
+one millisecond.
+
+### 4.8 Scale
 
 **Lists return everything. No pagination in v1.** The design ceiling is
 **500 devices**: a status document for 500 devices is under 200 KB, a
@@ -505,7 +591,8 @@ hold in memory. It takes no store lock and never blocks a call.
   "ring_timeout_seconds": 30, "peer_timeout_seconds": 60,
   "rtp": {"min": 20000, "max": 20100, "symmetric": true},
   "data_dir": "/var/lib/dialler", "diag_retain_seconds": 2592000,
-  "counts": {"devices": 42, "enrolled": 40, "revoked": 2, "app_online": 31, "extension_online": 38, "sip_registered": 30, "lines_registered": 38, "lines_failed": 1, "calls": 3}
+  "counts": {"devices": 42, "enrolled": 40, "revoked": 2, "app_online": 31, "extension_online": 38, "sip_registered": 30, "lines_registered": 38, "lines_failed": 1, "calls": 3},
+  "admin": {"in_flight": 1, "rejected_busy": 0, "rejected_rate": 0, "events_dropped": 0}
 }
 ```
 
@@ -579,10 +666,13 @@ It replaces no logging.
 
 **`PUT /v1/admin/log`** — body ≤ 1 KiB
 `{"level"?: "debug", "sip_trace"?: true, "for_seconds"?: 600}` → the same
-view. Fields absent are unchanged. `for_seconds` (max 86,400) reverts
-both to the startup values when it elapses; absent means until restart.
-Not persisted. *Effects:* the process's log level and the SIP trace
-global; nothing else. This is the only server-wide write in the API.
+view. Fields absent are unchanged. `for_seconds` (max 3,600) reverts
+both to the startup values when it elapses. It is **required** when
+`level` is `debug` or `sip_trace` is true (400 `missing` without it),
+because those cost the call path CPU (§4.7); for `info`, `warn` or
+`error` it is optional and absent means until restart. Not persisted.
+*Effects:* the process's log level and the SIP trace global; nothing
+else. This is the only server-wide write in the API.
 
 ### 5.11 Diagnostics
 
@@ -688,7 +778,7 @@ checks SPEC 9b names:
 
 Each was an open question in SPEC 9a, or found while writing this.
 
-1. **Scale (§4.7):** everything, no pagination, 500-device ceiling,
+1. **Scale (§4.8):** everything, no pagination, 500-device ceiling,
    `limit` and `cursor` reserved.
 2. **Concurrency (§4.5):** optional `If-Match` on every versioned write,
    412 on mismatch, last-write-wins without it. Silent loss is a client

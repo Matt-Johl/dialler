@@ -50,6 +50,9 @@ typedef struct {
     /// 603 …), or 0 when no response carried one — a BYE, a local error, or
     /// our own hangup. The app picks the busy / congestion tone from it
     /// rather than parsing baresip's reason text.
+    /// CB_EVENT_LOG: 1 when the stack wrote the line at warning severity or
+    /// worse, else 0. The app must never drop a warning from its log,
+    /// whatever the wording (see emit_line).
     uint16_t scode;
 } cb_event_info;
 

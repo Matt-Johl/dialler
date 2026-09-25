@@ -97,6 +97,23 @@ if ! grep -q 'Dialler: SIP conn' "$SRC/src/sip/transp.c"; then
 fi
 echo "   re: SIP connection lifecycle logging present"
 
+# A fatal recv() error must close the connection. tcp_recv_handler closes on
+# n == 0 (orderly EOF) but on n < 0 it only logs and returns, keeping the
+# descriptor registered — upstream closes on a reset only under WIN32. On
+# Darwin the kqueue is level-triggered: a socket that is permanently
+# errored (ENOTCONN after iOS tore the connection down under a suspended
+# app) reports readable on every kevent(), the handler is re-entered at
+# once, and the loop thread spins — 38 424 warnings in 1.15 s on
+# 2026-09-25, each one allocating an mbuf and crossing into Swift, until the
+# app's own transport reset happened to drop the socket. The only errors a
+# non-blocking socket may retry are EAGAIN/EWOULDBLOCK/EINTR; anything else
+# is the connection's end, and is handled exactly as EOF already is.
+if ! grep -q 'Dialler: fatal recv' "$SRC/src/tcp/tcp.c"; then
+  perl -0pi -e 's/(\t\tDEBUG_WARNING\("recv handler: recv\(\): %m\\n", err\);\n)(#ifdef WIN32\n)/$1#ifndef WIN32\n\t\t\/* Dialler: fatal recv error closes the connection, as EOF does;\n\t\t * see ios\/vendor\/patches\/apply-re.sh *\/\n\t\tif (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {\n\t\t\tmem_deref(mb);\n\t\t\tconn_close(tc, err);\n\t\t\treturn;\n\t\t}\n#endif\n$2/' "$SRC/src/tcp/tcp.c"
+  grep -q 'Dialler: fatal recv' "$SRC/src/tcp/tcp.c" || { echo "patch: re tcp.c recv error anchor not found"; exit 1; }
+fi
+echo "   re: fatal recv error closes the connection"
+
 # ---- patch level ------------------------------------------------------------
 # Exported so the app can log which libre it was linked against; bump when a
 # patch above changes. cb_version() prints it as "libre patch level N".
@@ -104,7 +121,8 @@ echo "   re: SIP connection lifecycle logging present"
 #   3: + sip_transp_flush closes connections before dropping them
 #   4: + fd_poll drops a ready kqueue descriptor that has no handler
 #   5: + SIP connections say when they open and close, by local port
-RE_PATCH_LEVEL=5
+#   6: + a fatal recv() error closes the TCP connection instead of spinning
+RE_PATCH_LEVEL=6
 if ! grep -q 're_dialler_patchlevel' "$SRC/src/main/main.c"; then
   printf '\n/* Dialler: patch level, see ios/vendor/patches/apply-re.sh */\nint re_dialler_patchlevel(void)\n{\n\treturn %s;\n}\n' "$RE_PATCH_LEVEL" >> "$SRC/src/main/main.c"
 fi

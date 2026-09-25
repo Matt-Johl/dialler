@@ -101,6 +101,22 @@ public final class BaresipCallEngine: CallEngine {
 
     deinit { cb_stop() }
 
+    /// Whether a libre/baresip log line goes into the app's own log (it
+    /// always goes to os_log). `warning` is the stack's severity for the
+    /// line, from the shim (cbaresip.c emit_line via `scode`).
+    ///
+    /// A warning always gets through. Filtering by wording is only for the
+    /// stack's ordinary chatter, and it must never be the thing that decides
+    /// whether a warning is seen: on 2026-09-25 every "transp:" line of the
+    /// SIP connection lifecycle logging (libre patch level 5) was dropped
+    /// because that module was not a word on the list, and the same filter
+    /// hid a 38 000-line "tcp:" recv spin from the app log of the capture
+    /// that was meant to explain a lost call.
+    static func stackLineReachesAppLog(_ text: String, warning: Bool) -> Bool {
+        if warning { return true }
+        return text.contains("cbaresip") || text.contains("register") || text.contains("tls") || text.contains("dns") || text.contains("fail") || text.contains("error") || text.contains("audiounit") || text.contains("rtp") || text.contains("stream:") || text.contains("rtcp")
+    }
+
     // MARK: CallEngine
 
     public func register(user: String, sip: SIPTarget) {
@@ -662,7 +678,7 @@ public final class BaresipCallEngine: CallEngine {
             onCallEnded?(callID, text, status)
         case CB_EVENT_LOG:
             logger.info("baresip: \(text, privacy: .public)")
-            if text.contains("cbaresip") || text.contains("register") || text.contains("tls") || text.contains("dns") || text.contains("fail") || text.contains("error") || text.contains("audiounit") || text.contains("rtp") || text.contains("stream:") || text.contains("rtcp") {
+            if Self.stackLineReachesAppLog(text, warning: status != 0) {
                 log("baresip: \(text)")
             }
         default:

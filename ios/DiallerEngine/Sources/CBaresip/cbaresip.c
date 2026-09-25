@@ -165,7 +165,13 @@ static void emit_call(cb_event_t ev, struct call *call, const char *text)
     emit_info(ev, &info);
 }
 
-static void emit_line(const char *p, size_t n)
+/* A libre/baresip log line. `warning` says whether the stack wrote it at
+ * warning severity or worse; it rides in `scode`, which CB_EVENT_LOG has no
+ * other use for. The Swift side keeps a keyword filter on ordinary chatter
+ * but must never drop a warning — the SIP connection lifecycle lines added
+ * at libre patch level 5 went missing from every capture on 2026-09-25
+ * because "transp:" was not a word on that list. */
+static void emit_line(const char *p, size_t n, bool warning)
 {
     char buf[512];
     if (!p)
@@ -176,23 +182,26 @@ static void emit_line(const char *p, size_t n)
     while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r'))
         n--;
     buf[n] = 0;
-    if (n)
-        emit(CB_EVENT_LOG, "", buf);
+    if (!n)
+        return;
+    cb_event_info info = { .call_id = "", .peer = "", .text = buf, .dialler_call_id = "", .scode = warning ? 1 : 0 };
+    emit_info(CB_EVENT_LOG, &info);
 }
 
+/* baresip's own logger: LEVEL_DEBUG < INFO < WARN < ERROR. */
 static void log_handler(uint32_t level, const char *msg)
 {
-    (void)level;
     if (msg)
-        emit_line(msg, strlen(msg));
+        emit_line(msg, strlen(msg), level >= LEVEL_WARN);
 }
 static struct log log_entry = { .h = log_handler };
 
+/* libre's debug printer: syslog order, DBG_EMERG(0) … DBG_WARNING(4) …
+ * DBG_DEBUG(7) — lower is more severe. */
 static void dbg_print(int level, const char *p, size_t len, void *arg)
 {
-    (void)level;
     (void)arg;
-    emit_line(p, len);
+    emit_line(p, len, level <= DBG_WARNING);
 }
 
 /* ---- baresip events (loop thread) ------------------------------------------ */

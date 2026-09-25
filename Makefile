@@ -172,6 +172,11 @@ harness-pbx-lines:
 harness-admin:
 	sh harness/admin_test.sh
 
+# dialler-admin end to end: the real UI against the real server, driven
+# with curl inside the compose network (SPEC §6 item 9c).
+harness-admin-ui:
+	sh harness/admin_ui_test.sh
+
 harness-regression:
 	@set -e; \
 	echo "=== harness-test (SIPp conformance; needs the stack up, unlike the rest)"; \
@@ -181,7 +186,7 @@ harness-regression:
 	for t in harness-call harness-wake harness-qos \
 	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
 	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
-	         harness-hold-music harness-cancel-before-answer harness-admin; do \
+	         harness-hold-music harness-cancel-before-answer harness-admin harness-admin-ui; do \
 	  echo "=== $$t"; $(MAKE) $$t || { echo "REGRESSION FAILED: $$t"; exit 1; }; \
 	done; \
 	echo "=== NARROWBAND=1 harness-trunk"; NARROWBAND=1 sh harness/trunk_test.sh || exit 1; \

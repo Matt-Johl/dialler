@@ -1583,6 +1583,32 @@ on by config — see §7.4.
      fallback is a vendored single-file JavaScript encoder (a one-off
      download outside the sandbox). **Independent of 9a and 9b — start it
      whenever.**
+     *Built 2026-09-25 (branch `feature/admin-ui`, awaiting approval):*
+     `internal/qr` first — byte mode, level M, versions 1–10, all eight
+     masks scored by the standard's rules — checked by unit vectors, by an
+     independent decoder in its own tests run on every length 0–213, and
+     by a one-off oracle: fifteen codes through zbar in Docker, every one
+     decoded byte-exact; those matrices are the goldens. The fallback was
+     not needed. Then `dialler-admin` as specified: the typed client over
+     the server's own types, one password, a twelve-hour session refreshed
+     on use, CSRF on every form, and the contract's §9 answers built in
+     (a form submitted on an expired session is stashed and applied after
+     the re-login; one banner and every write disabled when the server
+     does not answer, with the last read and its time; If-Match on every
+     edit and a 412 explained; copy-to as one request per device with a
+     per-device result; CSV previewed through the dry run then one
+     replace-all). Pages: **Fleet** (the name, by decision), **Device**,
+     **Calls**, **Server**. `make admin`, `make dev-admin`. Tests drive
+     the UI over an in-memory fake of the API; `make harness-admin-ui`
+     runs the real binary against the real server in compose, driven
+     with curl, and is in `harness-regression`. Decided in the building:
+     bare numbers in a CSV or the add-contact form get the server's SIP
+     domain in the UI (the store does not normalise them); an uploaded
+     file cannot ride a stashed form, so after a re-login the operator
+     re-attaches it; the enrolment code and QR are shown once, on the
+     page that minted them, and never stored. *Not yet done:* one scan of
+     a real code on a phone camera (Matt offered; sample PNGs are in
+     `data/qr-samples/`), and a look at the pages in a browser.
      *Isolation:* the rule of §4.8 applies in full — every admin action
      touches one device's entry and one device's file, notifies one
      device, and never restarts, reloads or re-binds anything. `make

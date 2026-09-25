@@ -1311,7 +1311,8 @@ on by config — see §7.4.
      SIP trace) — and the API gains, beyond §4.8's routes: `whoami`,
      `server`, `status`, `events` (a bounded in-memory ring), `log`,
      `calls` (list only; nothing ends a call), per-device `diag` (list, download,
-     delete, with a `-diag-retain` sweeper), `PATCH` for the label,
+     delete, with a `-diag-retain` sweeper), `PATCH` for the description
+     (the device's `label` field is renamed `description`),
      `DELETE …/enrol-code`, `?dry_run=1` on the replace-all, a JSON error
      envelope, optional `If-Match` on every versioned write, and a
      separate `-admin-addr` listener. It settles the open questions

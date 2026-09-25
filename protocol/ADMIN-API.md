@@ -50,7 +50,11 @@ marks what does not exist yet.
    never renamed. Error *bodies* change from plain text to the JSON
    envelope of §4.4, which is the one shape change, and it is allowed
    because no caller in the tree parses an error body (`provision.sh`
-   prints it). A change that cannot be made additively gets `/v2/`.
+   prints it). The other exception, decided 2026-09-25 before any client
+   exists: the device's `label` field is renamed **`description`** in
+   the API and in `devices.json`; 9b reads `label` from an existing file
+   and writes `description` on the first save. A change that cannot be
+   made additively gets `/v2/`.
 6. **Strict at the boundary.** One typed request struct per endpoint,
    `DisallowUnknownFields`, a bounded body, validation before any
    mutation, and a JSON error naming the field. A malformed request is a
@@ -117,7 +121,7 @@ directory file, and all writable through §5.
 | Configurable | Where | Changed by | Effect on the device |
 |---|---|---|---|
 | **Existence**: device id, user (extension) | `devices.json` entry | `POST /v1/admin/devices`; `DELETE …?purge=1` | Registry provisioned or removed. **User is immutable** (§8.3) |
-| **Label** | entry `label` | `PATCH /v1/admin/devices/{id}` | None; the app never sees it |
+| **Description** | entry `description` | `PATCH /v1/admin/devices/{id}` | None; the app never sees it |
 | **Credential** | entry `token_hash`, `ha1` | A claim (`POST /v1/enrol`), or `POST /v1/admin/devices` with a fixture `token` | Sessions on the old credential are dropped with `error/unauthorized` |
 | **Revoked** | entry `revoked` | `DELETE /v1/admin/devices/{id}` sets it; a claim clears it | Sessions dropped, registration removed, PBX line unregistered; a call it is on runs to its end |
 | **Enrolment code** | entry `code_hash`, `code_expires` | `POST …/enrol-code` mints; `DELETE …/enrol-code` cancels | None until claimed |
@@ -157,7 +161,7 @@ existing memory.
 
 | Observable | Source today | Exposed by |
 |---|---|---|
-| Device record: label, user, issued, revoked, enrolled, code pending and its expiry, settings, line (no secret) | `enroll.Store.Devices()` | `GET /v1/admin/devices`, `GET …/{id}` |
+| Device record: description, user, issued, revoked, enrolled, code pending and its expiry, settings, line (no secret) | `enroll.Store.Devices()` | `GET /v1/admin/devices`, `GET …/{id}` |
 | App and extension sessions: online, since when, remote address, `app_version` from `hello` | `gateway.sessions` — *9b: record since, address and app_version; add a snapshot method* | `GET /v1/admin/status` |
 | SIP registration: registered, contact, expires | `registry.LookupDevice` | `GET /v1/admin/status` |
 | PBX line state: pending / registered / retrying / refused, since, expiry, realm, last error, attempts | `pbxline.Manager.Statuses()` — written, tested, **no caller** | `GET /v1/admin/status` |
@@ -262,7 +266,7 @@ forcing the harness to track versions.
 |---|---|
 | A device's directory (replace-all and per-contact writes) | the directory version from `GET …/directory` |
 | A device's settings | `config.version` |
-| A device's record (label, line) | `updated_at` of the record, as an RFC 3339 string *(9b: add `updated_at` to the record)* |
+| A device's record (description, line) | `updated_at` of the record, as an RFC 3339 string *(9b: add `updated_at` to the record)* |
 
 ### 4.6 Rate limit
 
@@ -297,7 +301,7 @@ additive):
 
 ```json
 {
-  "device_id": "dev_7K3M9Q", "user": "204", "label": "Warehouse 3",
+  "device_id": "dev_7K3M9Q", "user": "204", "description": "Warehouse 3",
   "issued_at": "…", "updated_at": "…",
   "revoked": false, "enrolled": true,
   "code_pending": true, "code_expires_at": "…",
@@ -310,21 +314,21 @@ additive):
 404 for unknown.
 
 **`POST /v1/admin/devices`** — body ≤ 4 KiB
-`{"user": "204", "device_id"?: "…", "label"?: "…", "token"?: "…"}` →
-`201 {"device_id","user","label","code","expires_at","url"[,"token"]}`.
+`{"user": "204", "device_id"?: "…", "description"?: "…", "token"?: "…"}` →
+`201 {"device_id","user","description","code","expires_at","url"[,"token"]}`.
 *Today: exists, with two defects this contract removes.*
 
 - `user` required, `^[0-9A-Za-z._+-]{1,64}$`; 409 `user_taken` if another
   device has it.
 - `device_id` absent → generated. Present and **new** → created as given.
 - Present and **existing, no `token`** → **409 `device_exists`**. Today
-  this silently overwrites the label with `""`; `provision.sh` line 73
+  this silently overwrites the description with `""`; `provision.sh` line 73
   relies on it being accepted, and 9b changes that line to
   `POST …/dev-a/enrol-code` (§7).
 - Present and **existing, with `token`** → the credential is replaced and
-  **everything else is kept**: label, settings, line, pending code,
+  **everything else is kept**: description, settings, line, pending code,
   directory. Today `IssueToken` builds a fresh record and keeps only the
-  label, so re-provisioning the harness wipes a line and its SSIDs. This
+  description, so re-provisioning the harness wipes a line and its SSIDs. This
   is what the fixtures need: same id, same user, fixed token, nothing
   else disturbed. `user` must equal the stored one or 409 `immutable`.
 - `token`, when given, is ≥ 16 characters and is returned once.
@@ -334,8 +338,8 @@ additive):
 replaced, sessions on the old one are dropped with `error/unauthorized`.
 Nothing else on the server is touched.
 
-**`PATCH /v1/admin/devices/{id}`** — body ≤ 4 KiB `{"label": "…"}` →
-`200 Device`. *9b.* `label` ≤ 120 characters, may be empty. `user` in the
+**`PATCH /v1/admin/devices/{id}`** — body ≤ 4 KiB `{"description": "…"}` →
+`200 Device`. *9b.* `description` ≤ 120 characters, may be empty. `user` in the
 body is 409 `immutable` (§8.3). Honours `If-Match` on `updated_at`.
 *Effects:* the entry, nothing else.
 
@@ -454,7 +458,7 @@ of)* → `200`:
   "trunk": {"configured": true, "qualify": "up", "since": "…", "last_error": ""},
   "devices": [
     {
-      "device_id": "dev_7K3M9Q", "user": "204", "label": "Warehouse 3",
+      "device_id": "dev_7K3M9Q", "user": "204", "description": "Warehouse 3",
       "revoked": false, "enrolled": true,
       "sessions": {
         "app":       {"online": true, "since": "…", "addr": "10.18.0.41:52011", "app_version": "1.4 (212)"},
@@ -559,7 +563,7 @@ and sets `"truncated": true`.
 | `call_start`, `call_end` | `call_id`, `a`, `b` (uri), `reason` on end (`bye`, `timeout`, `peer_gone`, `failed`) |
 | `wake_sent`, `wake_ack` | `call_id`, `action` |
 | `code_issued`, `code_claimed`, `code_cancelled` | — |
-| `device_created`, `device_revoked`, `device_purged`, `label_changed` | — |
+| `device_created`, `device_revoked`, `device_purged`, `description_changed` | — |
 | `config_changed` | `version` |
 | `line_changed`, `line_removed` | — |
 | `directory_changed` | `version`, `added`, `changed`, `removed`, `by` (`admin`/`device`) |

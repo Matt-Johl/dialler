@@ -56,8 +56,16 @@ final class FakeEngine: CallEngine {
     var muted: [Bool] = []
     var held: [(String, Bool)] = []
     var dialFails = false
+    /// The 200 OK cannot be written: the connection the INVITE arrived
+    /// on died while the phone was suspended (2026-09-23).
+    var answerFails = false
     func register(user: String, sip: SIPTarget) { registered.append(user) }
-    func answer(engineCallID: String) { answered.append(engineCallID) }
+    @discardableResult
+    func answer(engineCallID: String) -> Bool {
+        if answerFails { return false }
+        answered.append(engineCallID)
+        return true
+    }
     func reject(engineCallID: String) { rejected.append(engineCallID) }
     func dial(callID: String, to target: String) -> String? {
         dialled.append((callID, target))
@@ -709,5 +717,198 @@ final class CallWaitingTests: XCTestCase {
         engine.onCallEnded?("e2", "rejected 486 Busy Here", 0) // the stack reports the end of what we refused
         XCTAssertTrue(ui.ended.isEmpty)
         XCTAssertEqual(c.activeCalls.count, 1)
+    }
+}
+
+/// Answering a wake commits CallKit to a call the SIP stack has not seen
+/// yet. If the INVITE never follows — the server's route to us was stale and
+/// nothing brought it back — the call must not sit there connected and
+/// silent for ever (2026-09-23: the caller rang on while the app showed a
+/// live call with no dialog behind it).
+final class WakeAnsweredWithoutInviteTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    var clock = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func wake(_ id: String, expiresIn: TimeInterval = 30) -> Wake {
+        Wake(callID: id, from: Party(displayName: "Reception", uri: "sip:100@pbx"), to: Party(uri: "sip:201@dialler"),
+             sip: SIPTarget(host: "dialler", port: 5061, transport: "tls"), expiresAt: t0.addingTimeInterval(expiresIn))
+    }
+
+    /// Returns the controller and a way to fire the armed deadline, so the
+    /// test decides when it passes rather than waiting out real seconds.
+    func make() -> (CallController, FakeCallUI, FakeEngine, () -> Double?) {
+        let ui = FakeCallUI(), engine = FakeEngine()
+        let c = CallController(ui: ui, engine: engine, now: { self.clock })
+        c.attach(transport: FakeTransport())
+        var armed: (Double, () -> Void)?
+        c.scheduleDeadline = { secs, work in armed = (secs, work) }
+        return (c, ui, engine, {
+            guard let (secs, work) = armed else { return nil }
+            armed = nil
+            work()
+            return secs
+        })
+    }
+
+    func testStrandedCallEndsAtTheWakeExpiry() {
+        let (c, ui, engine, fireDeadline) = make()
+        var records: [CallRecord] = []
+        c.onCallEnded = { records.append($0) }
+
+        c.handle(.wake(wake("c1", expiresIn: 30)))
+        clock = t0.addingTimeInterval(4)
+        c.userAnswered(callID: "c1")
+        XCTAssertEqual(engine.registered, ["201@dialler"], "it registers so the server can dial us")
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.answered])
+
+        // 26 s of the wake's 30 s are left when the user answers.
+        let armedFor = fireDeadline()
+        XCTAssertEqual(armedFor ?? 0, 26, accuracy: 0.001, "armed for what is left of the wake")
+
+        XCTAssertTrue(c.activeCalls.isEmpty, "a call whose INVITE never came must not stay up")
+        XCTAssertEqual(ui.ended.map(\.0), ["c1"])
+        XCTAssertEqual(ui.ended.map(\.1), [.failed], "it failed; the user never got a conversation")
+        XCTAssertEqual(records.count, 1)
+        XCTAssertNotEqual(records[0].outcome, .completed, "not a completed call with a duration")
+        XCTAssertTrue(engine.hungUp.isEmpty, "there was no SIP call to hang up")
+    }
+
+    /// The INVITE arriving is the whole point of the wait: once it has, the
+    /// deadline must not touch the call.
+    func testDeadlineDoesNotTouchACallWhoseInviteArrived() {
+        let (c, ui, engine, fireDeadline) = make()
+        c.handle(.wake(wake("c1")))
+        c.userAnswered(callID: "c1")
+        engine.onIncomingCall?("e1", "sip:100@pbx", nil, "c1")
+        XCTAssertEqual(engine.answered, ["e1"])
+
+        _ = fireDeadline()
+
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.answered], "the call carries on")
+        XCTAssertTrue(ui.ended.isEmpty)
+    }
+
+    /// Answering as the wake expires still allows a grace for our REGISTER
+    /// and the server's INVITE to cross, rather than ending at once.
+    func testAnsweringAtTheExpiryStillGetsAGrace() {
+        let (c, _, _, fireDeadline) = make()
+        c.handle(.wake(wake("c1", expiresIn: 30)))
+        clock = t0.addingTimeInterval(30) // nothing left of the wake
+        c.userAnswered(callID: "c1")
+
+        let armedFor = fireDeadline()
+        XCTAssertEqual(armedFor ?? 0, 5, accuracy: 0.001, "the floor, not zero")
+    }
+
+    /// A call the user hung up before the deadline is gone; the deadline
+    /// must not then report a second ending for it.
+    func testDeadlineAfterTheUserHungUpDoesNothing() {
+        let (c, ui, _, fireDeadline) = make()
+        c.handle(.wake(wake("c1")))
+        c.userAnswered(callID: "c1")
+        c.userEnded(callID: "c1")
+        let endedByUser = ui.ended.count
+
+        _ = fireDeadline()
+
+        XCTAssertEqual(ui.ended.count, endedByUser, "no second ending")
+    }
+
+    /// A call that rang from the INVITE alone has a dialog from the start,
+    /// so there is nothing to wait for and no deadline to arm.
+    func testNoDeadlineWhenTheInviteCameFirst() {
+        let (c, ui, engine, fireDeadline) = make()
+        // Foreground path: the app is registered and the INVITE comes
+        // straight to the SIP stack, so the call has a dialog from the start.
+        c.setAccount(user: "201@dialler", sip: SIPTarget(host: "10.0.0.1", port: 5061, transport: "tls"))
+        engine.onIncomingCall?("e1", "sip:202@dialler", nil, nil)
+        let id = ui.reported.first!.0
+        c.userAnswered(callID: id)
+        XCTAssertEqual(engine.answered, ["e1"])
+
+        XCTAssertNil(fireDeadline(), "nothing was armed")
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.answered])
+    }
+}
+
+/// The 2026-09-23 failure, call ef036a07. The INVITE arrived, the user
+/// answered, and the 200 OK could not be written — the connection it came in
+/// on had died while the phone was suspended:
+///
+///     05:11:11.874Z engine: INVITE 863bf92c… for call ef036a07
+///     05:11:15.218Z callkit: answer accepted … answered ef036a07
+///     05:11:15.219Z baresip: tls: SSL_write: 5
+///     05:11:15.219Z engine: answer of 863bf92c… failed (-100)
+///     05:11:15.288Z callkit: observer … connected=true
+///     05:11:15.710Z callkit: audio session activated
+///
+/// Nothing acted on that failure: CallKit went connected, took the audio
+/// session, and the user sat in silence while 101 rang on until the server
+/// gave up.
+final class AnswerThatCannotBeSentTests: XCTestCase {
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+
+    func wake(_ id: String) -> Wake {
+        Wake(callID: id, from: Party(displayName: "SIP phone", uri: "sip:101@10.18.0.5"), to: Party(uri: "sip:201@dialler"),
+             sip: SIPTarget(host: "dialler", port: 5061, transport: "tls"), expiresAt: t0.addingTimeInterval(30))
+    }
+
+    func make() -> (CallController, FakeCallUI, FakeEngine) {
+        let ui = FakeCallUI(), engine = FakeEngine()
+        let c = CallController(ui: ui, engine: engine, now: { self.t0 })
+        c.attach(transport: FakeTransport())
+        return (c, ui, engine)
+    }
+
+    /// The wake path, exactly as it happened: wake, INVITE, answer, and the
+    /// answer cannot be sent.
+    func testCallEndsWhenTheAnswerCannotBeSent() {
+        let (c, ui, engine) = make()
+        var records: [CallRecord] = []
+        c.onCallEnded = { records.append($0) }
+
+        c.handle(.wake(wake("ef036a07")))
+        engine.onIncomingCall?("863bf92c", "sip:101@10.18.0.5", "SIP phone", "ef036a07")
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.ringing])
+
+        engine.answerFails = true
+        c.userAnswered(callID: "ef036a07")
+
+        XCTAssertTrue(c.activeCalls.isEmpty, "a call whose answer never went out must not stay up")
+        XCTAssertEqual(ui.ended.map(\.0), ["ef036a07"])
+        XCTAssertEqual(ui.ended.map(\.1), [.failed])
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].outcome, .failed, "no conversation happened")
+        XCTAssertNil(records[0].duration, "and so no duration")
+    }
+
+    /// The same failure on the other answer path: the user answered on the
+    /// wake and the INVITE arrived afterwards, so the controller answers it
+    /// itself.
+    func testCallEndsWhenTheAutoAnswerCannotBeSent() {
+        let (c, ui, engine) = make()
+        c.handle(.wake(wake("ef036a07")))
+        c.userAnswered(callID: "ef036a07") // no INVITE yet: registers and waits
+        XCTAssertEqual(engine.registered, ["201@dialler"])
+
+        engine.answerFails = true
+        engine.onIncomingCall?("863bf92c", "sip:101@10.18.0.5", "SIP phone", "ef036a07")
+
+        XCTAssertTrue(c.activeCalls.isEmpty, "the late INVITE could not be answered either")
+        XCTAssertEqual(ui.ended.map(\.1), [.failed])
+    }
+
+    /// The normal path must be untouched: an answer that goes out leaves a
+    /// connected call that records as completed, with its duration.
+    func testAnswerThatGoesOutLeavesTheCallUp() {
+        let (c, ui, engine) = make()
+        c.handle(.wake(wake("ef036a07")))
+        engine.onIncomingCall?("863bf92c", "sip:101@10.18.0.5", "SIP phone", "ef036a07")
+        c.userAnswered(callID: "ef036a07")
+
+        XCTAssertEqual(engine.answered, ["863bf92c"])
+        XCTAssertEqual(c.activeCalls.map(\.phase), [.answered])
+        XCTAssertTrue(ui.ended.isEmpty, "nothing failed")
+        XCTAssertEqual(c.activeCalls.first?.connected, true)
     }
 }

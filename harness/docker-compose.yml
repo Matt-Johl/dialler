@@ -26,6 +26,11 @@ services:
       - -local-domain=dialler
       - -data-dir=/data
       - -ring-timeout=30s
+      # End a bridged call when a party stops answering the in-dialog
+      # OPTIONS each leg is asked (b2bua qualifyLegs): the backstop for a
+      # phone that vanished without a BYE. Shortened by harness-peer-gone
+      # so the test need not wait out the production default.
+      - -peer-timeout=${DIALLER_PEER_TIMEOUT:-60s}
       # Host-side ports are overridable so this harness can run next to a
       # native `make dev-server` (DIALLER_SIGNAL_HOSTPORT / SIP_HOSTPORT /
       # HTTP_HOSTPORT / RTP_MIN / RTP_MAX); the RTP range is published 1:1.

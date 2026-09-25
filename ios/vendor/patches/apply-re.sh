@@ -78,13 +78,33 @@ if ! grep -q 'Dialler: a descriptor the kqueue reports' "$SRC/src/main/main.c"; 
 fi
 echo "   re: kqueue no-handler descriptor guard present"
 
+# SIP connection lifecycle, named by its local port. A dialog is bound to the
+# connection its INVITE arrived on, and the 200 OK goes back down that same
+# one; when it has died in between, the answer fails with EPROTO and the call
+# is lost with CallKit already showing it connected (2026-09-23, call
+# ef036a07: INVITE at 11.874, answer at 15.219, "tls: SSL_write: 5"). Which
+# socket that was, and when it died, is not recoverable from any existing
+# log: libre says nothing when a SIP connection opens or closes, and baresip
+# does not expose the dialog's transport. The local port is the join — it is
+# what the server records as the registration's Contact ("…@10.18.0.204:65309")
+# and what it names in its own read errors, so one capture with this on lines
+# both sides up exactly.
+if ! grep -q 'Dialler: SIP conn' "$SRC/src/sip/transp.c"; then
+  perl -0pi -e 's/(static void conn_close\(struct sip_conn \*conn, int err\)\n\{\n\tstruct le \*le;\n\n)/$1\t\/* Dialler: SIP connection lifecycle, see ios\/vendor\/patches\/apply-re.sh *\/\n\tDEBUG_WARNING("Dialler: SIP conn closed: local=%J peer=%J %s (%m)\\n",\n\t\t      &conn->laddr, &conn->paddr, sip_transp_name(conn->tp), err);\n\n/;
+    s/(\terr = tcp_conn_local_get\(conn->tc, &conn->laddr\);\n\tif \(err\)\n\t\tgoto out;\n\n)(\t\/\* Fallback check for any address win32 \*\/\n)/$1\t\/* Dialler: SIP connection lifecycle (see above) *\/\n\tDEBUG_WARNING("Dialler: SIP conn opened: local=%J peer=%J %s\\n",\n\t\t      &conn->laddr, &conn->paddr, sip_transp_name(conn->tp));\n\n$2/;' "$SRC/src/sip/transp.c"
+  grep -q 'Dialler: SIP conn closed' "$SRC/src/sip/transp.c" || { echo "patch: re transp.c conn_close anchor not found"; exit 1; }
+  grep -q 'Dialler: SIP conn opened' "$SRC/src/sip/transp.c" || { echo "patch: re transp.c outbound connect anchor not found"; exit 1; }
+fi
+echo "   re: SIP connection lifecycle logging present"
+
 # ---- patch level ------------------------------------------------------------
 # Exported so the app can log which libre it was linked against; bump when a
 # patch above changes. cb_version() prints it as "libre patch level N".
 #   1: re_main EBADF guard   2: + Apple SO_NET_SERVICE_TYPE / IPV6_TCLASS marks
 #   3: + sip_transp_flush closes connections before dropping them
 #   4: + fd_poll drops a ready kqueue descriptor that has no handler
-RE_PATCH_LEVEL=4
+#   5: + SIP connections say when they open and close, by local port
+RE_PATCH_LEVEL=5
 if ! grep -q 're_dialler_patchlevel' "$SRC/src/main/main.c"; then
   printf '\n/* Dialler: patch level, see ios/vendor/patches/apply-re.sh */\nint re_dialler_patchlevel(void)\n{\n\treturn %s;\n}\n' "$RE_PATCH_LEVEL" >> "$SRC/src/main/main.c"
 fi

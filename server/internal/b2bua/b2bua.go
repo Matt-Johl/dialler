@@ -129,9 +129,16 @@ type Config struct {
 	// probed with OPTIONS so one that has gone silently dead is dropped
 	// before a call needs it (qualify.go). 0 = off. Ignored over UDP.
 	TrunkQualify time.Duration
-	MinExpires   int
-	MaxExpires   int
-	Logger       *slog.Logger
+	// PeerTimeout ends a bridged call once a party has stopped answering
+	// the in-dialog OPTIONS each leg is asked on an interval
+	// (bridgedCall.qualifyLegs). A B2BUA cannot rely on a BYE to end a
+	// call: a phone that crashes or goes out of range sends none, and its
+	// dialog then has nothing to cancel it, so the call and its relay
+	// outlive everyone on it. 0 = off.
+	PeerTimeout time.Duration
+	MinExpires  int
+	MaxExpires  int
+	Logger      *slog.Logger
 	// Auth challenges every app-leg REGISTER and initial INVITE with SIP
 	// Digest against the device enrolment store and refuses a SIP user
 	// other than the device's enrolled one (SPEC §4.4 rule 2). nil = no
@@ -181,6 +188,13 @@ func (c Config) withDefaults() Config {
 	}
 	if c.RingTimeout <= 0 {
 		c.RingTimeout = 30 * time.Second
+	}
+	if c.PeerTimeout == 0 {
+		// Four asks across it (qualifyLegs), so a party has a minute of
+		// missed OPTIONS before its call ends — long enough that a network
+		// blip or a phone briefly off the CPU cannot end a conversation,
+		// short enough that nothing is left relaying to nobody.
+		c.PeerTimeout = 60 * time.Second
 	}
 	if c.MinExpires == 0 {
 		c.MinExpires = 60

@@ -52,6 +52,13 @@ harness-call:
 harness-flow-gone:
 	sh harness/flow_gone_test.sh
 
+# A bridged call whose party vanishes must end itself: the callee is
+# SIGKILLed mid-call while the caller talks on, and the server must notice
+# that it has stopped answering (b2bua qualifyLegs). Also asserts the case
+# that must NOT end: both parties answering.
+harness-peer-gone:
+	sh harness/peer_gone_test.sh
+
 # NAT regression (macOS host, not sandboxable): the real engine on this Mac
 # registers through Docker's port forwarding — a genuine NAT — and must be
 # reached over its own TLS connection with symmetric RTP.

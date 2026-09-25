@@ -62,10 +62,21 @@ type bridgedCall struct {
 	// decided. The referrer is released as soon as the target rings, so its
 	// BYE must not be read as the end of the call (rule 6a).
 	handing chan struct{}
+	// Closed once a party has stopped answering (qualifyLegs). wait()
+	// selects on it exactly as it does on a leg ending, because a party
+	// that vanished cannot send a BYE and will not answer ours — so its
+	// dialog context never completes, and nothing else would ever notice
+	// that the call is over.
+	gone     chan struct{}
+	goneOnce sync.Once
 }
 
 func newBridgedCall(s *Server, log *slog.Logger, callID string, a, b *callLeg) *bridgedCall {
-	return &bridgedCall{s: s, log: log, callID: callID, a: a, b: b, swapped: make(chan struct{}, 1)}
+	return &bridgedCall{
+		s: s, log: log, callID: callID, a: a, b: b,
+		swapped: make(chan struct{}, 1),
+		gone:    make(chan struct{}),
+	}
 }
 
 // start (re)starts the relay pumps between the current legs.
@@ -189,9 +200,114 @@ func (c *bridgedCall) stopHoldLocked() {
 	c.heldBy = nil
 }
 
+// byeTimeout bounds a BYE sent to a party we already believe is not there.
+// Matches the release path in finishOffload; without it Bye waits out the
+// transaction's own Timer B (32 s) for a 200 that is never coming.
+const byeTimeout = 5 * time.Second
+
+// qualifyLegs asks each party, on an interval, whether it is still there,
+// and ends the call when one stops answering for PeerTimeout.
+//
+// A B2BUA cannot rely on a BYE: a phone that crashes, loses its network or
+// is suspended sends none, and sipgo ends a dialog only on a BYE, a Hangup
+// answered 200, or a failed ACK — so nothing cancels the dialog, wait()
+// blocks for ever, and the call and its relay outlive everyone on it (14½
+// hours, 2026-09-22).
+//
+// It asks rather than infers. Watching the media instead looks cheaper and
+// is what this did first, but "is media flowing" is only a proxy for "is
+// the peer there", and a proxy needs an exception for every state where a
+// live party legitimately sends nothing — hold, mute, recvonly, inactive,
+// a leg mid-transfer. That list has no end and each entry hides the next
+// bug. An in-dialog OPTIONS asks the question itself: a held party answers
+// it, a muted party answers it, a party being transferred answers it, and
+// a party that has gone does not. Same pattern as the trunk leg's
+// qualifier (qualify.go), and the principle in SPEC §4.7 — whether the far
+// end answers when spoken to, not whether it has been busy.
+func (c *bridgedCall) qualifyLegs(ctx context.Context, timeout time.Duration) {
+	// Four asks across the window, so one lost OPTIONS cannot end a call:
+	// a party has to miss every ask for the whole timeout. That is the
+	// tolerance, rather than a retry count to get wrong.
+	interval := timeout / 4
+	if interval < 100*time.Millisecond {
+		// Only a guard against a pathological timeout asking for a
+		// zero-length ticker; at the 60 s default this is 15 s.
+		interval = 100 * time.Millisecond
+	}
+	// Always finish an ask before the next one is due.
+	probe := interval / 2
+	if probe > byeTimeout {
+		probe = byeTimeout
+	}
+	// Keyed by leg, so a leg a transfer swaps in starts with a clean slate
+	// and one it swapped out is forgotten. No transfer case to special-case.
+	answered := map[*callLeg]time.Time{}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		c.mu.Lock()
+		legs := [2]*callLeg{c.a, c.b}
+		c.mu.Unlock()
+
+		here := map[*callLeg]bool{}
+		for _, leg := range legs {
+			if leg == nil || leg.sess == nil {
+				continue
+			}
+			here[leg] = true
+			if _, known := answered[leg]; !known {
+				answered[leg] = time.Now()
+			}
+			if c.answers(ctx, leg, probe) {
+				answered[leg] = time.Now()
+				continue
+			}
+			if since := time.Since(answered[leg]); since > timeout {
+				c.log.Warn("party stopped answering; ending the call", "party", leg.name,
+					"unanswered_s", since.Round(time.Second).Seconds(), "timeout_s", timeout.Seconds())
+				c.goneOnce.Do(func() { close(c.gone) })
+				return
+			}
+		}
+		for leg := range answered {
+			if !here[leg] {
+				delete(answered, leg)
+			}
+		}
+	}
+}
+
+// answers asks one party, inside its own dialog, whether it is there.
+//
+// ANY final response means it is — 200, 405, 403, even 481. The question is
+// whether something is still at the other end, not what it thinks of the
+// request: stacks handle OPTIONS at wildly different levels (baresip
+// answers from the user agent, without consulting the dialog at all), so
+// reading a particular code as "this call is over" would end live calls on
+// the stacks that answer that way. Only silence counts as gone.
+func (c *bridgedCall) answers(ctx context.Context, leg *callLeg, within time.Duration) bool {
+	if leg.sess.Context().Err() != nil {
+		return false // already ended; wait() is dealing with it
+	}
+	ctx, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+	_, err := leg.sess.Do(ctx, sip.NewRequest(sip.OPTIONS, remoteTarget(leg.sess)))
+	return err == nil
+}
+
 // wait blocks until either leg ends, hangs up the other, and stops the
 // pumps. A transfer swaps a leg underneath it.
 func (c *bridgedCall) wait() {
+	if d := c.s.cfg.PeerTimeout; d > 0 {
+		qctx, stop := context.WithCancel(context.Background())
+		defer stop()
+		go c.qualifyLegs(qctx, d)
+	}
 	for {
 		c.mu.Lock()
 		a, b := c.a, c.b
@@ -200,13 +316,15 @@ func (c *bridgedCall) wait() {
 		if b != nil {
 			bDone = b.sess.Context().Done()
 		}
-		aEnded := false
+		aEnded, peerGone := false, false
 		select {
 		case <-a.sess.Context().Done():
 			aEnded = true
 		case <-bDone:
 		case <-c.swapped:
 			continue
+		case <-c.gone:
+			peerGone = true
 		}
 		// A transfer the PBX is completing ends the legs on its own terms:
 		// let finishOffload do the orderly release (final NOTIFY to the
@@ -220,6 +338,19 @@ func (c *bridgedCall) wait() {
 		// then look again at whatever legs are left.
 		if c.awaitHandover() {
 			continue
+		}
+		if peerGone {
+			// Nobody is answering, so neither dialog will end itself and at
+			// least one BYE is going nowhere. Bound them: a dialog's own
+			// context never expires, and Bye waits for a 200 that a party
+			// which has gone will never send (Timer B, 32 s, twice).
+			hctx, hcancel := context.WithTimeout(context.Background(), byeTimeout)
+			_ = a.sess.Hangup(hctx)
+			if b != nil {
+				_ = b.sess.Hangup(hctx)
+			}
+			hcancel()
+			break
 		}
 		if aEnded {
 			if b != nil {

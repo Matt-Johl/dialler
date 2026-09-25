@@ -224,7 +224,12 @@ final class CallRecordEmissionTests: XCTestCase {
         clock = t0.addingTimeInterval(120)
         XCTAssertEqual(c.handle(wake: wake("c3", expiresIn: 30)), .expired)
         XCTAssertEqual(records().map(\.id), ["c2", "c1", "c3"])
-        XCTAssertEqual(records().map(\.outcome), [.missed, .completed, .missed])
+        // c1 was answered on the wake and its INVITE never arrived, so the
+        // user heard nothing before hanging up: a failure, not a completed
+        // call with a duration measuring how long they waited in silence
+        // (changed 2026-09-23 with the wake-answered deadline).
+        XCTAssertEqual(records().map(\.outcome), [.missed, .failed, .missed])
+        XCTAssertNil(records()[1].duration, "it never connected")
     }
 
     func testOutgoingOutcomes() {

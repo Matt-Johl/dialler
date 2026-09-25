@@ -1,37 +1,40 @@
 {{template "header" .}}
 <h1>Fleet</h1>
 {{with .Data}}
-<p class="stats">
-  <span><b>{{index .Counts "devices"}}</b> devices</span>
-  <span><b>{{index .Counts "online"}}</b> online</span>
-  <span><b>{{index .Counts "registered"}}</b> registered</span>
-  <span><b>{{index .Counts "calls"}}</b> on a call</span>
-  {{if index .Counts "revoked"}}<span><b>{{index .Counts "revoked"}}</b> revoked</span>{{end}}
-  {{if .Trunk.Trunk.Configured}}<span class="status {{if eq .Trunk.Trunk.Qualify "down"}}bad{{end}}"><i class="dot"></i> trunk {{.Trunk.Trunk.Qualify}}{{if .Trunk.Trunk.LastError}} · {{.Trunk.Trunk.LastError}}{{end}}</span>{{end}}
+<p class="counts">
+  <span>{{index .Counts "devices"}} devices</span>
+  <span>{{index .Counts "online"}} online</span>
+  <span>{{index .Counts "registered"}} registered</span>
+  <span>{{index .Counts "calls"}} on a call</span>
+  {{if index .Counts "revoked"}}<span>{{index .Counts "revoked"}} revoked</span>{{end}}
+  {{if .Trunk.Trunk.Configured}}<span class="trunk {{.Trunk.Trunk.Qualify}}">trunk {{.Trunk.Trunk.Qualify}}{{if .Trunk.Trunk.LastError}} · {{.Trunk.Trunk.LastError}}{{end}}</span>{{end}}
 </p>
-
-<div class="list">
-  <div class="head"><span></span><span>Device</span><span>Phone</span><span>SIP</span><span>PBX line</span><span>State</span></div>
+<table class="fleet">
+  <thead><tr><th>Ext</th><th>Description</th><th>Phone</th><th>Wake</th><th>SIP</th><th>PBX line</th><th>Call</th><th>State</th></tr></thead>
+  <tbody>
   {{range .Rows}}
-  <a class="row {{if .Revoked}}revoked{{end}}" href="/devices/{{.DeviceID}}">
-    <span class="avatar">{{initials .Description .User}}</span>
-    <span><span class="name">{{if .Description}}{{.Description}}{{else}}Ext {{.User}}{{end}}</span><span class="sub">Ext {{.User}} · <span class="mono">{{.DeviceID}}</span></span></span>
-    <span>{{with index .Sessions "app"}}<span class="status"><i class="dot"></i> App{{if .AppVersion}} {{.AppVersion}}{{end}}</span>{{else}}{{with index .Sessions "extension"}}<span class="status off"><i class="dot"></i> Wake only</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}{{end}}</span>
-    <span>{{with .SIP}}<span class="status"><i class="dot"></i> Registered</span>{{else}}<span class="status off"><i class="dot"></i> —</span>{{end}}</span>
-    <span>{{with .Line}}<span class="chip {{if eq .State "registered"}}ok{{else if eq .State "refused"}}bad{{else}}warn{{end}}">{{.State}}</span>{{else}}<span class="status faint"><i class="dot"></i> none</span>{{end}}</span>
-    <span>{{if .Revoked}}<span class="chip bad">Revoked</span>{{else if .Call}}<span class="status call"><i class="dot"></i> On a call</span>{{else if not .Enrolled}}<span class="chip warn">Not enrolled</span>{{else if .CodePending}}<span class="chip">Code pending</span>{{else}}<span class="status"><i class="dot"></i> Ready</span>{{end}}</span>
-  </a>
+  <tr class="{{if .Revoked}}revoked{{end}}">
+    <td><a href="/devices/{{.DeviceID}}"><strong>{{.User}}</strong></a></td>
+    <td><a href="/devices/{{.DeviceID}}">{{.Description}}</a><br><small class="mono">{{.DeviceID}}</small></td>
+    <td>{{with index .Sessions "app"}}<span class="dot on" title="app connected {{since .Since}} ago from {{.Addr}}"></span> {{.AppVersion}}{{else}}<span class="dot"></span>{{end}}</td>
+    <td>{{with index .Sessions "extension"}}<span class="dot on" title="extension connected {{since .Since}} ago"></span>{{else}}<span class="dot"></span>{{end}}</td>
+    <td>{{with .SIP}}<span class="dot on" title="{{.Contact}}"></span> until {{when .ExpiresAt}}{{else}}<span class="dot"></span>{{end}}</td>
+    <td>{{with .Line}}<span class="line {{.State}}">{{.State}}</span>{{if .Error}} <small>{{.Error}}</small>{{end}}{{else}}{{if $.Data}}—{{end}}{{end}}</td>
+    <td>{{with .Call}}<a href="/calls">on a call</a> {{since .Since}}{{end}}</td>
+    <td>{{if .Revoked}}revoked{{else if not .Enrolled}}not enrolled{{if .CodePending}}, code until {{when .CodeExpiresAt}}{{end}}{{else}}enrolled{{if .CodePending}}, new code until {{when .CodeExpiresAt}}{{end}}{{end}}</td>
+  </tr>
   {{else}}
-  <div class="row"><span></span><span class="sub">No devices yet. Add the first one below.</span></div>
+  <tr><td colspan="8">No devices yet. Add the first one below.</td></tr>
   {{end}}
-</div>
+  </tbody>
+</table>
 
 <section class="card">
   <h2>Add a device</h2>
   <form method="post" action="/devices" class="row">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <label>Extension <input name="user" required pattern="[0-9A-Za-z._+-]{1,64}" placeholder="204" value="{{with .Form}}{{index . "user"}}{{end}}" {{if $.ReadOnly}}disabled{{end}}></label>
-    <label>Description <input name="description" maxlength="120" placeholder="Warehouse 3" size="28" value="{{with .Form}}{{index . "description"}}{{end}}" {{if $.ReadOnly}}disabled{{end}}></label>
+    <label>Extension <input name="user" required pattern="[0-9A-Za-z._+-]{1,64}" value="{{with .Form}}{{index . "user"}}{{end}}" {{if $.ReadOnly}}disabled{{end}}></label>
+    <label>Description <input name="description" maxlength="120" placeholder="Warehouse 3" value="{{with .Form}}{{index . "description"}}{{end}}" {{if $.ReadOnly}}disabled{{end}}></label>
     <button {{if $.ReadOnly}}disabled{{end}}>Add and show its code</button>
   </form>
   <p class="hint">The server picks the device id. You will be shown an enrolment code and QR, valid for fifteen minutes.</p>

@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"dialler/server/internal/status"
 )
@@ -99,27 +98,7 @@ func New(cfg Config) (*UI, error) {
 		"rfc3339": func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) },
 		"join":    strings.Join,
 		"list":    func(a ...string) []string { return a },
-		"initials": func(description, user string) string {
-			var out []rune
-			for _, w := range strings.Fields(description) {
-				r := []rune(w)[0]
-				if r == '(' || r == '-' {
-					continue
-				}
-				out = append(out, unicode.ToUpper(r))
-				if len(out) == 2 {
-					break
-				}
-			}
-			if len(out) == 0 {
-				if len(user) > 3 {
-					return user[len(user)-3:]
-				}
-				return user
-			}
-			return string(out)
-		},
-		"lower": strings.ToLower,
+		"lower":   strings.ToLower,
 		"seconds": func(n any) string {
 			var d time.Duration
 			switch v := n.(type) {
@@ -282,7 +261,7 @@ func (u *UI) render(w http.ResponseWriter, name string, p page) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'")
 	var buf strings.Builder
 	if err := u.tmpl.ExecuteTemplate(&buf, name, p); err != nil {
 		u.cfg.Logger.Error("template", "name", name, "err", err)

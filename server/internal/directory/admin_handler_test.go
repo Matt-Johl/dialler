@@ -118,9 +118,11 @@ func TestAdminDirectoryDryRunAndIfMatch(t *testing.T) {
 	if _, v := s.Contacts("dev-a"); v != 2 || notified != 2 {
 		t.Fatal("a refused replace changed something")
 	}
-	if rec := put(`"2"`); rec.Code != 200 {
+	rec = put(`"2"`)
+	if rec.Code != 200 {
 		t.Fatalf("current If-Match: %d %s", rec.Code, rec.Body)
 	}
+	res = ReplaceResult{}
 	_ = json.Unmarshal(rec.Body.Bytes(), &res)
 	if res.Version != 3 || res.Added != 1 || res.Changed != 1 || res.Removed != 1 || notified != 3 {
 		t.Fatalf("applied: %+v notified %d", res, notified)

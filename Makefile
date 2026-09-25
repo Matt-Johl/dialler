@@ -36,6 +36,7 @@ ADMIN_TOKEN ?= harness
 dev-admin: admin
 	@mkdir -p data/admin
 	@test -f data/admin/password || { printf 'dialler\n' > data/admin/password; echo "created data/admin/password (password: dialler)"; }
+	@grep -q '^pbkdf2' data/admin/password && { echo "data/admin/password is a hash from the old UI; dialler-admin reads the plain password. Replace it: printf 'dialler\\n' > data/admin/password"; exit 1; } || true
 	./bin/dialler-admin -listen 127.0.0.1:8443 -server https://127.0.0.1:8081 -admin-token $(ADMIN_TOKEN) -insecure \
 	  -password-file data/admin/password -data-dir data/admin
 

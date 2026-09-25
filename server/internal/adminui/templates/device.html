@@ -1,0 +1,154 @@
+{{template "header" .}}
+{{with .Data}}
+{{$ro := $.ReadOnly}}
+{{$upd := rfc3339 .Device.UpdatedAt}}
+<p class="crumb"><a href="/fleet">Fleet</a> ›</p>
+<h1>{{.Device.User}} <small>{{.Device.Description}}</small></h1>
+<p class="mono">device id {{.Device.DeviceID}} · {{if .Device.Revoked}}<strong>revoked</strong>{{else if .Device.Enrolled}}enrolled{{else}}not enrolled yet{{end}}{{if .Device.CodePending}} · code pending until {{when .Device.CodeExpiresAt}}{{end}}</p>
+
+{{if .Code}}
+<section class="card code">
+  <h2>Enrolment code</h2>
+  <div class="row">
+    {{if .QR}}<div class="qr">{{.QR}}</div>{{end}}
+    <div>
+      <p class="bigcode">{{.Code.Code}}</p>
+      <p>Scan the QR with the phone's Camera, or in the app choose <em>Enter manually</em> and type the server address and this code. Valid until <strong>{{when .Code.ExpiresAt}}</strong>, single use.</p>
+      <p class="mono small">{{.Code.URL}}</p>
+    </div>
+  </div>
+</section>
+{{end}}
+
+<div class="grid">
+<section class="card">
+  <h2>Live</h2>
+  <dl>
+    <dt>App</dt><dd>{{with index .Live.Sessions "app"}}connected {{since .Since}} ago from {{.Addr}}{{if .AppVersion}}, version {{.AppVersion}}{{end}}{{else}}offline{{end}}</dd>
+    <dt>Wake extension</dt><dd>{{with index .Live.Sessions "extension"}}connected {{since .Since}} ago from {{.Addr}}{{else}}offline{{end}}</dd>
+    <dt>SIP</dt><dd>{{with .Live.SIP}}registered until {{when .ExpiresAt}}<br><span class="mono small">{{.Contact}}</span>{{else}}not registered{{end}}</dd>
+    {{with .Live.Line}}<dt>PBX line</dt><dd><span class="line {{.State}}">{{.State}}</span> since {{when .Since}}{{if .Realm}} · realm {{.Realm}}{{end}}{{if .ExpiresAt.IsZero}}{{else}} · expires {{when .ExpiresAt}}{{end}}{{if .Error}}<br><small>{{.Error}}{{if .Attempts}} ({{.Attempts}} attempts){{end}}</small>{{end}}</dd>{{end}}
+    {{with .Live.Call}}<dt>Call</dt><dd><a href="/calls">on a call</a> for {{since .Since}}</dd>{{end}}
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Description</h2>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/description" class="row">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="updated_at" value="{{$upd}}">
+    <input name="description" maxlength="120" value="{{with .Form}}{{index . "description"}}{{else}}{{.Device.Description}}{{end}}" {{if $ro}}disabled{{end}}>
+    <button {{if $ro}}disabled{{end}}>Save</button>
+  </form>
+  <h2>Enrolment</h2>
+  <div class="row">
+    <form method="post" action="/devices/{{.Device.DeviceID}}/code"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button {{if $ro}}disabled{{end}}>New code</button></form>
+    {{if .Device.CodePending}}<form method="post" action="/devices/{{.Device.DeviceID}}/code/cancel"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="quiet" {{if $ro}}disabled{{end}}>Cancel pending code</button></form>{{end}}
+    {{if not .Device.Revoked}}<form method="post" action="/devices/{{.Device.DeviceID}}/revoke" onsubmit="return confirm('Revoke {{.Device.User}}? The phone is disconnected and cannot register until re-enrolled.')"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="danger" {{if $ro}}disabled{{end}}>Revoke</button></form>{{end}}
+  </div>
+  <p class="hint">A new code rotates the phone's credential when claimed. Revoke keeps everything for a re-enrol; purge, at the bottom, deletes it all.</p>
+</section>
+
+<section class="card">
+  <h2>Wi-Fi networks for background wakes</h2>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/config">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="config_version" value="{{with .Device.Config}}{{.Version}}{{else}}0{{end}}">
+    <textarea name="ssids" rows="3" placeholder="One SSID per line" {{if $ro}}disabled{{end}}>{{with .Form}}{{index . "ssids"}}{{else}}{{with .Device.Config}}{{join .SSIDs "\n"}}{{end}}{{end}}</textarea>
+    <button {{if $ro}}disabled{{end}}>Save and push</button>
+  </form>
+  <p class="hint">{{with .Device.Config}}Version {{.Version}}. {{else}}Never set: the phone keeps whatever it has. {{end}}An empty list stops background wakes on this phone.</p>
+</section>
+
+<section class="card">
+  <h2>PBX line</h2>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/line">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="updated_at" value="{{$upd}}">
+    <div class="row">
+      <label>Digest user <input name="digest_user" required maxlength="128" value="{{with .Form}}{{index . "digest_user"}}{{else}}{{with .Device.PBXLine}}{{.DigestUser}}{{end}}{{end}}" {{if $ro}}disabled{{end}}></label>
+      <label>Secret <input type="password" name="secret" required maxlength="128" autocomplete="new-password" placeholder="{{if .Device.PBXLine}}set; enter to replace{{end}}" {{if $ro}}disabled{{end}}></label>
+      <label>DN <input name="dn" maxlength="32" placeholder="{{.Device.User}}" value="{{with .Form}}{{index . "dn"}}{{else}}{{with .Device.PBXLine}}{{.DN}}{{end}}{{end}}" {{if $ro}}disabled{{end}}></label>
+      <button {{if $ro}}disabled{{end}}>Save line</button>
+    </div>
+  </form>
+  {{if .Device.PBXLine}}<form method="post" action="/devices/{{.Device.DeviceID}}/line/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="updated_at" value="{{$upd}}"><button class="quiet" {{if $ro}}disabled{{end}}>Remove line</button></form>{{end}}
+  <p class="hint">The secret is write-only: it is never shown again. {{if ne .Server.Mode "lines"}}The server is in {{.Server.Mode}} mode, so the line is stored but not registered.{{end}}</p>
+</section>
+</div>
+
+<section class="card">
+  <h2>Directory <small>version {{.Directory.Version}} · {{len .Directory.Contacts}} contacts</small></h2>
+  <table class="directory">
+    <thead><tr><th></th><th>Name</th><th>Number or URI</th><th>Via</th><th></th></tr></thead>
+    <tbody>
+    {{range .Directory.Contacts}}
+    <tr>
+      <form method="post" action="/devices/{{$.Data.Device.DeviceID}}/directory/{{.ID}}">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="directory_version" value="{{$.Data.Directory.Version}}">
+      <td><button name="action" value="{{if .Favourite}}unstar{{else}}star{{end}}" class="star {{if .Favourite}}on{{end}}" title="favourite" {{if $ro}}disabled{{end}}>★</button></td>
+      <td><input name="display_name" value="{{.DisplayName}}" maxlength="120" {{if $ro}}disabled{{end}}></td>
+      <td><input name="uri" value="{{.URI}}" maxlength="256" {{if $ro}}disabled{{end}}></td>
+      <td><select name="mode" {{if $ro}}disabled{{end}}><option value="local" {{if eq .Mode "local"}}selected{{end}}>this server</option><option value="trunk" {{if eq .Mode "trunk"}}selected{{end}}>PBX</option></select></td>
+      <td class="actions"><button name="action" value="save" {{if $ro}}disabled{{end}}>Save</button> <button name="action" value="delete" class="quiet" {{if $ro}}disabled{{end}}>Delete</button></td>
+      </form>
+    </tr>
+    {{end}}
+    <tr class="add">
+      <form method="post" action="/devices/{{.Device.DeviceID}}/directory">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="directory_version" value="{{.Directory.Version}}">
+      <td><label class="check"><input type="checkbox" name="favourite" {{if $ro}}disabled{{end}}>★</label></td>
+      <td><input name="display_name" placeholder="Name" value="{{with .Form}}{{index . "display_name"}}{{end}}" {{if $ro}}disabled{{end}}></td>
+      <td><input name="uri" placeholder="201 or sip:201@{{.Server.LocalDomain}}" required value="{{with .Form}}{{index . "uri"}}{{end}}" {{if $ro}}disabled{{end}}></td>
+      <td><select name="mode" {{if $ro}}disabled{{end}}><option value="local">this server</option><option value="trunk" {{with .Form}}{{if eq (index . "mode") "trunk"}}selected{{end}}{{end}}>PBX</option></select></td>
+      <td class="actions"><button {{if $ro}}disabled{{end}}>Add</button></td>
+      </form>
+    </tr>
+    </tbody>
+  </table>
+  <div class="row tools">
+    <a class="button" href="/devices/{{.Device.DeviceID}}/directory.csv">Download CSV</a>
+    <form method="post" action="/devices/{{.Device.DeviceID}}/directory/upload" enctype="multipart/form-data" class="inline">
+      <input type="hidden" name="csrf" value="{{$.CSRF}}">
+      <input type="file" name="file" accept=".csv,text/csv" required {{if $ro}}disabled{{end}}>
+      <button {{if $ro}}disabled{{end}}>Upload CSV…</button>
+    </form>
+  </div>
+  <p class="hint">Upload replaces the whole directory after a preview of what changes. Columns: display_name, uri, mode, favourite; a bare number becomes sip:number@{{.Server.LocalDomain}}.</p>
+  {{if .Others}}
+  <form method="post" action="/devices/{{.Device.DeviceID}}/directory/copy">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <details><summary>Copy this directory to other devices…</summary>
+      <div class="targets">
+      {{range .Others}}<label class="check"><input type="checkbox" name="targets" value="{{.DeviceID}}" {{if $ro}}disabled{{end}}> {{.User}} {{.Description}}</label>{{end}}
+      </div>
+      <button {{if $ro}}disabled{{end}}>Copy to the chosen devices</button>
+      <p class="hint">Each target's directory is replaced by this one, one device at a time; every result is shown.</p>
+    </details>
+  </form>
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Diagnostics <small>{{len .Diag}} files</small></h2>
+  {{if .Diag}}
+  <table class="diag">
+    <thead><tr><th>Uploaded</th><th>Kind</th><th>Size</th><th>File</th><th></th></tr></thead>
+    <tbody>
+    {{range .Diag}}<tr><td>{{.At}}</td><td>{{.Kind}}</td><td>{{.Size}}</td><td><a href="/devices/{{$.Data.Device.DeviceID}}/diag/{{.Name}}" class="mono small">{{.Name}}</a></td>
+      <td><form method="post" action="/devices/{{$.Data.Device.DeviceID}}/diag/{{.Name}}/delete" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="quiet" {{if $ro}}disabled{{end}}>Delete</button></form></td></tr>{{end}}
+    </tbody>
+  </table>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/diag/delete-all" class="inline" onsubmit="return confirm('Delete every diagnostic file for this device?')"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="quiet" {{if $ro}}disabled{{end}}>Delete all</button></form>
+  {{else}}<p class="hint">Nothing uploaded from this phone.</p>{{end}}
+</section>
+
+<section class="card danger-zone">
+  <h2>Purge</h2>
+  <form method="post" action="/devices/{{.Device.DeviceID}}/purge" class="row">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label>Type <span class="mono">{{.Device.DeviceID}}</span> to confirm <input name="confirm" autocomplete="off" {{if $ro}}disabled{{end}}></label>
+    <button class="danger" {{if $ro}}disabled{{end}}>Purge device</button>
+  </form>
+  <p class="hint">Deletes the record, its directory and its diagnostics, unregisters its line and disconnects the phone. The extension is free again at once.</p>
+</section>
+{{end}}
+{{template "footer" .}}

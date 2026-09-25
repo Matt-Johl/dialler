@@ -1,0 +1,23 @@
+{{template "header" .}}
+{{with .Data}}
+<p class="crumb"><a href="/fleet">Fleet</a> › <a href="/devices/{{.DeviceID}}">{{.Device}}</a> ›</p>
+<h1>Replace the directory?</h1>
+<section class="card narrow">
+  <p>The file holds <strong>{{.Count}}</strong> contacts. Compared with the directory as it is now (version {{.Version}}):</p>
+  <ul class="counts">
+    <li><strong>{{.Result.Added}}</strong> added</li>
+    <li><strong>{{.Result.Changed}}</strong> changed</li>
+    <li><strong>{{.Result.Removed}}</strong> removed</li>
+  </ul>
+  {{if and (eq .Result.Added 0) (eq .Result.Changed 0) (eq .Result.Removed 0)}}<p>Nothing would change; applying it is harmless and pushes nothing.</p>{{end}}
+  <form method="post" action="/devices/{{.DeviceID}}/directory/upload">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <input type="hidden" name="stage" value="confirm">
+    <input type="hidden" name="directory_version" value="{{.Version}}">
+    <input type="hidden" name="csv" value="{{.CSV}}">
+    <button>Apply</button> <a class="button quiet" href="/devices/{{.DeviceID}}">Cancel</a>
+  </form>
+  <p class="hint">If someone changes this directory before you apply, the apply is refused and you can preview again.</p>
+</section>
+{{end}}
+{{template "footer" .}}

@@ -1,0 +1,30 @@
+{{define "header"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Dialler</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/fleet">Dialler</a>
+  <nav>
+    <a href="/fleet" {{if eq .Nav "fleet"}}class="on"{{end}}>Fleet</a>
+    <a href="/calls" {{if eq .Nav "calls"}}class="on"{{end}}>Calls</a>
+    <a href="/server" {{if eq .Nav "server"}}class="on"{{end}}>Server</a>
+  </nav>
+  {{if .CSRF}}<form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">Sign out</button></form>{{end}}
+</header>
+<main>
+{{if .Banner}}<div class="banner warn"><strong>{{.Banner}}.</strong> Nothing can be changed until it does.{{if not .LastAt.IsZero}} Showing what was last read at {{when .LastAt}}.{{end}}</div>{{end}}
+{{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+{{if .Flash}}<div class="banner ok">{{.Flash}}</div>{{end}}
+{{end}}
+
+{{define "footer"}}
+</main>
+<footer>dialler-admin {{.Version}}</footer>
+</body>
+</html>
+{{end}}

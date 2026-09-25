@@ -23,6 +23,22 @@ server:
 run: server
 	./bin/dialler-server -data-dir ./data -admin-token dev
 
+# dialler-admin, the operator's web UI (SPEC §6 item 9c): a second binary
+# that talks only to the call server's admin API on 8081.
+admin:
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
+
+# Dev run beside `make dev-server` (token "harness") or `make run` (token
+# "dev": ADMIN_TOKEN=dev make dev-admin). The operator password lives in
+# data/admin/password, created as "dialler" on first run; the UI serves
+# https://127.0.0.1:8443 on a self-signed certificate kept in data/admin.
+ADMIN_TOKEN ?= harness
+dev-admin: admin
+	@mkdir -p data/admin
+	@test -f data/admin/password || { printf 'dialler\n' > data/admin/password; echo "created data/admin/password (password: dialler)"; }
+	./bin/dialler-admin -listen 127.0.0.1:8443 -server https://127.0.0.1:8081 -admin-token $(ADMIN_TOKEN) -insecure \
+	  -password-file data/admin/password -data-dir data/admin
+
 tone:
 	python3 harness/baresip/media/gen_tone.py
 

@@ -31,8 +31,8 @@ marks what does not exist yet.
    takes a store lock, changes one device's entry, rewrites that device's
    file atomically and notifies that device's live sessions. Nothing here
    restarts, reloads, re-binds a listener or re-reads a global file. The
-   two deliberate exceptions are §5.8 (ending one named call) and §5.10
-   (the log level), and each says what it touches.
+   one deliberate exception is §5.10 (the log level), which says what it
+   touches. Nothing in this API ends a call.
 3. **Startup configuration is the deployment's, not the API's.** The
    flags in §2.1 define what this server *is*: its addresses, certificate,
    domain, PBX. They are set in the unit file, read once, and shown by the
@@ -529,13 +529,9 @@ admin token, the trunk key, or file paths of keys.
 counters, absent until the call is bridged. 9b adds the registry of live
 calls the B2BUA lacks today.
 
-**`DELETE /v1/admin/calls/{call}`** *(9b)* → `204`; 404 when gone. The
-one admin action that ends a call, and it ends **that call**: BYE on
-both legs, the relay stopped, exactly what a `peer-timeout` expiry does.
-It exists because issue #2 was a bridged call with no media that lived
-fourteen hours; the liveness work closed the cause, and this is the
-operator's tool for the next one. Recorded in the event ring as
-`call_end` with `reason: "admin"`.
+Read-only. *Decided 2026-09-25:* there is no route that ends a call.
+The liveness rules of SPEC §4.7 are what end a call nobody is on, and an
+operator's hangup button is not wanted.
 
 ### 5.9 Events
 
@@ -560,7 +556,7 @@ and sets `"truncated": true`.
 | `sip_register`, `sip_unregister` | `contact`, `expires_at` |
 | `line_state` | `state`, `error`, `realm` |
 | `trunk_state` | `qualify` (`up`/`down`), `error` |
-| `call_start`, `call_end` | `call_id`, `a`, `b` (uri), `reason` on end (`bye`, `timeout`, `peer_gone`, `admin`, `failed`) |
+| `call_start`, `call_end` | `call_id`, `a`, `b` (uri), `reason` on end (`bye`, `timeout`, `peer_gone`, `failed`) |
 | `wake_sent`, `wake_ack` | `call_id`, `action` |
 | `code_issued`, `code_claimed`, `code_cancelled` | — |
 | `device_created`, `device_revoked`, `device_purged`, `label_changed` | — |
@@ -582,7 +578,7 @@ It replaces no logging.
 view. Fields absent are unchanged. `for_seconds` (max 86,400) reverts
 both to the startup values when it elapses; absent means until restart.
 Not persisted. *Effects:* the process's log level and the SIP trace
-global; nothing else. This is the second and last server-wide write.
+global; nothing else. This is the only server-wide write in the API.
 
 ### 5.11 Diagnostics
 
@@ -617,7 +613,6 @@ nothing prunes and one dev device holds about 490 files.
 | GET | `/v1/admin/events` | 9b | — |
 | GET, PUT | `/v1/admin/log` | 9b | 1 KiB |
 | GET | `/v1/admin/calls` | 9b | — |
-| DELETE | `/v1/admin/calls/{call}` | 9b | — |
 | GET, POST | `/v1/admin/devices` | yes | 4 KiB |
 | GET, PATCH, DELETE | `/v1/admin/devices/{id}` | GET/PATCH 9b; DELETE yes, `?purge=1` 9b | 4 KiB |
 | POST, DELETE | `/v1/admin/devices/{id}/enrol-code` | POST yes; DELETE 9b | — |
@@ -683,8 +678,7 @@ checks SPEC 9b names:
   CSV-shaped replace-all to dev-a, mint a code for dev-a, set the log
   level, read status, events and calls; the call's audio continues and
   neither harness phone sees a session close, a re-INVITE or a
-  `directory_changed`. Then `DELETE /v1/admin/calls/{call}` and both
-  phones see a BYE.
+  `directory_changed`; the call then hangs up normally.
 
 ## 8. Decisions this document settles
 
@@ -706,7 +700,7 @@ Each was an open question in SPEC 9a, or found while writing this.
 5. **Re-POST semantics** (§5.1): existing id without token is 409;
    existing id with token replaces only the credential.
 6. **Startup configuration stays in flags** (rule 3); the only
-   server-wide writes are the log level and ending one call.
+   server-wide write is the log level. No route ends a call.
 7. **Server unreachable, session expiry, bulk actions** are client
    behaviours and are specified in §9 rather than in the API, which
    needs nothing for them beyond what is here.

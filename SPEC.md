@@ -1310,7 +1310,7 @@ on by config — see §7.4.
      surface), and a single runtime, non-persisted class (log level and
      SIP trace) — and the API gains, beyond §4.8's routes: `whoami`,
      `server`, `status`, `events` (a bounded in-memory ring), `log`,
-     `calls` (list, and end one), per-device `diag` (list, download,
+     `calls` (list only; nothing ends a call), per-device `diag` (list, download,
      delete, with a `-diag-retain` sweeper), `PATCH` for the label,
      `DELETE …/enrol-code`, `?dry_run=1` on the replace-all, a JSON error
      envelope, optional `If-Match` on every versioned write, and a

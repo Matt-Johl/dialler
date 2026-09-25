@@ -81,7 +81,7 @@ func registrarURI(spec string, trunk *pbx.Trunk) (sip.Uri, error) {
 // The manager is returned so the caller can Stop it, which drops every
 // binding on the way out rather than leaving the exchange ringing contacts
 // this server has stopped listening on.
-func startPBXLines(log *slog.Logger, o options, trunk *pbx.Trunk, calls *b2bua.Server, devices *enroll.Store) (*pbxline.Manager, error) {
+func startPBXLines(log *slog.Logger, o options, trunk *pbx.Trunk, calls *b2bua.Server, devices *enroll.Store, onState func(pbxline.Status)) (*pbxline.Manager, error) {
 	if trunk == nil {
 		return nil, fmt.Errorf("-pbx-mode=lines needs a PBX to register to: give -trunk")
 	}
@@ -116,6 +116,7 @@ func startPBXLines(log *slog.Logger, o options, trunk *pbx.Trunk, calls *b2bua.S
 		Registrar: registrar,
 		Expiry:    o.pbxExpiry,
 		Log:       log,
+		OnState:   onState,
 	})
 	// Every line the device store holds, minus the revoked ones.
 	creds, err := devices.PBXCredentials()

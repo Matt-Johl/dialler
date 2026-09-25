@@ -17,7 +17,7 @@ fmt:
 	cd server && gofmt -l -w .
 
 server:
-	cd server && go build -o ../bin/dialler-server ./cmd/dialler-server
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-server ./cmd/dialler-server
 
 # Dev run: self-signed TLS, data in ./data, admin token printed in the log.
 run: server

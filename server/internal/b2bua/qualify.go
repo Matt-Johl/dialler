@@ -34,7 +34,16 @@ type trunkQualifier struct {
 	probe func(ctx context.Context) error
 	// onDead drops the pooled connection.
 	onDead func()
-	log    *slog.Logger
+	// onState, if set, is told each transition (and the first result), for
+	// the status endpoint.
+	onState func(up bool, err error)
+	log     *slog.Logger
+}
+
+func (q *trunkQualifier) state(up bool, err error) {
+	if q.onState != nil {
+		q.onState(up, err)
+	}
 }
 
 // run probes every interval until ctx ends. Transitions are logged, not
@@ -58,6 +67,7 @@ func (q *trunkQualifier) run(ctx context.Context) {
 		if err != nil {
 			if !dead {
 				q.log.Warn("trunk: not answering OPTIONS; dropping its pooled connection", "err", err, "after", q.timeout)
+				q.state(false, err)
 			}
 			dead = true
 			q.onDead()
@@ -65,6 +75,7 @@ func (q *trunkQualifier) run(ctx context.Context) {
 		}
 		if dead {
 			q.log.Info("trunk: answering OPTIONS again")
+			q.state(true, nil)
 		}
 		dead = false
 	}
@@ -93,7 +104,16 @@ func (s *Server) startTrunkQualify(ctx context.Context) {
 			return err
 		},
 		onDead: func() { s.dropTrunkConnection(s.log) },
+		onState: func(up bool, err error) {
+			s.trunk.set(up, err, time.Now())
+			if s.cfg.OnTrunkState != nil {
+				s.cfg.OnTrunkState(up, err)
+			}
+		},
 	}
+	// Up until the probe says otherwise: a trunk is assumed reachable at
+	// start, exactly as calls assume it.
+	s.trunk.set(true, nil, time.Now())
 	s.log.Info("trunk: qualifying with OPTIONS", "every", s.cfg.TrunkQualify, "timeout", trunkResponseTimeout)
 	go q.run(ctx)
 }

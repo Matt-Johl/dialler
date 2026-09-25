@@ -54,6 +54,13 @@ type Waker interface {
 
 // Config configures the B2BUA.
 type Config struct {
+	// OnTrunkState, if set, is told each time the trunk qualifier finds
+	// the trunk up or down (for the event ring). OnCall is told when a
+	// call is bridged and when it ends, with the parties' URIs and, on
+	// the end, why: bye, peer_gone or failed.
+	OnTrunkState func(up bool, err error)
+	OnCall       func(callID string, started bool, a, b, reason string)
+
 	BindHost     string      // default 0.0.0.0
 	Port         int         // default 5061
 	ExternalHost string      // advertised in Contact/SDP and in wakes; required
@@ -222,6 +229,10 @@ type Server struct {
 	// busy wake_ack can end the wait at once instead of at the ring timeout.
 	waitMu  sync.Mutex
 	waiting map[string]context.CancelCauseFunc
+
+	// Read-only views for the admin API (status.go).
+	live  liveCalls
+	trunk trunkState
 }
 
 // Why a woken callee's wait ended early: the device answered the wake with
@@ -285,6 +296,7 @@ func (s *Server) trackWait(callID string, cancel context.CancelCauseFunc) func()
 	}
 	s.waiting[callID] = cancel
 	s.waitMu.Unlock()
+	s.live.trackWaiting(callID, time.Now())
 	return func() {
 		s.untrackWait(callID)
 		cancel(nil)
@@ -296,6 +308,7 @@ func (s *Server) untrackWait(callID string) {
 	s.waitMu.Lock()
 	delete(s.waiting, callID)
 	s.waitMu.Unlock()
+	s.live.untrackWaiting(callID)
 }
 
 // New builds the server. waker may be nil (no wake path; unregistered users
@@ -1280,6 +1293,8 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 	legA := &callLeg{name: "caller", trunk: l.callerTrunk, sess: in, party: wire.Party{DisplayName: from.DisplayName, URI: from.Address.String()}}
 	legB := &callLeg{name: "callee", trunk: l.calleeTrunk, sess: out, party: wire.Party{URI: dst.String()}}
 	call := newBridgedCall(s, log, callID, legA, legB)
+	s.live.trackBridged(call)
+	defer s.live.untrackBridged(callID)
 	// Hold has no message of its own: a party holds by re-INVITEing its own
 	// leg to sendonly, and all we ever see is the direction we settled on.
 	// Watch both legs for it, so hold music follows whichever party pressed
@@ -1564,10 +1579,36 @@ func (s *Server) bridge(ctx context.Context, log *slog.Logger, in *diago.DialogS
 		log.Error("relay", "err", err)
 		_ = out.Hangup(out.Context())
 		_ = in.Hangup(in.Context())
+		s.callEvent(call, false, "failed")
 		return err
 	}
+	s.callEvent(call, true, "")
 	call.wait()
+	reason := "bye"
+	select {
+	case <-call.gone:
+		reason = "peer_gone"
+	default:
+	}
+	s.callEvent(call, false, reason)
 	return nil
+}
+
+// callEvent tells Config.OnCall, if set, that a call was bridged or ended.
+func (s *Server) callEvent(c *bridgedCall, started bool, reason string) {
+	if s.cfg.OnCall == nil {
+		return
+	}
+	c.mu.Lock()
+	var a, b string
+	if c.a != nil {
+		a = c.a.party.URI
+	}
+	if c.b != nil {
+		b = c.b.party.URI
+	}
+	c.mu.Unlock()
+	s.cfg.OnCall(c.callID, started, a, b, reason)
 }
 
 // pump moves encoded audio one way between two legs and counts it.

@@ -91,6 +91,7 @@ type Gateway struct {
 
 	onAck      atomic.Pointer[func(deviceID string, ack wire.WakeAck)]
 	onPresence atomic.Pointer[func(PresenceEvent)]
+	onWake     atomic.Pointer[func(deviceID, callID string, delivered int)]
 
 	idPrefix string
 	idSeq    atomic.Uint64
@@ -131,6 +132,10 @@ func (g *Gateway) OnWakeAck(fn func(deviceID string, ack wire.WakeAck)) { g.onAc
 // OnPresence registers the callback invoked on connection attach/detach.
 func (g *Gateway) OnPresence(fn func(PresenceEvent)) { g.onPresence.Store(&fn) }
 
+// OnWake registers the callback invoked after a wake is sent, with how
+// many connections it reached (for the event ring).
+func (g *Gateway) OnWake(fn func(deviceID, callID string, delivered int)) { g.onWake.Store(&fn) }
+
 func (g *Gateway) now() time.Time { return g.cfg.Now() }
 
 func (g *Gateway) nextID() string {
@@ -168,6 +173,29 @@ func (g *Gateway) Online(deviceID string) bool {
 	return len(g.sessions[deviceID]) > 0
 }
 
+// SessionInfo is one live connection as the admin API reports it
+// (ADMIN-API.md §5.6).
+type SessionInfo struct {
+	Kind       wire.ClientKind
+	Since      time.Time
+	Addr       string
+	AppVersion string
+}
+
+// Sessions snapshots every live connection by device: an O(n) copy under
+// the lock with nothing else inside it, for the status endpoint.
+func (g *Gateway) Sessions() map[string][]SessionInfo {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[string][]SessionInfo, len(g.sessions))
+	for id, kinds := range g.sessions {
+		for _, s := range kinds {
+			out[id] = append(out[id], SessionInfo{Kind: s.kind, Since: s.since, Addr: s.addr, AppVersion: s.appVersion})
+		}
+	}
+	return out
+}
+
 // Wake delivers w to every live connection of deviceID and remembers it until
 // ExpiresAt so a reconnecting client receives it again (PROTOCOL.md §7).
 // It returns the number of connections the wake was written to; 0 means the
@@ -189,6 +217,9 @@ func (g *Gateway) Wake(deviceID string, w wire.Wake) int {
 		if s.sendWake(w) == nil {
 			n++
 		}
+	}
+	if fn := g.onWake.Load(); fn != nil {
+		(*fn)(deviceID, w.CallID, n)
 	}
 	return n
 }
@@ -376,8 +407,13 @@ type session struct {
 	id       string
 	deviceID string
 	kind     wire.ClientKind
-	wmu      sync.Mutex
-	closed   atomic.Bool
+	// Set at hello, read by Sessions: when it connected, from where, and
+	// the app version it announced.
+	since      time.Time
+	addr       string
+	appVersion string
+	wmu        sync.Mutex
+	closed     atomic.Bool
 	// call_ids already written on this connection: a wake that arrives
 	// between attach and the pending-wake replay would otherwise go out
 	// twice. Guarded by wmu.
@@ -467,6 +503,7 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	s.deviceID, s.kind = h.DeviceID, h.Client
+	s.since, s.addr, s.appVersion = g.now(), conn.RemoteAddr().String(), h.AppVersion
 	log = log.With("device", s.deviceID, "kind", s.kind)
 
 	g.attach(s)

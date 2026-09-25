@@ -156,6 +156,8 @@ type Config struct {
 	// Now and Rand are seams for tests. Rand returns a value in [0,1).
 	Now  func() time.Time
 	Rand func() float64
+	// OnState, if set, is told each line state change (for the event ring).
+	OnState func(Status)
 }
 
 func (c *Config) applyDefaults() {
@@ -454,6 +456,7 @@ func (m *Manager) run(ctx context.Context, l *line) {
 			}
 			was := l.state().State
 			l.registered(m.cfg.Now(), granted, reg.Realm)
+			m.stateChanged(l)
 			if was != StateRegistered {
 				log.Info("pbx line: registered", "dn", cur.DN, "expiry", granted, "realm", reg.Realm)
 			}
@@ -462,6 +465,7 @@ func (m *Manager) run(ctx context.Context, l *line) {
 
 		case errors.As(err, &refused):
 			l.refused(m.cfg.Now(), refused)
+			m.stateChanged(l)
 			log.Warn("pbx line: refused; not retrying until the credential changes",
 				"dn", cur.DN, "digest_user", cur.DigestUser, "status", refused.Status, "reason", refused.Reason)
 			// Nothing but an administrator can help now. Park until the
@@ -478,6 +482,7 @@ func (m *Manager) run(ctx context.Context, l *line) {
 				log.Warn("pbx line: registration failed; retrying", "dn", cur.DN, "err", err)
 			}
 			l.retrying(m.cfg.Now(), err, attempt)
+			m.stateChanged(l)
 			wait = m.jittered(backoff(attempt, m.cfg.BackoffBase, m.cfg.BackoffCap))
 		}
 
@@ -617,6 +622,13 @@ func (l *line) refused(now time.Time, err *Refused) {
 	l.status.State = StateRefused
 	l.status.ExpiresAt = time.Time{}
 	l.status.Error = err.Error()
+}
+
+// stateChanged tells Config.OnState, if set, a line's new state.
+func (m *Manager) stateChanged(l *line) {
+	if m.cfg.OnState != nil {
+		m.cfg.OnState(l.state())
+	}
 }
 
 // sortStatuses orders by user, so the admin API and the logs are stable.

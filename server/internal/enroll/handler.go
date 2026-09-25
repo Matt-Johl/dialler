@@ -30,6 +30,17 @@ type Hooks struct {
 	// OnPBXLine: the admin set or removed a device's PBX line (nil =
 	// removed). The registrar re-registers that one line and no other.
 	OnPBXLine func(deviceID string, line *PBXCredential)
+	// OnEvent: an admin action with no functional hook of its own
+	// happened (a code minted or cancelled, a device created, a
+	// description changed), for the event ring (ADMIN-API.md §5.9).
+	OnEvent func(kind, deviceID string, detail map[string]any)
+}
+
+// event calls OnEvent if set.
+func (h Hooks) event(kind, deviceID string, detail map[string]any) {
+	if h.OnEvent != nil {
+		h.OnEvent(kind, deviceID, detail)
+	}
 }
 
 // Link is what a phone needs to find the server, folded into the QR URL

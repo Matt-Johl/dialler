@@ -38,6 +38,7 @@ type bridgedCall struct {
 	s      *Server
 	log    *slog.Logger
 	callID string
+	since  time.Time
 
 	mu     sync.Mutex
 	a, b   *callLeg // b == nil while a is on echo (self-relay)
@@ -73,7 +74,7 @@ type bridgedCall struct {
 
 func newBridgedCall(s *Server, log *slog.Logger, callID string, a, b *callLeg) *bridgedCall {
 	return &bridgedCall{
-		s: s, log: log, callID: callID, a: a, b: b,
+		s: s, log: log, callID: callID, a: a, b: b, since: time.Now(),
 		swapped: make(chan struct{}, 1),
 		gone:    make(chan struct{}),
 	}

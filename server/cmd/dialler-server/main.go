@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -29,7 +30,9 @@ import (
 	"dialler/server/internal/diag"
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
+	"dialler/server/internal/events"
 	"dialler/server/internal/gateway"
+	"dialler/server/internal/loglevel"
 	"dialler/server/internal/pbx"
 	"dialler/server/internal/pbxline"
 	"dialler/server/internal/qos"
@@ -37,6 +40,7 @@ import (
 	"dialler/server/internal/routing"
 	"dialler/server/internal/secrets"
 	"dialler/server/internal/sipauth"
+	"dialler/server/internal/status"
 	"dialler/server/internal/tlsutil"
 	"dialler/server/internal/wire"
 
@@ -85,8 +89,14 @@ func main() {
 		pbxPeers     = flag.String("pbx-peers", "", "further PBX addresses to trust as a call source over a TLS trunk, comma-separated: a cluster originates from whichever node handles the call, and a call from an unnamed node is challenged like an app's and fails")
 		pbxExpiry    = flag.Duration("pbx-register-expiry", time.Hour, "registration lifetime asked for in -pbx-mode=lines; the refresh follows what the PBX grants, not this")
 		pbxDefLine   = flag.String("pbx-default-line", "", "the user whose line identifies a call to the PBX that has no line of its own (a transfer target dialled for a party that is itself on the PBX). Empty refuses such a call rather than sending it under someone else's number")
+		diagRetain   = flag.Duration("diag-retain", 30*24*time.Hour, "how long a device's uploaded diagnostics are kept under <data-dir>/diag; 0 keeps them forever")
+		showVersion  = flag.Bool("version", false, "print the build version and exit")
 	)
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	trunkTLSMinVer, err := tlsutil.MinTLSVersion(*trunkTLSMin)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "bad -trunk-tls-min-version:", err)
@@ -119,7 +129,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "bad -log-level:", err)
 		os.Exit(2)
 	}
-	hopts := &slog.HandlerOptions{Level: level}
+	// The level is a variable so PUT /v1/admin/log can move it at runtime
+	// (ADMIN-API.md §5.10); every handler in the process reads it.
+	var levelVar slog.LevelVar
+	levelVar.Set(level)
+	hopts := &slog.HandlerOptions{Level: &levelVar}
 	var handler slog.Handler = slog.NewTextHandler(os.Stderr, hopts)
 	if *logJSON {
 		handler = slog.NewJSONHandler(os.Stderr, hopts)
@@ -133,6 +147,8 @@ func main() {
 		certFile: *certFile, keyFile: *keyFile,
 		publicHost: *publicHost, localDomain: *localDomain,
 		dataDir: *dataDir, adminToken: adminTok,
+		diagRetain: *diagRetain,
+		levelVar:   &levelVar, logLevel: level, logJSON: *logJSON, sipTrace: *sipTrace,
 		ringTimeout: *ringTimeout, rtpMin: *rtpMin, rtpMax: *rtpMax,
 		keepAdvertisedContact: !*rewrite,
 		noSymmetricRTP:        !*rtpSym,
@@ -194,27 +210,37 @@ func resolveAdminToken(literal, file string, readFile func(string) ([]byte, erro
 	return tok, nil
 }
 
+// version is stamped by the Makefile (-X main.version=…); "dev" otherwise.
+var version = "dev"
+
 type options struct {
 	signalAddr, sipAddr, httpAddr string
 	adminAddr                     string
-	certFile, keyFile             string
-	publicHost, localDomain       string
-	dataDir, adminToken           string
-	ringTimeout                   time.Duration
-	rtpMin, rtpMax                int
-	keepAdvertisedContact         bool
-	noSymmetricRTP                bool
-	publicSIPPort                 int
-	publicHTTPPort                int
-	trunk, trunkAddr              string
-	trunkExternalHost             string
-	trunkCodecs                   []media.Codec
-	trunkSRTP                     b2bua.TrunkSRTPMode
-	trunkQualify                  time.Duration
-	peerTimeout                   time.Duration
-	trunkCert, trunkKey, trunkCA  string
-	trunkTLSInsecure              bool
-	trunkTLSMin                   uint16
+	diagRetain                    time.Duration
+	// The log configuration the process started with, and the variable
+	// the admin API moves.
+	levelVar                     *slog.LevelVar
+	logLevel                     slog.Level
+	logJSON                      bool
+	sipTrace                     bool
+	certFile, keyFile            string
+	publicHost, localDomain      string
+	dataDir, adminToken          string
+	ringTimeout                  time.Duration
+	rtpMin, rtpMax               int
+	keepAdvertisedContact        bool
+	noSymmetricRTP               bool
+	publicSIPPort                int
+	publicHTTPPort               int
+	trunk, trunkAddr             string
+	trunkExternalHost            string
+	trunkCodecs                  []media.Codec
+	trunkSRTP                    b2bua.TrunkSRTPMode
+	trunkQualify                 time.Duration
+	peerTimeout                  time.Duration
+	trunkCert, trunkKey, trunkCA string
+	trunkTLSInsecure             bool
+	trunkTLSMin                  uint16
 	// How the PBX leg presents itself (SPEC §6 item 3c). pbxLines false is
 	// the IP-trusted trunk peer this server has always been, and none of
 	// the rest applies.
@@ -292,12 +318,25 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	}
 
 	// Core.
+	started := time.Now()
+	// The event ring (ADMIN-API.md §5.9): what the server did, for the
+	// admin API to read instead of grepping the log. Never who asked.
+	ring := events.New(events.Default)
 	reg := registry.New(nil)
 	for _, d := range devices.Devices() {
 		if !d.Revoked {
 			reg.Provision(d.User, d.DeviceID)
 		}
 	}
+	reg.OnChange(func(ep registry.Endpoint, registered bool) {
+		kind := events.KindSIPUnregister
+		detail := map[string]any{}
+		if registered {
+			kind = events.KindSIPRegister
+			detail["contact"], detail["expires_at"] = ep.Contact, ep.Expires
+		}
+		ring.Emit(kind, ep.DeviceID, ep.User, detail)
+	})
 	var adapter pbx.Adapter = pbx.None{}
 	var trunkCfg *pbx.Trunk
 	var trunkTLS *tls.Config
@@ -363,12 +402,37 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			return &wire.DeviceConfig{Version: c.Version, SSIDs: c.SSIDs}
 		},
 	}, devices)
-	dir.OnChange(gw.NotifyDirectory)
+	dir.OnChange(func(deviceID string, version int64) {
+		gw.NotifyDirectory(deviceID, version)
+		ring.Emit(events.KindDirectoryChanged, deviceID, "", map[string]any{"version": version})
+	})
 	gw.OnPresence(func(ev gateway.PresenceEvent) {
 		log.Info("presence", "device", ev.DeviceID, "kind", ev.Kind, "online", ev.Online)
+		ring.Emit(events.KindPresence, ev.DeviceID, "", map[string]any{"client": string(ev.Kind), "online": ev.Online})
+	})
+	gw.OnWake(func(deviceID, callID string, delivered int) {
+		ring.Emit(events.KindWakeSent, deviceID, "", map[string]any{"call_id": callID, "delivered": delivered})
 	})
 	// App-leg SIP element: registrar + call controller + media bridge (diago).
 	calls, err := b2bua.New(b2bua.Config{
+		OnTrunkState: func(up bool, err error) {
+			detail := map[string]any{"qualify": "down"}
+			if up {
+				detail["qualify"] = "up"
+			}
+			if err != nil {
+				detail["error"] = err.Error()
+			}
+			ring.Emit(events.KindTrunkState, "", "", detail)
+		},
+		OnCall: func(callID string, started bool, a, b, reason string) {
+			kind, detail := events.KindCallEnd, map[string]any{"call_id": callID, "a": a, "b": b, "reason": reason}
+			if started {
+				kind = events.KindCallStart
+				delete(detail, "reason")
+			}
+			ring.Emit(kind, "", "", detail)
+		},
 		BindHost:              sipHost,
 		Port:                  sipPort,
 		PublicPort:            publicSIPPort,
@@ -403,7 +467,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// nothing at all in trunk mode.
 	var lines *pbxline.Manager
 	if o.pbxLines {
-		lines, err = startPBXLines(log, o, trunkCfg, calls, devices)
+		lines, err = startPBXLines(log, o, trunkCfg, calls, devices, func(st pbxline.Status) {
+			ring.Emit(events.KindLineState, "", st.User, map[string]any{"state": string(st.State), "error": st.Error, "realm": st.Realm})
+		})
 		if err != nil {
 			return err
 		}
@@ -416,6 +482,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// once (the caller gets 486) instead of at the ring timeout.
 	gw.OnWakeAck(func(deviceID string, ack wire.WakeAck) {
 		log.Info("wake_ack", "device", deviceID, "call", ack.CallID, "action", ack.Action)
+		ring.Emit(events.KindWakeAck, deviceID, "", map[string]any{"call_id": ack.CallID, "action": string(ack.Action)})
 		calls.HandleWakeAck(deviceID, ack)
 	})
 
@@ -437,7 +504,34 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	// Device diagnostics land in <data-dir>/diag/<device>/ (app + extension
 	// logs, MetricKit crash/CPU reports): readable on this machine without
 	// touching the phone. See ios/README.md "When the app dies or freezes".
-	mux.Handle("/v1/diag", diag.Handler(filepath.Join(o.dataDir, "diag"), devices.DeviceAuth, log))
+	// The admin reads and prunes them (ADMIN-API.md §5.11); a sweeper
+	// applies -diag-retain hourly.
+	diagDir := filepath.Join(o.dataDir, "diag")
+	mux.Handle("/v1/diag", diag.Handler(diagDir, devices.DeviceAuth, log))
+	diagAdmin := diag.AdminHandler(diagDir, knownDevice)
+	adminAPI.Handle("/v1/admin/devices/{id}/diag", diagAdmin)
+	adminAPI.Handle("/v1/admin/devices/{id}/diag/{name}", diagAdmin)
+	go diag.RunSweeper(ctx, diagDir, o.diagRetain, time.Hour, log)
+	// Events, the log level, and the live views (ADMIN-API.md §5.6–§5.10).
+	adminAPI.Handle("GET /v1/admin/events", ring.Handler())
+	logCtl := loglevel.New(o.levelVar, func(on bool) { sip.SIPDebug = on }, o.logLevel, o.sipTrace)
+	logH := logEvents(ring, logCtl, logCtl.Handler())
+	adminAPI.Handle("GET /v1/admin/log", logH)
+	adminAPI.Handle("PUT /v1/admin/log", logH)
+	var adminStats admin.Stats
+	live := status.New(serverInfo(o, tlsCfg, trunkCfg, started), status.Deps{
+		Devices:       devices.Devices,
+		Sessions:      gw.Sessions,
+		Endpoints:     reg.Endpoints,
+		Lines:         func() []pbxline.Status { return lines.Statuses() },
+		Calls:         calls.Calls,
+		Trunk:         calls.TrunkStatus,
+		AdminStats:    adminStats.View,
+		EventsDropped: ring.Dropped,
+	})
+	adminAPI.Handle("GET /v1/admin/status", live)
+	adminAPI.Handle("GET /v1/admin/server", live)
+	adminAPI.Handle("GET /v1/admin/calls", live)
 	// Enrolment (SPEC §4.8): the admin mints a code, the phone claims it
 	// for a credential. The QR link and the claim reply carry the server's
 	// certificate fingerprint so the app can pin it from the first
@@ -455,6 +549,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	signalPort, _ := strconv.Atoi(signalPortStr)
 	hooks := enroll.Hooks{
 		OnIssue: func(deviceID, user string) { reg.Provision(user, deviceID) },
+		OnEvent: func(kind, deviceID string, detail map[string]any) { ring.Emit(kind, deviceID, "", detail) },
 		OnRevoke: func(deviceID string) {
 			if ep, ok := reg.LookupDevice(deviceID); ok {
 				reg.Deprovision(ep.User)
@@ -466,6 +561,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 				}
 			}
 			gw.Disconnect(deviceID)
+			ring.Emit(events.KindDeviceRevoked, deviceID, "", nil)
 		},
 		// Purge (ADMIN-API.md §5.1): everything a revoke does, then the
 		// device's directory and diagnostics go with its record. One
@@ -485,12 +581,14 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 				log.Error("purge: diagnostics", "device", deviceID, "err", err)
 			}
 			log.Info("device purged", "device", deviceID)
+			ring.Emit(events.KindDevicePurged, deviceID, "", nil)
 		},
 		// A claim rotates the credential: whatever is connected with the
 		// old one is dropped (it reconnects with the new one, or it was a
 		// phone this device id no longer belongs to). One device only.
 		OnClaim: func(deviceID, user string) {
 			log.Info("enrolment code claimed", "device", deviceID, "user", user)
+			ring.Emit(events.KindCodeClaimed, deviceID, user, nil)
 			reg.Provision(user, deviceID)
 			gw.Disconnect(deviceID)
 			// A claim un-revokes, so a line that was dropped on revocation
@@ -507,11 +605,19 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		// device not connected gets them in its next welcome.
 		OnConfig: func(deviceID string, cfg enroll.DeviceConfig) {
 			log.Info("device settings changed", "device", deviceID, "version", cfg.Version, "ssids", cfg.SSIDs)
+			ring.Emit(events.KindConfigChanged, deviceID, "", map[string]any{"version": cfg.Version})
 			gw.NotifyConfig(deviceID, wire.DeviceConfig{Version: cfg.Version, SSIDs: cfg.SSIDs})
 		},
 		// A PBX line written or removed: that one line re-registers, and
 		// nothing else on the server is touched.
-		OnPBXLine: pbxLineHook(log, lines, devices),
+		OnPBXLine: func(deviceID string, line *enroll.PBXCredential) {
+			if line == nil {
+				ring.Emit(events.KindLineRemoved, deviceID, "", nil)
+			} else {
+				ring.Emit(events.KindLineChanged, deviceID, line.User, nil)
+			}
+			pbxLineHook(log, lines, devices)(deviceID, line)
+		},
 	}
 	adminAPI.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,
 		enroll.Link{Host: o.publicHost, HTTPSPort: httpPort, CertSHA256: certSHA256}, hooks))
@@ -520,7 +626,6 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	mux.Handle("GET /healthz", admin.Healthz())
 	// The admin front door (ADMIN-API.md §4.7): rate limit, bearer guard and
 	// in-flight cap ahead of every admin route; healthz outside it.
-	var adminStats admin.Stats
 	adminRoot := http.NewServeMux()
 	adminRoot.Handle("GET /healthz", admin.Healthz())
 	adminRoot.Handle("/v1/admin/", admin.Chain(o.adminToken, admin.NewRateLimiter(), &adminStats, adminAPI))
@@ -584,6 +689,83 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	_ = httpSrv.Shutdown(shutdownCtx)
 	_ = adminSrv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// serverInfo is GET /v1/admin/server's fixed half (ADMIN-API.md §5.7): the
+// effective startup configuration and the certificate every phone pins.
+// Never a secret: no token, no key material, no key paths.
+func serverInfo(o options, tlsCfg *tls.Config, trunk *pbx.Trunk, started time.Time) status.Info {
+	info := status.Info{
+		Version: version, StartedAt: started, Mode: "standalone",
+		Listeners:  status.Listeners{Signal: o.signalAddr, SIP: o.sipAddr, HTTP: o.httpAddr, Admin: o.adminAddr},
+		PublicHost: o.publicHost, LocalDomain: o.localDomain,
+		PublicSIPPort: o.publicSIPPort, PublicHTTPPort: o.publicHTTPPort,
+		RingTimeout: int(o.ringTimeout.Seconds()), PeerTimeout: int(o.peerTimeout.Seconds()),
+		RTP:     status.RTPInfo{Min: o.rtpMin, Max: o.rtpMax, Symmetric: !o.noSymmetricRTP},
+		DataDir: o.dataDir, DiagRetain: int(o.diagRetain.Seconds()),
+		Log: status.LogStartup{Level: strings.ToLower(o.logLevel.String()), JSON: o.logJSON, SIPTrace: o.sipTrace},
+	}
+	info.TLS.SelfSigned = o.certFile == ""
+	info.TLS.FingerprintSHA256 = certFingerprint(tlsCfg)
+	if tlsCfg != nil && len(tlsCfg.Certificates) > 0 && len(tlsCfg.Certificates[0].Certificate) > 0 {
+		if leaf, err := x509.ParseCertificate(tlsCfg.Certificates[0].Certificate[0]); err == nil {
+			info.TLS.Subject, info.TLS.NotBefore, info.TLS.NotAfter = leaf.Subject.String(), leaf.NotBefore, leaf.NotAfter
+		}
+	}
+	if trunk != nil {
+		info.Mode = "trunk"
+		codecs := make([]string, 0, len(o.trunkCodecs))
+		for _, c := range o.trunkCodecs {
+			codecs = append(codecs, c.Name)
+		}
+		info.Trunk = &status.TrunkInfo{
+			URI: o.trunk, Transport: strings.ToLower(trunk.Transport), SRTP: string(o.trunkSRTP), Codecs: codecs,
+			QualifyIntervalSeconds: int(o.trunkQualify.Seconds()),
+			TLS:                    status.TrunkTLSInfo{CertSet: o.trunkCert != "", CASet: o.trunkCA != "", Insecure: o.trunkTLSInsecure, MinVersion: tlsVersionName(o.trunkTLSMin)},
+		}
+		info.Listeners.Trunk = o.trunkAddr
+	}
+	if o.pbxLines {
+		info.Mode = "lines"
+		info.PBX = &status.PBXInfo{Registrar: o.pbxRegistrar, Domain: o.pbxDomain, Peers: o.pbxPeers, RegisterExpirySeconds: int(o.pbxExpiry.Seconds()), DefaultLine: o.pbxDefaultLine}
+	}
+	return info
+}
+
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionTLS13:
+		return "1.3"
+	case tls.VersionTLS12:
+		return "1.2"
+	}
+	return fmt.Sprintf("0x%04x", v)
+}
+
+// logEvents records a successful PUT /v1/admin/log in the event ring.
+func logEvents(ring *events.Ring, ctl *loglevel.Controller, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		if sw.status == http.StatusOK {
+			v := ctl.View()
+			ring.Emit(events.KindLogLevel, "", "", map[string]any{"level": v.Level, "sip_trace": v.SIPTrace, "until": v.Until})
+		}
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 // checkPublicHost reports a -public-host that is an IP literal this machine

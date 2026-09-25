@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"dialler/server/internal/admin"
+	"dialler/server/internal/events"
 )
 
 // Body limits per route (ADMIN-API.md §5).
@@ -136,6 +137,10 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			return
 		}
 		out["code"], out["expires_at"], out["url"] = code, expires, link.URL(code)
+		if !exists {
+			hooks.event(events.KindDeviceCreated, id, map[string]any{"user": in.User})
+		}
+		hooks.event(events.KindCodeIssued, id, map[string]any{"expires_at": expires})
 		if hooks.OnIssue != nil {
 			hooks.OnIssue(id, in.User)
 		}
@@ -233,6 +238,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			admin.NotFound(w, "device")
 			return
 		}
+		hooks.event(events.KindDescriptionChanged, id, nil)
 		d, _ := store.Device(id)
 		admin.WriteJSON(w, http.StatusOK, d)
 	}))
@@ -251,6 +257,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			admin.NotFound(w, "device")
 			return
 		}
+		hooks.event(events.KindCodeCancelled, id, nil)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -268,6 +275,7 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			storeError(w, err)
 			return
 		}
+		hooks.event(events.KindCodeIssued, id, map[string]any{"expires_at": expires})
 		admin.WriteJSON(w, http.StatusOK, codeResponse{Code: code, ExpiresAt: expires, URL: link.URL(code)})
 	}))
 

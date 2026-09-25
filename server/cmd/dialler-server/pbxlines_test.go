@@ -36,7 +36,7 @@ func TestParsePBXMode(t *testing.T) {
 // Lines mode has nothing to register to without a PBX, and saying so at
 // start-up is better than a server that comes up and quietly reaches nobody.
 func TestLinesModeNeedsATrunk(t *testing.T) {
-	_, err := startPBXLines(slog.Default(), options{pbxLines: true}, nil, nil, nil)
+	_, err := startPBXLines(slog.Default(), options{pbxLines: true}, nil, nil, nil, nil)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

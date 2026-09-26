@@ -19,7 +19,7 @@
   {{range .Rows}}
   <tr class="{{if .Revoked}}revoked{{end}}">
     <td class="name"><a href="/clients/{{.DeviceID}}">{{.User}}</a></td>
-    <td><a href="/clients/{{.DeviceID}}">{{if .Description}}{{.Description}}{{else}}<span class="sub">no description</span>{{end}}</a><span class="sub-line mono">{{.DeviceID}}</span></td>
+    <td><a href="/clients/{{.DeviceID}}">{{.Description}}</a><span class="sub-line mono">{{.DeviceID}}</span></td>
     <td>{{with index .Sessions "app"}}<span class="status"><i class="dot"></i> App{{if .AppVersion}} {{.AppVersion}}{{end}}</span>{{else}}{{with index .Sessions "extension"}}<span class="status warn"><i class="dot"></i> Wake only</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}{{end}}</td>
     <td>{{with .SIP}}<span class="status"><i class="dot"></i> Registered</span>{{else}}<span class="status off"><i class="dot"></i> —</span>{{end}}</td>
     <td>{{with .Line}}<span class="chip {{if eq .State "registered"}}ok{{else if eq .State "refused"}}bad{{else}}warn{{end}}">{{.State}}</span>{{else}}<span class="sub">—</span>{{end}}</td>

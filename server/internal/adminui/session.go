@@ -52,10 +52,16 @@ func NewSessions(password string) *Sessions {
 	return &Sessions{password: []byte(password), now: time.Now, sessions: map[string]*session{}, pending: map[string]*Pending{}}
 }
 
-// Login checks the password (constant time) and, when it matches, opens
-// a session and returns its cookie value.
-func (s *Sessions) Login(password string) (id string, ok bool) {
-	if len(s.password) == 0 || subtle.ConstantTimeCompare(s.password, []byte(password)) != 1 {
+// Username is the one operator account. There are no others yet; the
+// login still takes a username so adding them later changes no habit.
+const Username = "admin"
+
+// Login checks the username and password (both in constant time) and,
+// when they match, opens a session and returns its cookie value.
+func (s *Sessions) Login(username, password string) (id string, ok bool) {
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(Username)) == 1
+	passOK := len(s.password) > 0 && subtle.ConstantTimeCompare(s.password, []byte(password)) == 1
+	if !userOK || !passOK {
 		return "", false
 	}
 	s.mu.Lock()

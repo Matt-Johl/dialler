@@ -239,7 +239,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	h := &harness{t: t, api: api, ui: ui}
 	// Log in.
-	rec := h.do("POST", "/login", url.Values{"password": {"pw"}}, nil)
+	rec := h.do("POST", "/login", url.Values{"username": {"admin"}, "password": {"pw"}}, nil)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("login: %d %s", rec.Code, rec.Body)
 	}
@@ -304,9 +304,16 @@ func TestLoginRequiredAndWrongPassword(t *testing.T) {
 	if rec := h.get("/clients"); rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
 		t.Fatalf("no session: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
-	rec := h.do("POST", "/login", url.Values{"password": {"nope"}}, nil)
+	rec := h.do("POST", "/login", url.Values{"username": {"admin"}, "password": {"nope"}}, nil)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "not right") {
 		t.Fatalf("wrong password: %d", rec.Code)
+	}
+	rec = h.do("POST", "/login", url.Values{"username": {"root"}, "password": {"pw"}}, nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "not right") {
+		t.Fatalf("wrong username: %d", rec.Code)
+	}
+	if rec := h.get("/login"); !strings.Contains(rec.Body.String(), `name="username"`) {
+		t.Fatal("the login page must ask for a username")
 	}
 	if len(api.requests) != 0 {
 		t.Fatalf("the API was called before login: %v", api.requests)
@@ -427,7 +434,7 @@ func TestCSRFAndSessionExpiryReplay(t *testing.T) {
 		t.Fatal("no resume key in the login page")
 	}
 	h.cookie = nil
-	rec = h.do("POST", "/login", url.Values{"password": {"pw"}, "resume": {resume}}, nil)
+	rec = h.do("POST", "/login", url.Values{"username": {"admin"}, "password": {"pw"}, "resume": {resume}}, nil)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("login with resume should replay the form: %d %s", rec.Code, rec.Body)
 	}

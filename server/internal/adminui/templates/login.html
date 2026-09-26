@@ -6,7 +6,8 @@
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{.Data.Next}}">
     <input type="hidden" name="resume" value="{{.Data.Resume}}">
-    <label>Password <input type="password" name="password" autofocus autocomplete="current-password" required></label>
+    <label>Username <input name="username" autofocus autocomplete="username" required value="{{.Data.Username}}"></label>
+    <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
     <button>Sign in</button>
   </form>
 </section>

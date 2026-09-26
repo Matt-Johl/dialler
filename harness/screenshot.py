@@ -39,6 +39,7 @@ def main():
             page.goto(f"{UI}/login")
             page.wait_for_timeout(450)
             page.screenshot(path=f"{OUT}/login-light-{width}.png", full_page=True)
+            page.fill("input[name=username]", "admin")
             page.fill("input[name=password]", PASSWORD)
             page.click("form button")
             page.wait_for_url("**/clients")

@@ -41,9 +41,9 @@ code=$(c -o /dev/null -w "%{http_code}" $UI/clients)
 echo "ok: unauthenticated pages redirect to login"
 
 # 2. Wrong password is refused without touching the API; right one signs in.
-body=$(c -d "password=wrong" $UI/login)
+body=$(c -d "username=admin&password=wrong" $UI/login)
 echo "$body" | grep -q "not right" || fail "wrong password not refused"
-code=$(c -o /dev/null -w "%{http_code}" -d "password=harness" $UI/login)
+code=$(c -o /dev/null -w "%{http_code}" -d "username=admin&password=harness" $UI/login)
 [ "$code" = 302 ] || fail "login gave $code, want 302"
 echo "ok: login"
 

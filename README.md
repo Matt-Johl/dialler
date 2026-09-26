@@ -162,7 +162,7 @@ HTTPS on its own certificate, and keeps no state the API cannot re-read,
 so it can be restarted or redeployed with no effect on a call.
 
 ```sh
-make dev-admin            # beside `make dev-server`; password "dialler" in data/admin/password
+make dev-admin            # beside `make dev-server`; sign in as admin, password "dialler" (data/admin/password)
 open https://127.0.0.1:8443
 ```
 

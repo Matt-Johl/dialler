@@ -29,7 +29,7 @@ admin:
 	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
 
 # Dev run beside `make dev-server` (token "harness") or `make run` (token
-# "dev": ADMIN_TOKEN=dev make dev-admin). The operator password lives in
+# "dev": ADMIN_TOKEN=dev make dev-admin). Sign in as "admin"; the password lives in
 # data/admin/password, created as "dialler" on first run; the UI serves
 # https://127.0.0.1:8443 on a self-signed certificate kept in data/admin.
 ADMIN_TOKEN ?= harness

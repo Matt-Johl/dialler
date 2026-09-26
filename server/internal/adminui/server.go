@@ -261,10 +261,10 @@ func (u *UI) loginPage(w http.ResponseWriter, r *http.Request) {
 
 func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 	_ = r.ParseForm()
-	id, ok := u.cfg.Sessions.Login(r.FormValue("password"))
+	id, ok := u.cfg.Sessions.Login(strings.TrimSpace(r.FormValue("username")), r.FormValue("password"))
 	if !ok {
 		time.Sleep(500 * time.Millisecond)
-		u.render(w, "login.html", page{Title: "Sign in", Error: "That password is not right.", Data: map[string]string{"Next": r.FormValue("next"), "Resume": r.FormValue("resume")}})
+		u.render(w, "login.html", page{Title: "Sign in", Error: "That username and password are not right.", Data: map[string]string{"Next": r.FormValue("next"), "Resume": r.FormValue("resume"), "Username": r.FormValue("username")}})
 		return
 	}
 	http.SetCookie(w, cookie(id))

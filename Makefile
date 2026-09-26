@@ -308,11 +308,15 @@ ios-test:
 # Compile the packages for the simulator and type-check the app + extension
 # sources against the iOS SDK without Xcode's package resolution. Useful in
 # restricted sandboxes; the real build is `xcodebuild -scheme Dialler`.
+# `-disable-sandbox`: swiftc runs macro plugins (SwiftUI's @State etc.) in
+# swift-plugin-server under its own sandbox-exec, and a nested sandbox is
+# refused inside a restricted shell, which reads as "produced malformed
+# response" on every macro use.
 ios-typecheck:
 	cd ios/DiallerEngine && $(SWIFT_CACHE_ENV) swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --target DiallerEngine 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
-	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
+	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -Xfrontend -disable-sandbox -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
 	  $(IOS_MODULE_PATHS) App/*.swift
-	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
+	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -Xfrontend -disable-sandbox -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
 	  $(IOS_MODULE_PATHS) PushProvider/*.swift
 
 # Cross-compile libre/baresip/Opus/OpenSSL for iOS device, simulator and macOS

@@ -15,7 +15,7 @@ OUT = "/out"
 DEVICE = os.environ.get("DEVICE", "dev-a")
 
 PAGES = [
-    ("fleet", "/fleet"),
+    ("devices", "/devices"),
     ("device", f"/devices/{DEVICE}"),
     ("calls", "/calls"),
     ("server", "/server"),
@@ -39,7 +39,7 @@ def main():
             page.screenshot(path=f"{OUT}/login-light-{width}.png", full_page=True)
             page.fill("input[name=password]", PASSWORD)
             page.click("form button")
-            page.wait_for_url("**/fleet")
+            page.wait_for_url("**/devices")
             for name, path in PAGES:
                 page.goto(f"{UI}{path}")
                 page.wait_for_load_state("networkidle")
@@ -47,7 +47,7 @@ def main():
                 for theme in ("light", "dark"):
                     shoot(page, name, theme, width)
             # The code page: add a device and capture the code and QR.
-            page.goto(f"{UI}/fleet")
+            page.goto(f"{UI}/devices")
             page.fill("input[name=user]", "290")
             page.fill("input[name=description]", "Screenshot test")
             page.click("form[action='/devices'] button")
@@ -59,7 +59,7 @@ def main():
             did = page.get_attribute("form[action$='/purge']", "action").split("/")[2]
             page.fill("input[name=confirm]", did)
             page.click("form[action$='/purge'] button")
-            page.wait_for_url("**/fleet")
+            page.wait_for_url("**/devices")
             ctx.close()
         browser.close()
     print("ok", file=sys.stderr)

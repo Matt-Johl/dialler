@@ -164,8 +164,9 @@ func (u *UI) routes() {
 	m.HandleFunc("GET /login", u.loginPage)
 	m.HandleFunc("POST /login", u.login)
 	m.HandleFunc("POST /logout", u.logout)
-	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/fleet", http.StatusFound) })
-	m.HandleFunc("GET /fleet", u.auth(u.fleet))
+	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/devices", http.StatusFound) })
+	m.HandleFunc("GET /fleet", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/devices", http.StatusMovedPermanently) })
+	m.HandleFunc("GET /devices", u.auth(u.devices))
 	m.HandleFunc("POST /devices", u.auth(u.createDevice))
 	m.HandleFunc("GET /devices/{id}", u.auth(u.device))
 	m.HandleFunc("POST /devices/{id}/description", u.auth(u.setDescription))
@@ -242,7 +243,7 @@ func (u *UI) auth(h http.HandlerFunc) http.HandlerFunc {
 
 func (u *UI) loginPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := u.cfg.Sessions.Check(sessionID(r)); ok {
-		http.Redirect(w, r, "/fleet", http.StatusFound)
+		http.Redirect(w, r, "/devices", http.StatusFound)
 		return
 	}
 	u.render(w, "login.html", page{Title: "Sign in", Data: map[string]string{"Next": r.URL.Query().Get("next")}})
@@ -265,7 +266,7 @@ func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 	}
 	next := r.FormValue("next")
 	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
-		next = "/fleet"
+		next = "/devices"
 	}
 	http.Redirect(w, r, next, http.StatusFound)
 }
@@ -274,7 +275,7 @@ func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 func (u *UI) replay(w http.ResponseWriter, r *http.Request, sessionID string, p *Pending) {
 	req, err := http.NewRequestWithContext(context.WithValue(r.Context(), ctxReplay, true), p.Method, p.Path, strings.NewReader(p.Form.Encode()))
 	if err != nil {
-		http.Redirect(w, r, "/fleet", http.StatusFound)
+		http.Redirect(w, r, "/devices", http.StatusFound)
 		return
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -380,7 +381,7 @@ type fleetData struct {
 	Form   map[string]string // the add form's values on error
 }
 
-func (u *UI) fleet(w http.ResponseWriter, r *http.Request) {
+func (u *UI) devices(w http.ResponseWriter, r *http.Request) {
 	u.renderFleet(w, r, "", "", nil)
 }
 
@@ -388,8 +389,8 @@ func (u *UI) renderFleet(w http.ResponseWriter, r *http.Request, flash, errMsg s
 	ctx, cancel := u.ctx(r)
 	defer cancel()
 	data, err := u.loadFleet(ctx)
-	got, lastAt, banner := u.fetched("fleet", data, err)
-	p := page{Title: "Fleet", Nav: "fleet", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: flash, Error: errMsg}
+	got, lastAt, banner := u.fetched("devices", data, err)
+	p := page{Title: "Devices", Nav: "devices", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: flash, Error: errMsg}
 	if got != nil {
 		d := got.(fleetData)
 		d.Form = form
@@ -397,7 +398,7 @@ func (u *UI) renderFleet(w http.ResponseWriter, r *http.Request, flash, errMsg s
 	} else if err != nil && banner == "" {
 		p.Error = describe(err)
 	}
-	u.render(w, "fleet.html", p)
+	u.render(w, "devices.html", p)
 }
 
 func (u *UI) loadFleet(ctx context.Context) (fleetData, error) {

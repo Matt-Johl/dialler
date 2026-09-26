@@ -36,8 +36,8 @@ fail() { echo "FAIL: $*"; exit 1; }
 c() { curl -sk -c $J -b $J "$@"; }
 
 # 1. No session: a page redirects to the login.
-code=$(c -o /dev/null -w "%{http_code}" $UI/fleet)
-[ "$code" = 302 ] || fail "unauthenticated /fleet gave $code, want 302"
+code=$(c -o /dev/null -w "%{http_code}" $UI/devices)
+[ "$code" = 302 ] || fail "unauthenticated /devices gave $code, want 302"
 echo "ok: unauthenticated pages redirect to login"
 
 # 2. Wrong password is refused without touching the API; right one signs in.
@@ -48,13 +48,13 @@ code=$(c -o /dev/null -w "%{http_code}" -d "password=harness" $UI/login)
 echo "ok: login"
 
 # 3. Fleet shows the provisioned devices and the trunk state.
-fleet=$(c $UI/fleet)
-echo "$fleet" | grep -q "<h1>Fleet</h1>" || fail "no Fleet heading"
+fleet=$(c $UI/devices)
+echo "$fleet" | grep -q "<h1>Devices</h1>" || fail "no Devices heading"
 for dev in dev-a dev-ha dev-hb; do echo "$fleet" | grep -q "$dev" || fail "fleet lacks $dev"; done
-echo "$fleet" | grep -q "Overview" && fail "the page is named Fleet, not Overview"
+echo "$fleet" | grep -q "Fleet" && fail "the page is named Devices, not Fleet"
 csrf=$(echo "$fleet" | sed -n "s/.*name=\"csrf\" value=\"\([^\"]*\)\".*/\1/p" | head -n1)
 [ -n "$csrf" ] || fail "no csrf token on the fleet page"
-echo "ok: fleet lists the devices"
+echo "ok: devices page lists the devices"
 
 # 4. A POST without the CSRF token is refused.
 code=$(c -o /dev/null -w "%{http_code}" -d "csrf=bogus&user=250" $UI/devices)
@@ -95,8 +95,8 @@ code=$(c -o /dev/null -w "%{http_code}" -d "csrf=$csrf&confirm=$id" $UI/devices/
 [ "$code" = 303 ] || fail "purge gave $code"
 code=$(c -o /dev/null -w "%{http_code}" -d "csrf=$csrf" $UI/logout)
 [ "$code" = 302 ] || fail "logout gave $code"
-code=$(c -o /dev/null -w "%{http_code}" $UI/fleet)
-[ "$code" = 302 ] || fail "after logout /fleet gave $code, want 302"
+code=$(c -o /dev/null -w "%{http_code}" $UI/devices)
+[ "$code" = 302 ] || fail "after logout /devices gave $code, want 302"
 echo "ok: purge and sign out"
 ' || exit 1
 

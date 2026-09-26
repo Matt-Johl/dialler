@@ -2,13 +2,9 @@
 {{with .Data}}
 {{$ro := $.ReadOnly}}
 {{$upd := rfc3339 .Device.UpdatedAt}}
-<p class="crumb"><a href="/fleet">Fleet</a> ›</p>
 <div class="device-head">
-  <span class="avatar lg">{{initials .Device.Description .Device.User}}</span>
-  <div>
-    <h1>{{if .Device.Description}}{{.Device.Description}}{{else}}Ext {{.Device.User}}{{end}}</h1>
-    <div class="meta"><span>Ext <strong>{{.Device.User}}</strong></span><span class="mono">device id {{.Device.DeviceID}}</span>{{if .Device.Revoked}}<span class="chip bad">Revoked</span>{{else if .Device.Enrolled}}<span class="chip ok">Enrolled</span>{{else}}<span class="chip warn">Not enrolled yet</span>{{end}}{{if .Device.CodePending}}<span class="chip">Code pending until {{clock .Device.CodeExpiresAt}}</span>{{end}}</div>
-  </div>
+  <h1>{{if .Device.Description}}{{.Device.Description}}{{else}}Ext {{.Device.User}}{{end}}</h1>
+  <div class="meta"><span>Ext <strong>{{.Device.User}}</strong></span><span class="mono">device id {{.Device.DeviceID}}</span>{{if .Device.Revoked}}<span class="chip bad">Revoked</span>{{else if .Device.Enrolled}}<span class="chip ok">Enrolled</span>{{else}}<span class="chip warn">Not enrolled yet</span>{{end}}{{if .Device.CodePending}}<span class="chip">Code pending until {{clock .Device.CodeExpiresAt}}</span>{{end}}</div>
 </div>
 
 {{if .Code}}
@@ -44,7 +40,7 @@
     <input name="description" maxlength="120" value="{{with .Form}}{{index . "description"}}{{else}}{{.Device.Description}}{{end}}" {{if $ro}}disabled{{end}}>
     <button {{if $ro}}disabled{{end}}>Save</button>
   </form>
-  <h2 style="margin-top:22px">Enrolment</h2>
+  <h2 class="mt">Enrolment</h2>
   <div class="actions-row">
     <form method="post" action="/devices/{{.Device.DeviceID}}/code"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button {{if $ro}}disabled{{end}}>New code</button></form>
     {{if .Device.CodePending}}<form method="post" action="/devices/{{.Device.DeviceID}}/code/cancel"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="quiet" {{if $ro}}disabled{{end}}>Cancel pending code</button></form>{{end}}

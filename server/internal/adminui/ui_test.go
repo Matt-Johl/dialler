@@ -301,7 +301,7 @@ func TestLoginRequiredAndWrongPassword(t *testing.T) {
 	api := newFakeAPI()
 	ui, _ := New(Config{Client: newTestClient(api, "tok"), Sessions: NewSessions("pw")})
 	h := &harness{t: t, ui: ui, api: api}
-	if rec := h.get("/fleet"); rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+	if rec := h.get("/devices"); rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
 		t.Fatalf("no session: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	rec := h.do("POST", "/login", url.Values{"password": {"nope"}}, nil)
@@ -315,13 +315,13 @@ func TestLoginRequiredAndWrongPassword(t *testing.T) {
 
 func TestFleetPage(t *testing.T) {
 	h := newHarness(t)
-	rec := h.get("/fleet")
+	rec := h.get("/devices")
 	if rec.Code != 200 {
 		t.Fatalf("fleet: %d", rec.Code)
 	}
-	mustContain(t, rec, "<h1>Fleet</h1>", "dev-a", "Matt", "201", "202", "up</span>", "<span>trunk", "Add a device", `name="csrf" value="`+h.csrf+`"`)
-	if strings.Contains(rec.Body.String(), "Overview") {
-		t.Fatal("the page is named Fleet, not Overview")
+	mustContain(t, rec, "<h1>Devices</h1>", "dev-a", "Matt", "201", "202", "trunk up", "Add a device", `name="csrf" value="`+h.csrf+`"`)
+	if strings.Contains(rec.Body.String(), "Fleet") {
+		t.Fatal("the page is named Devices")
 	}
 }
 
@@ -368,7 +368,7 @@ func TestDevicePageAndActions(t *testing.T) {
 		t.Fatal("purged without confirmation")
 	}
 	rec = h.post("/devices/dev-a/purge", "confirm", "dev-a")
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/fleet" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/devices" {
 		t.Fatalf("purge: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	if _, ok := h.api.devices["dev-a"]; ok {
@@ -420,11 +420,11 @@ func TestCSRFAndSessionExpiryReplay(t *testing.T) {
 
 func TestUnreachableServerBannerAndLastData(t *testing.T) {
 	h := newHarness(t)
-	if rec := h.get("/fleet"); rec.Code != 200 {
+	if rec := h.get("/devices"); rec.Code != 200 {
 		t.Fatal("warm the cache")
 	}
 	h.api.down = true
-	rec := h.get("/fleet")
+	rec := h.get("/devices")
 	if rec.Code != 200 {
 		t.Fatalf("fleet while down: %d", rec.Code)
 	}
@@ -438,7 +438,7 @@ func TestUnreachableServerBannerAndLastData(t *testing.T) {
 	rec = h.get("/calls")
 	mustContain(t, rec, "not answering")
 	h.api.down = false
-	if rec := h.get("/fleet"); strings.Contains(rec.Body.String(), "not answering") {
+	if rec := h.get("/devices"); strings.Contains(rec.Body.String(), "not answering") {
 		t.Fatal("banner persisted after the server came back")
 	}
 }

@@ -40,7 +40,7 @@ func (u *UI) renderDevice(w http.ResponseWriter, r *http.Request, id, flash, err
 	defer cancel()
 	data, err := u.loadDevice(ctx, id)
 	got, lastAt, banner := u.fetched("device:"+id, data, err)
-	p := page{Title: "Device", Nav: "fleet", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: flash, Error: errMsg}
+	p := page{Title: "Device", Nav: "devices", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: flash, Error: errMsg}
 	if got != nil {
 		d := got.(deviceData)
 		d.Form = form
@@ -162,7 +162,7 @@ func (u *UI) purge(w http.ResponseWriter, r *http.Request) {
 		u.renderDevice(w, r, id, "", describe(err), nil, nil)
 		return
 	}
-	http.Redirect(w, r, "/fleet", http.StatusSeeOther)
+	http.Redirect(w, r, "/devices", http.StatusSeeOther)
 }
 
 func (u *UI) mintCode(w http.ResponseWriter, r *http.Request) {

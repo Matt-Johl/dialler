@@ -165,7 +165,7 @@ func (u *UI) uploadCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dev, _ := u.cfg.Client.Device(ctx, id)
-	u.render(w, "upload.html", page{Title: "Upload directory", Nav: "fleet", CSRF: csrf(r), Data: uploadData{
+	u.render(w, "upload.html", page{Title: "Upload directory", Nav: "devices", CSRF: csrf(r), Data: uploadData{
 		DeviceID: id, Device: dev.User + " · " + dev.Description, Result: res, Version: res.Version, CSV: text, Count: len(contacts),
 	}})
 }
@@ -222,7 +222,7 @@ func (u *UI) copyDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 		d.Results = append(d.Results, res)
 	}
-	u.render(w, "copy.html", page{Title: "Copy directory", Nav: "fleet", CSRF: csrf(r), Data: d})
+	u.render(w, "copy.html", page{Title: "Copy directory", Nav: "devices", CSRF: csrf(r), Data: d})
 }
 
 func copyBody(w http.ResponseWriter, resp *http.Response) {

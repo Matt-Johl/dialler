@@ -127,6 +127,32 @@ table.devices tr.revoked .name, table.devices tr.revoked .sub { color: var(--fai
 .chip.bad { color: var(--bad); background: var(--bad-bg); border-color: transparent; }
 .sub-line { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
 
+/* ---- column help: an "i" in a circle beside a heading, and the bubble it opens ---- */
+th { position: relative; }
+button.info {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 3px; padding: 0; vertical-align: -2px;
+  border: 1px solid currentColor; border-radius: 50%; background: none; color: var(--faint);
+  font: 600 9.5px/1 Georgia, "Times New Roman", serif; text-transform: none; letter-spacing: 0;
+  cursor: pointer;
+}
+button.info:hover, button.info:focus-visible, button.info[aria-expanded="true"] { color: var(--muted); opacity: 1; }
+button.info:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.help {
+  position: absolute; z-index: 5; top: calc(100% - 2px); left: 0; width: 320px; max-width: calc(100vw - 32px);
+  padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--bg); color: var(--ink-2);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .10);
+  font-size: 12.5px; font-weight: 400; line-height: 1.45; letter-spacing: 0; text-transform: none; white-space: normal; text-align: left;
+}
+.help[hidden] { display: none; }
+th:last-child .help { left: auto; right: 0; }
+.help p { margin: 0 0 8px; }
+.help ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: max-content 1fr; gap: 6px 10px; align-items: start; }
+.help li { display: contents; }
+.help .status, .help .chip, .help .sub { justify-self: start; }
+.help .sub { color: var(--muted); }
+:root[data-theme="dark"] .help { box-shadow: 0 6px 20px rgba(0, 0, 0, .45); }
+
 /* ---- definition lists --------------------------------------------------------- */
 dl { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 0 18px; margin: 0; }
 dt, dd { padding: 7px 0; border-bottom: 1px solid var(--line); margin: 0; min-width: 0; }

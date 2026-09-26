@@ -26,3 +26,37 @@
     if (b) { e.preventDefault(); set(current() === "dark" ? "light" : "dark"); }
   });
 })();
+
+// Column help: an "i" button beside a table heading opens the bubble it
+// names in aria-controls. One bubble is open at a time; a click anywhere
+// else, or Escape, closes it. The markup works without this script (the
+// bubbles are simply hidden), so nothing here runs before the DOM exists.
+(function () {
+  function closeAll(except) {
+    var open = document.querySelectorAll("[data-help][aria-expanded='true']");
+    for (var i = 0; i < open.length; i++) {
+      if (open[i] === except) continue;
+      open[i].setAttribute("aria-expanded", "false");
+      var p = document.getElementById(open[i].getAttribute("aria-controls"));
+      if (p) p.hidden = true;
+    }
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target && e.target.closest && e.target.closest("[data-help]");
+    if (b) {
+      e.preventDefault();
+      var panel = document.getElementById(b.getAttribute("aria-controls"));
+      if (!panel) return;
+      var opening = panel.hidden;
+      closeAll(b);
+      panel.hidden = !opening;
+      b.setAttribute("aria-expanded", opening ? "true" : "false");
+      return;
+    }
+    if (e.target && e.target.closest && e.target.closest(".help")) return;
+    closeAll();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeAll();
+  });
+})();

@@ -14,7 +14,54 @@
 </p>
 
 <table class="clients">
-  <thead><tr><th>Ext</th><th>Client</th><th>Phone</th><th>SIP</th><th>PBX line</th><th>State</th></tr></thead>
+  <thead><tr>
+    <th>Ext</th>
+    <th>Client</th>
+    <th>Phone <button type="button" class="info" data-help aria-controls="help-phone" aria-expanded="false" aria-label="What the Phone column shows">i</button>
+      <div class="help" id="help-phone" hidden>
+        <p>How the phone is reaching this server.</p>
+        <ul>
+          <li><span class="status"><i class="dot"></i> App 1.4</span><span>The Dialler app is connected. The number is the version it reported.</span></li>
+          <li><span class="status warn"><i class="dot"></i> Wake only</span><span>Only the app's wake extension is connected; the app itself is not running. An incoming call wakes it.</span></li>
+          <li><span class="status off"><i class="dot"></i> Offline</span><span>Neither the app nor its wake extension is connected.</span></li>
+        </ul>
+      </div>
+    </th>
+    <th>SIP <button type="button" class="info" data-help aria-controls="help-sip" aria-expanded="false" aria-label="What the SIP column shows">i</button>
+      <div class="help" id="help-sip" hidden>
+        <p>The app's SIP registration with this server, which is what lets it place and take calls.</p>
+        <ul>
+          <li><span class="status"><i class="dot"></i> Registered</span><span>The app has a live registration and can place and take calls.</span></li>
+          <li><span class="status off"><i class="dot"></i> —</span><span>No registration. The app is offline, or connected but not registered yet.</span></li>
+        </ul>
+      </div>
+    </th>
+    <th>PBX line <button type="button" class="info" data-help aria-controls="help-line" aria-expanded="false" aria-label="What the PBX line column shows">i</button>
+      <div class="help" id="help-line" hidden>
+        <p>The server's own registration with the PBX on this client's behalf, when the server is in lines mode.</p>
+        <ul>
+          <li><span class="chip ok">registered</span><span>The PBX accepted the line. The server refreshes it before it expires.</span></li>
+          <li><span class="chip warn">pending</span><span>The first registration has not been sent yet.</span></li>
+          <li><span class="chip warn">retrying</span><span>The last registration failed for a reason that may pass: the PBX is down, the network is out, or it answered with a server error. The server keeps trying.</span></li>
+          <li><span class="chip bad">refused</span><span>The PBX rejected the credential or does not know the line. Retrying cannot fix it, so the line stays down until its credential is changed.</span></li>
+          <li><span class="chip">stored</span><span>A line is configured but the server is not registering it: the server is in trunk mode, or the client is revoked.</span></li>
+          <li><span class="sub">—</span><span>No line is configured for this client.</span></li>
+        </ul>
+      </div>
+    </th>
+    <th>State <button type="button" class="info" data-help aria-controls="help-state" aria-expanded="false" aria-label="What the State column shows">i</button>
+      <div class="help" id="help-state" hidden>
+        <p>Where the client is in its life, and whether it is on a call.</p>
+        <ul>
+          <li><span class="chip ok">Enrolled</span><span>A phone has claimed this client's credential and can sign in.</span></li>
+          <li><span class="chip warn">Not enrolled</span><span>No phone has claimed a credential yet. Make an enrolment code and enter it on the phone.</span></li>
+          <li><span class="status call"><i class="dot"></i> On a call</span><span>A call is in progress. The time beside it is how long the call has been up.</span></li>
+          <li><span class="chip bad">Revoked</span><span>The credential has been cancelled. The phone can no longer connect, and its PBX line is not registered.</span></li>
+          <li><span class="sub">code valid until…</span><span>An enrolment code is outstanding and expires at that time.</span></li>
+        </ul>
+      </div>
+    </th>
+  </tr></thead>
   <tbody>
   {{range .Rows}}
   <tr class="{{if .Revoked}}revoked{{end}}">

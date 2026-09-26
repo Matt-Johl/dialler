@@ -771,7 +771,11 @@ func adminHooks(log *slog.Logger, ring *events.Ring, reg *registry.Registry, gw 
 			} else {
 				ring.Emit(events.KindLineChanged, deviceID, line.User, nil)
 			}
-			pbxLineHook(log, lines, devices)(deviceID, line)
+			// Trunk mode has no registrar to tell (the hook is nil): the
+			// line is stored for a later switch and that is all.
+			if hook := pbxLineHook(log, lines, devices); hook != nil {
+				hook(deviceID, line)
+			}
 		},
 	}
 }

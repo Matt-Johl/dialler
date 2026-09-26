@@ -559,7 +559,7 @@ struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     /// Owned by `ContentView`, so a tab-bar tap can pop the hidden page.
     @Binding var path: NavigationPath
-    @State private var confirmReEnrol = false
+    @State private var confirmLogout = false
 
     enum Route: Hashable { case status }
 
@@ -577,8 +577,8 @@ struct SettingsView: View {
                     LabeledContent("Server", value: "\(model.host):\(model.port)")
                     LabeledContent("Device", value: model.deviceID)
                     LabeledContent("Certificate", value: model.certSHA256 == nil ? (model.acceptAnyCertificate ? "any (dev)" : "system roots") : "pinned")
-                    Button("Re-enrol this device", role: .destructive) { confirmReEnrol = true }
-                    Text("Clears this phone's credential and returns to setup. Ask your administrator for a new enrolment code first.")
+                    Button("Log out", role: .destructive) { confirmLogout = true }
+                    Text("Signs this phone out and returns to setup. Ask your administrator for a new enrolment code to sign in again.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Calls") {
@@ -607,10 +607,11 @@ struct SettingsView: View {
                     LabeledContent("Version", value: Self.version)
                 }
             }
-            .confirmationDialog("Re-enrol this device?", isPresented: $confirmReEnrol, titleVisibility: .visible) {
-                Button("Clear credential and re-enrol", role: .destructive) { model.reEnrol() }
+            .confirmationDialog("Log out?", isPresented: $confirmLogout, titleVisibility: .visible) {
+                Button("Log out", role: .destructive) { model.logout() }
+                Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Calls will not reach this phone until it is enrolled again.")
+                Text("Are you sure? Calls will not reach this phone until it is signed in again with a new enrolment code.")
             }
             .navigationTitle("Settings")
             // The title is drawn by us so it can take the gesture (a large

@@ -540,11 +540,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Forget the credential and return to onboarding. The server-side
-    /// device is untouched: its next code brings this phone (or another)
-    /// back under the same identity.
-    func reEnrol() {
+    /// Log out: forget the credential and return to onboarding. The
+    /// server-side device is untouched: its next code brings this phone
+    /// (or another) back under the same identity.
+    ///
+    /// The Local Push configuration goes too. The provider is its own
+    /// process holding a gateway session built from the credential it read
+    /// when it connected; clearing the App Group tells it nothing, so
+    /// without this it stayed "Wake only" on the server and kept taking
+    /// wakes for an app that could no longer answer them (seen on the
+    /// Clients page, 2026-09-26). Removing the configuration makes iOS
+    /// stop the provider, which closes its session; the next enrolment
+    /// saves the configuration afresh from the welcome.
+    func logout() {
         disconnect()
+        removeLocalPush()
         store.clear()
         bookStore?.clear()
         book.reset()
@@ -555,7 +565,7 @@ final class AppModel: ObservableObject {
         certSHA256 = nil
         enrolmentError = nil
         enrolled = false
-        append("credential cleared; re-enrol")
+        append("logged out: credential cleared, Local Push removed")
     }
 
     // MARK: Connection

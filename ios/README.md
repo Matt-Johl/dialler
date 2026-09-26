@@ -275,8 +275,10 @@ after REGISTER and INVITE and therefore after activation.
    Once enrolled the Status page has no tab: press and hold the
    **Settings** title for five seconds and it is pushed; Back or any
    tab-bar tap closes it. It shows `connected`, and the directory tab
-   fills from `/v1/directory`. Settings › **Re-enrol this device** clears
-   the credential and returns to setup.
+   fills from `/v1/directory`. Settings › **Log out** (after an "are you
+   sure") clears the credential, removes the Local Push configuration so
+   the extension stops and the server sees the phone go offline, and
+   returns to setup.
 4. Ring it: `make harness-ring-sim` makes the harness phone 202 dial 201.
    Nothing else holds 201's registration, so the server wakes `dev-a`, the
    app, over its socket and the simulator shows the CallKit incoming-call

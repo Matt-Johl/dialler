@@ -540,11 +540,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Forget the credential and return to onboarding. The server-side
-    /// device is untouched: its next code brings this phone (or another)
-    /// back under the same identity.
-    func reEnrol() {
+    /// Log out: forget the credential and return to onboarding. The
+    /// server-side device is untouched: its next code brings this phone
+    /// (or another) back under the same identity. The Local Push
+    /// configuration goes too: the provider holds a gateway session built
+    /// from the credential being cleared, and removing the configuration
+    /// is what makes iOS stop it.
+    func logout() {
         disconnect()
+        removeLocalPush()
         store.clear()
         bookStore?.clear()
         book.reset()
@@ -555,7 +559,7 @@ final class AppModel: ObservableObject {
         certSHA256 = nil
         enrolmentError = nil
         enrolled = false
-        append("credential cleared; re-enrol")
+        append("logged out: credential cleared, Local Push removed")
     }
 
     // MARK: Connection

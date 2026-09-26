@@ -1176,8 +1176,9 @@ on by config — see §7.4.
      `EnrolmentClient.claim(host:port:code:)` (DiallerCore, testable), then
      `AppConfig` is saved (token in the keychain, as now) and the app
      connects. `onOpenURL` takes a `dialler://enrol…` link from the iOS
-     Camera app down the same path. Settings gains **Re-enrol this
-     device**, which wipes the credential and returns to onboarding.
+     Camera app down the same path. Settings gains **Log out**, which
+     wipes the credential, removes the Local Push configuration and
+     returns to onboarding.
      *Status (decided 2026-09-21, replacing an earlier keypad gesture):*
      the tab is removed. The Status page is reached by a **five-second
      press on the Settings title** at the top of the Settings tab, which
@@ -1190,7 +1191,7 @@ on by config — see §7.4.
      host, port, device id and token entered directly, and
      accept-any-certificate — leave Settings for this page too, and
      Settings keeps only what a user should see: server address and
-     device id (read-only), call waiting, Local Push SSIDs, re-enrol,
+     device id (read-only), call waiting, Local Push SSIDs, log out,
      and the version and acknowledgements screen of item 4. Until then
      Settings keeps its fields, since they are the only way in.
      *Dev path:* `make dev-server` and `harness/provision.sh` print an
@@ -1219,8 +1220,9 @@ on by config — see §7.4.
      overrides the dev toggle on the signal socket and every HTTPS
      session (`CertificatePin`, `EndpointTrust`); the manual path trusts
      the first connection and refuses to continue if the certificate it
-     saw is not the one the reply names. Re-enrol clears the credential
-     and the directory book. **Not done, and worth knowing:** the SIP
+     saw is not the one the reply names. Log out clears the credential,
+     the directory book and the Local Push configuration. **Not done,
+     and worth knowing:** the SIP
      leg still accepts any certificate (`BaresipCallEngine` passes
      `acceptAnyCertificate: true` to the stack); pinning there means
      handing baresip the fingerprint or a CA file (`sip_cafile` /
@@ -1280,7 +1282,7 @@ on by config — see §7.4.
      start, which re-issued dev-a's fixed token over it. `provision.sh`
      now leaves an enrolled dev-a's credential alone and only mints it a
      fresh code; the fixed token is issued only into a fresh data
-     directory. Settings › Re-enrol (not a reinstall) is the recovery for
+     directory. Settings › Log out (not a reinstall) is the recovery for
      a phone whose credential the server no longer holds.
 
   *Item 9 split into 9a/9b/9c on 2026-09-23.* It was one item covering a

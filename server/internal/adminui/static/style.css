@@ -60,7 +60,8 @@ footer div { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
 header.top { border-bottom: 1px solid var(--line); }
 header.top .bar { display: flex; align-items: center; gap: 24px; height: 48px; max-width: 1080px; margin: 0 auto; padding: 0 24px; }
 .brand { font-weight: 600; font-size: 14px; display: inline-flex; align-items: center; gap: 8px; }
-.brand svg { width: 22px; height: 22px; fill: currentColor; display: block; }
+.brand svg { width: 28px; height: 28px; fill: currentColor; display: block; }
+header .brand { margin-right: 4px; }
 .login .brand svg { width: 26px; height: 26px; }
 header nav { display: flex; gap: 18px; }
 header nav a { color: var(--muted); padding: 14px 0; border-bottom: 2px solid transparent; }

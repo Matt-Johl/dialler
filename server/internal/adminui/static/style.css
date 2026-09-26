@@ -59,13 +59,15 @@ footer div { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
 /* ---- top bar ---------------------------------------------------------------- */
 header.top { border-bottom: 1px solid var(--line); }
 header.top .bar { display: flex; align-items: center; gap: 24px; height: 48px; max-width: 1080px; margin: 0 auto; padding: 0 24px; }
-.brand { font-weight: 600; font-size: 14px; }
+.brand { font-weight: 600; font-size: 14px; display: inline-flex; align-items: center; gap: 8px; }
+.brand svg { width: 22px; height: 22px; fill: currentColor; display: block; }
+.login .brand svg { width: 26px; height: 26px; }
 header nav { display: flex; gap: 18px; }
 header nav a { color: var(--muted); padding: 14px 0; border-bottom: 2px solid transparent; }
 header nav a:hover { color: var(--ink); text-decoration: none; }
 header nav a.on { color: var(--ink); border-bottom-color: var(--ink); }
 header .spacer { flex: 1; }
-header .tools { display: flex; align-items: center; gap: 12px; }
+header .tools { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
 
 /* ---- type ------------------------------------------------------------------ */
 h1 { font-size: 20px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 4px; }

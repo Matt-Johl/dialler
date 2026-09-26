@@ -1,8 +1,7 @@
 {{template "header" .}}
 <h1>Server</h1>
 {{with .Data}}
-{{$ro := $.ReadOnly}}
-<div class="grid">
+<div class="grid-2">
 <section class="card">
   <h2>Identity</h2>
   <dl>
@@ -10,18 +9,18 @@
     <dt>Up since</dt><dd>{{when .Server.StartedAt}} ({{seconds .Server.UptimeSeconds}})</dd>
     <dt>Mode</dt><dd>{{.Server.Mode}}</dd>
     <dt>Public host</dt><dd>{{.Server.PublicHost}} · SIP domain {{.Server.LocalDomain}}</dd>
-    <dt>Listeners</dt><dd class="mono small">signal {{.Server.Listeners.Signal}} · sip {{.Server.Listeners.SIP}} · device api {{.Server.Listeners.HTTP}} · admin api {{.Server.Listeners.Admin}}{{if .Server.Listeners.Trunk}} · trunk {{.Server.Listeners.Trunk}}{{end}}</dd>
-    <dt>Certificate</dt><dd>{{.Server.TLS.Subject}}{{if .Server.TLS.SelfSigned}} (self-signed){{end}}<br>expires <strong>{{when .Server.TLS.NotAfter}}</strong><br><span class="mono small">{{.Server.TLS.FingerprintSHA256}}</span><br><small>Every phone pins this certificate; replacing it means re-enrolling every phone.</small></dd>
+    <dt>Listeners</dt><dd class="mono">signal {{.Server.Listeners.Signal}} · sip {{.Server.Listeners.SIP}} · device api {{.Server.Listeners.HTTP}} · admin api {{.Server.Listeners.Admin}}{{if .Server.Listeners.Trunk}} · trunk {{.Server.Listeners.Trunk}}{{end}}</dd>
+    <dt>Certificate</dt><dd>{{.Server.TLS.Subject}}{{if .Server.TLS.SelfSigned}} (self-signed){{end}}<br>expires <strong>{{when .Server.TLS.NotAfter}}</strong><br><span class="mono">{{.Server.TLS.FingerprintSHA256}}</span><span class="sub-line">Every phone pins this certificate; replacing it means re-enrolling every phone.</span></dd>
     <dt>Ring / peer timeout</dt><dd>{{.Server.RingTimeout}} s / {{.Server.PeerTimeout}} s</dd>
     <dt>Media ports</dt><dd>{{.Server.RTP.Min}}–{{.Server.RTP.Max}} UDP</dd>
-    <dt>Data</dt><dd class="mono small">{{.Server.DataDir}} · diagnostics kept {{seconds .Server.DiagRetain}}</dd>
+    <dt>Data</dt><dd class="mono">{{.Server.DataDir}} · diagnostics kept {{seconds .Server.DiagRetain}}</dd>
   </dl>
 </section>
 
 <section class="card">
-  <h2>Fleet</h2>
+  <h2>Clients</h2>
   <dl>
-    <dt>Devices</dt><dd>{{.Server.Counts.Devices}} ({{.Server.Counts.Enrolled}} enrolled, {{.Server.Counts.Revoked}} revoked)</dd>
+    <dt>Clients</dt><dd>{{.Server.Counts.Devices}} ({{.Server.Counts.Enrolled}} enrolled, {{.Server.Counts.Revoked}} revoked)</dd>
     <dt>Online</dt><dd>{{.Server.Counts.AppOnline}} apps, {{.Server.Counts.ExtensionOnline}} wake extensions</dd>
     <dt>SIP registered</dt><dd>{{.Server.Counts.SIPRegistered}}</dd>
     {{if eq .Server.Mode "lines"}}<dt>PBX lines</dt><dd>{{.Server.Counts.LinesRegistered}} registered{{if .Server.Counts.LinesFailed}}, <strong>{{.Server.Counts.LinesFailed}} failing</strong>{{end}}</dd>{{end}}
@@ -29,43 +28,19 @@
     <dt>Admin API</dt><dd>{{.Server.Admin.InFlight}} in flight · refused {{.Server.Admin.RejectedRate}} by rate, {{.Server.Admin.RejectedBusy}} as busy · {{.Server.Admin.EventsDropped}} events dropped</dd>
   </dl>
   {{with .Server.Trunk}}
-  <h2>Trunk</h2>
+  <h2 class="mt">Trunk</h2>
   <dl>
-    <dt>PBX</dt><dd class="mono small">{{.URI}}</dd>
+    <dt>PBX</dt><dd class="mono">{{.URI}}</dd>
     <dt>State</dt><dd><span class="chip {{if eq .Qualify "up"}}ok{{else if eq .Qualify "down"}}bad{{end}}">{{.Qualify}}</span>{{if .QualifySince.IsZero}}{{else}} since {{when .QualifySince}}{{end}}{{if .QualifyLastError}} · {{.QualifyLastError}}{{end}}</dd>
     <dt>Media</dt><dd>SRTP {{.SRTP}} · codecs {{join .Codecs ", "}}</dd>
     <dt>TLS</dt><dd>{{if eq .Transport "tls"}}min {{.TLS.MinVersion}}{{if .TLS.Insecure}} · <strong>certificate not verified</strong>{{end}}{{if not .TLS.CertSet}} · no certificate: inbound calls cannot complete{{end}}{{else}}not TLS ({{.Transport}}){{end}}</dd>
   </dl>
   {{end}}
   {{with .Server.PBX}}
-  <h2>Lines</h2>
+  <h2 class="mt">Lines</h2>
   <dl><dt>Registrar</dt><dd>{{.Registrar}} · domain {{.Domain}} · expiry {{seconds .RegisterExpirySeconds}}{{if .DefaultLine}} · default line {{.DefaultLine}}{{end}}</dd></dl>
   {{end}}
 </section>
-
-<section class="card">
-  <h2>Logging</h2>
-  {{if .Log.Err}}<p class="hint">{{.Log.Err}}</p>{{end}}
-  <p>Level <strong>{{.Log.Level}}</strong>{{if .Log.SIPTrace}}, SIP trace on{{end}}{{if .Log.Until}} · reverts at {{when .Log.Until}}{{end}} · started as {{.Log.Startup.Level}}</p>
-  <form method="post" action="/server/log" class="row">
-    <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <label>Level <select name="level" {{if $ro}}disabled{{end}}>{{range $l := list "debug" "info" "warn" "error"}}<option value="{{$l}}" {{if eq $l $.Data.Log.Level}}selected{{end}}>{{$l}}</option>{{end}}</select></label>
-    <label class="check"><input type="checkbox" name="sip_trace" {{if .Log.SIPTrace}}checked{{end}} {{if $ro}}disabled{{end}}> SIP trace</label>
-    <label>Revert after (seconds) <input name="for_seconds" size="6" placeholder="600" value="{{with .Form}}{{index . "for_seconds"}}{{end}}" {{if $ro}}disabled{{end}}></label>
-    <button {{if $ro}}disabled{{end}}>Apply</button>
-  </form>
-  <p class="hint">Debug and SIP trace cost the call path CPU, so they need a duration (at most an hour) and revert on their own.</p>
-</section>
 </div>
-
-<section class="card">
-  <h2>Recent events <small>the latest 100</small></h2>
-  <table class="events">
-    <thead><tr><th>When</th><th>Event</th><th>Device</th><th>Ext</th><th>Detail</th></tr></thead>
-    <tbody>
-    {{range .Events}}<tr><td>{{when .At}}</td><td>{{.Kind}}</td><td>{{with .Device}}<a href="/devices/{{.}}" class="mono small">{{.}}</a>{{end}}</td><td>{{.User}}</td><td class="small">{{.Detail}}</td></tr>{{else}}<tr><td colspan="5">Nothing yet since the server started.</td></tr>{{end}}
-    </tbody>
-  </table>
-</section>
 {{end}}
 {{template "footer" .}}

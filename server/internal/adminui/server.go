@@ -55,7 +55,7 @@ type lastFetch struct {
 // page is what every template receives.
 type page struct {
 	Title    string
-	Nav      string // fleet, server, calls
+	Nav      string // server, clients, calls, diagnostics
 	CSRF     string
 	Version  string
 	Banner   string // the call server is not answering
@@ -96,8 +96,15 @@ func New(cfg Config) (*UI, error) {
 			}
 			return t.Local().Format("2006-01-02 15:04:05")
 		},
+		"clock": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.Local().Format("15:04")
+		},
 		"rfc3339": func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) },
 		"join":    strings.Join,
+		"lower":   strings.ToLower,
 		"list":    func(a ...string) []string { return a },
 		"initials": func(description, user string) string {
 			var out []rune
@@ -112,19 +119,9 @@ func New(cfg Config) (*UI, error) {
 				}
 			}
 			if len(out) == 0 {
-				if len(user) > 3 {
-					return user[len(user)-3:]
-				}
 				return user
 			}
 			return string(out)
-		},
-		"lower": strings.ToLower,
-		"clock": func(t time.Time) string {
-			if t.IsZero() {
-				return ""
-			}
-			return t.Local().Format("15:04")
 		},
 		"seconds": func(n any) string {
 			var d time.Duration
@@ -164,30 +161,43 @@ func (u *UI) routes() {
 	m.HandleFunc("GET /login", u.loginPage)
 	m.HandleFunc("POST /login", u.login)
 	m.HandleFunc("POST /logout", u.logout)
-	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/devices", http.StatusFound) })
-	m.HandleFunc("GET /fleet", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/devices", http.StatusMovedPermanently) })
-	m.HandleFunc("GET /devices", u.auth(u.devices))
-	m.HandleFunc("POST /devices", u.auth(u.createDevice))
-	m.HandleFunc("GET /devices/{id}", u.auth(u.device))
-	m.HandleFunc("POST /devices/{id}/description", u.auth(u.setDescription))
-	m.HandleFunc("POST /devices/{id}/revoke", u.auth(u.revoke))
-	m.HandleFunc("POST /devices/{id}/purge", u.auth(u.purge))
-	m.HandleFunc("POST /devices/{id}/code", u.auth(u.mintCode))
-	m.HandleFunc("POST /devices/{id}/code/cancel", u.auth(u.cancelCode))
-	m.HandleFunc("POST /devices/{id}/config", u.auth(u.setConfig))
-	m.HandleFunc("POST /devices/{id}/line", u.auth(u.setLine))
-	m.HandleFunc("POST /devices/{id}/line/delete", u.auth(u.deleteLine))
-	m.HandleFunc("POST /devices/{id}/directory", u.auth(u.addContact))
-	m.HandleFunc("POST /devices/{id}/directory/upload", u.auth(u.uploadCSV))
-	m.HandleFunc("POST /devices/{id}/directory/copy", u.auth(u.copyDirectory))
-	m.HandleFunc("GET /devices/{id}/directory.csv", u.auth(u.downloadCSV))
-	m.HandleFunc("POST /devices/{id}/directory/{cid}", u.auth(u.editContact))
-	m.HandleFunc("GET /devices/{id}/diag/{name}", u.auth(u.diagFile))
-	m.HandleFunc("POST /devices/{id}/diag/{name}/delete", u.auth(u.deleteDiag))
-	m.HandleFunc("POST /devices/{id}/diag/delete-all", u.auth(u.deleteAllDiag))
+	m.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/clients", http.StatusFound) })
+	// Old names, kept as redirects.
+	m.HandleFunc("GET /fleet", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/clients", http.StatusMovedPermanently)
+	})
+	m.HandleFunc("GET /devices", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/clients", http.StatusMovedPermanently)
+	})
+	m.HandleFunc("GET /devices/{id}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/clients/"+url.PathEscape(r.PathValue("id")), http.StatusMovedPermanently)
+	})
+
 	m.HandleFunc("GET /server", u.auth(u.server))
-	m.HandleFunc("POST /server/log", u.auth(u.setLog))
+	m.HandleFunc("GET /clients", u.auth(u.clients))
+	m.HandleFunc("GET /clients/new", u.auth(u.newClient))
+	m.HandleFunc("POST /clients", u.auth(u.createClient))
+	m.HandleFunc("GET /clients/{id}", u.auth(u.client))
+	m.HandleFunc("GET /clients/{id}/code", u.auth(u.codePage))
+	m.HandleFunc("POST /clients/{id}/code", u.auth(u.mintCode))
+	m.HandleFunc("POST /clients/{id}/code/cancel", u.auth(u.cancelCode))
+	m.HandleFunc("POST /clients/{id}/description", u.auth(u.setDescription))
+	m.HandleFunc("POST /clients/{id}/revoke", u.auth(u.revoke))
+	m.HandleFunc("POST /clients/{id}/purge", u.auth(u.purge))
+	m.HandleFunc("POST /clients/{id}/config", u.auth(u.setConfig))
+	m.HandleFunc("POST /clients/{id}/line", u.auth(u.setLine))
+	m.HandleFunc("POST /clients/{id}/line/delete", u.auth(u.deleteLine))
+	m.HandleFunc("POST /clients/{id}/directory", u.auth(u.addContact))
+	m.HandleFunc("POST /clients/{id}/directory/upload", u.auth(u.uploadCSV))
+	m.HandleFunc("POST /clients/{id}/directory/copy", u.auth(u.copyDirectory))
+	m.HandleFunc("GET /clients/{id}/directory.csv", u.auth(u.downloadCSV))
+	m.HandleFunc("POST /clients/{id}/directory/{cid}", u.auth(u.editContact))
+	m.HandleFunc("GET /clients/{id}/diag/{name}", u.auth(u.diagFile))
+	m.HandleFunc("POST /clients/{id}/diag/{name}/delete", u.auth(u.deleteDiag))
+	m.HandleFunc("POST /clients/{id}/diag/delete-all", u.auth(u.deleteAllDiag))
 	m.HandleFunc("GET /calls", u.auth(u.calls))
+	m.HandleFunc("GET /diagnostics", u.auth(u.diagnostics))
+	m.HandleFunc("POST /diagnostics/log", u.auth(u.setLog))
 	u.mux = m
 }
 
@@ -243,7 +253,7 @@ func (u *UI) auth(h http.HandlerFunc) http.HandlerFunc {
 
 func (u *UI) loginPage(w http.ResponseWriter, r *http.Request) {
 	if _, ok := u.cfg.Sessions.Check(sessionID(r)); ok {
-		http.Redirect(w, r, "/devices", http.StatusFound)
+		http.Redirect(w, r, "/clients", http.StatusFound)
 		return
 	}
 	u.render(w, "login.html", page{Title: "Sign in", Data: map[string]string{"Next": r.URL.Query().Get("next")}})
@@ -266,7 +276,7 @@ func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 	}
 	next := r.FormValue("next")
 	if next == "" || !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
-		next = "/devices"
+		next = "/clients"
 	}
 	http.Redirect(w, r, next, http.StatusFound)
 }
@@ -275,7 +285,7 @@ func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 func (u *UI) replay(w http.ResponseWriter, r *http.Request, sessionID string, p *Pending) {
 	req, err := http.NewRequestWithContext(context.WithValue(r.Context(), ctxReplay, true), p.Method, p.Path, strings.NewReader(p.Form.Encode()))
 	if err != nil {
-		http.Redirect(w, r, "/devices", http.StatusFound)
+		http.Redirect(w, r, "/clients", http.StatusFound)
 		return
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -361,11 +371,27 @@ func describe(err error) string {
 	return err.Error()
 }
 
-// ---- pages: fleet, server, calls -------------------------------------------
+// flash stashes a one-line message for the page after a redirect, so a
+// reload never repeats the action.
+func (u *UI) flash(msg string) string {
+	return "?flash=" + u.cfg.Sessions.Stash("FLASH", "", map[string][]string{"msg": {msg}})
+}
 
-// FleetRow is one device on the fleet page: the record merged with its
-// live state.
-type FleetRow struct {
+// flashFor reads a flash left by flash().
+func (u *UI) flashFor(r *http.Request) string {
+	if key := r.URL.Query().Get("flash"); key != "" {
+		if p, ok := u.cfg.Sessions.Take(key); ok && p.Method == "FLASH" {
+			return p.Form.Get("msg")
+		}
+	}
+	return ""
+}
+
+// ---- clients (the list) ----------------------------------------------------
+
+// ClientRow is one client on the list: the record merged with its live
+// state.
+type ClientRow struct {
 	status.DeviceStatus
 	IssuedAt      time.Time
 	CodePending   bool
@@ -374,55 +400,48 @@ type FleetRow struct {
 	HasLine       bool
 }
 
-type fleetData struct {
-	Rows   []FleetRow
+type clientsData struct {
+	Rows   []ClientRow
 	Trunk  status.FleetView
 	Counts map[string]int
-	Form   map[string]string // the add form's values on error
 }
 
-func (u *UI) devices(w http.ResponseWriter, r *http.Request) {
-	u.renderFleet(w, r, "", "", nil)
-}
-
-func (u *UI) renderFleet(w http.ResponseWriter, r *http.Request, flash, errMsg string, form map[string]string) {
+func (u *UI) clients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := u.ctx(r)
 	defer cancel()
-	data, err := u.loadFleet(ctx)
-	got, lastAt, banner := u.fetched("devices", data, err)
-	p := page{Title: "Devices", Nav: "devices", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: flash, Error: errMsg}
+	data, err := u.loadClients(ctx)
+	got, lastAt, banner := u.fetched("clients", data, err)
+	p := page{Title: "Clients", Nav: "clients", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: u.flashFor(r)}
 	if got != nil {
-		d := got.(fleetData)
-		d.Form = form
-		p.Data = d
+		p.Data = got.(clientsData)
 	} else if err != nil && banner == "" {
 		p.Error = describe(err)
 	}
-	u.render(w, "devices.html", p)
+	u.render(w, "clients.html", p)
 }
 
-func (u *UI) loadFleet(ctx context.Context) (fleetData, error) {
+func (u *UI) loadClients(ctx context.Context) (clientsData, error) {
 	devices, err := u.cfg.Client.Devices(ctx)
 	if err != nil {
-		return fleetData{}, err
+		return clientsData{}, err
 	}
 	st, err := u.cfg.Client.Status(ctx)
 	if err != nil {
-		return fleetData{}, err
+		return clientsData{}, err
 	}
 	live := map[string]status.DeviceStatus{}
 	for _, d := range st.Devices {
 		live[d.DeviceID] = d
 	}
-	d := fleetData{Trunk: st, Counts: map[string]int{}}
+	d := clientsData{Trunk: st, Counts: map[string]int{}}
 	for _, dev := range devices {
-		row := FleetRow{DeviceStatus: live[dev.DeviceID], IssuedAt: dev.IssuedAt, CodePending: dev.CodePending, CodeExpiresAt: dev.CodeExpiresAt, HasConfig: dev.Config != nil, HasLine: dev.PBXLine != nil}
+		row := ClientRow{DeviceStatus: live[dev.DeviceID], IssuedAt: dev.IssuedAt, CodePending: dev.CodePending, CodeExpiresAt: dev.CodeExpiresAt, HasConfig: dev.Config != nil, HasLine: dev.PBXLine != nil}
 		row.DeviceID, row.User, row.Description, row.Revoked, row.Enrolled = dev.DeviceID, dev.User, dev.Description, dev.Revoked, dev.Enrolled
 		if row.Sessions == nil {
 			row.Sessions = map[string]*status.Session{}
 		}
 		d.Rows = append(d.Rows, row)
-		d.Counts["devices"]++
+		d.Counts["clients"]++
 		if dev.Revoked {
 			d.Counts["revoked"]++
 		}
@@ -440,14 +459,50 @@ func (u *UI) loadFleet(ctx context.Context) (fleetData, error) {
 	return d, nil
 }
 
+// ---- server ----------------------------------------------------------------
+
 type serverData struct {
 	Server status.ServerView
-	Log    struct {
+}
+
+func (u *UI) server(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := u.ctx(r)
+	defer cancel()
+	sv, err := u.cfg.Client.Server(ctx)
+	got, lastAt, banner := u.fetched("server", serverData{Server: sv}, err)
+	p := page{Title: "Server", Nav: "server", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt}
+	if got != nil {
+		p.Data = got.(serverData)
+	} else if err != nil && banner == "" {
+		p.Error = describe(err)
+	}
+	u.render(w, "server.html", p)
+}
+
+// ---- calls -----------------------------------------------------------------
+
+func (u *UI) calls(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := u.ctx(r)
+	defer cancel()
+	calls, err := u.cfg.Client.Calls(ctx)
+	got, lastAt, banner := u.fetched("calls", calls, err)
+	p := page{Title: "Calls", Nav: "calls", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Data: got}
+	if got == nil && err != nil && banner == "" {
+		p.Error = describe(err)
+	}
+	u.render(w, "calls.html", p)
+}
+
+// ---- diagnostics: logging, uploads, events -----------------------------------
+
+type diagnosticsData struct {
+	Log struct {
 		loglevelView
 		Err string
 	}
-	Events []eventRow
-	Form   map[string]string
+	Events  []eventRow
+	Uploads []uploadRow
+	Form    map[string]string
 }
 
 type eventRow struct {
@@ -458,35 +513,41 @@ type eventRow struct {
 	Detail string
 }
 
-func (u *UI) server(w http.ResponseWriter, r *http.Request) {
-	u.renderServer(w, r, "", "", nil)
+// uploadRow is one client's diagnostic files.
+type uploadRow struct {
+	DeviceID    string
+	User        string
+	Description string
+	Files       int
+	Latest      string
 }
 
-func (u *UI) renderServer(w http.ResponseWriter, r *http.Request, flash, errMsg string, form map[string]string) {
+func (u *UI) diagnostics(w http.ResponseWriter, r *http.Request) {
+	u.renderDiagnostics(w, r, "", nil)
+}
+
+func (u *UI) renderDiagnostics(w http.ResponseWriter, r *http.Request, errMsg string, form map[string]string) {
 	ctx, cancel := u.ctx(r)
 	defer cancel()
-	data, err := u.loadServer(ctx)
-	got, lastAt, banner := u.fetched("server", data, err)
-	p := page{Title: "Server", Nav: "server", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Flash: flash, Error: errMsg}
+	data, err := u.loadDiagnostics(ctx)
+	got, lastAt, banner := u.fetched("diagnostics", data, err)
+	p := page{Title: "Diagnostics", Nav: "diagnostics", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Error: errMsg, Flash: u.flashFor(r)}
 	if got != nil {
-		d := got.(serverData)
+		d := got.(diagnosticsData)
 		d.Form = form
 		p.Data = d
 	} else if err != nil && banner == "" {
 		p.Error = describe(err)
 	}
-	u.render(w, "server.html", p)
+	u.render(w, "diagnostics.html", p)
 }
 
-func (u *UI) loadServer(ctx context.Context) (serverData, error) {
-	var d serverData
-	sv, err := u.cfg.Client.Server(ctx)
-	if err != nil {
-		return d, err
-	}
-	d.Server = sv
+func (u *UI) loadDiagnostics(ctx context.Context) (diagnosticsData, error) {
+	var d diagnosticsData
 	if lv, err := u.cfg.Client.Log(ctx); err == nil {
 		d.Log.loglevelView = loglevelView{lv}
+	} else if Unreachable(err) {
+		return d, err
 	} else {
 		d.Log.Err = describe(err)
 	}
@@ -503,6 +564,24 @@ func (u *UI) loadServer(ctx context.Context) (serverData, error) {
 		sort.Strings(parts)
 		d.Events = append(d.Events, eventRow{At: e.At, Kind: e.Kind, Device: e.DeviceID, User: e.User, Detail: strings.Join(parts, " ")})
 	}
+	devices, err := u.cfg.Client.Devices(ctx)
+	if err != nil {
+		return d, err
+	}
+	for _, dev := range devices {
+		files, err := u.cfg.Client.Diag(ctx, dev.DeviceID)
+		if err != nil {
+			if Unreachable(err) {
+				return d, err
+			}
+			continue
+		}
+		if len(files) == 0 {
+			continue
+		}
+		d.Uploads = append(d.Uploads, uploadRow{DeviceID: dev.DeviceID, User: dev.User, Description: dev.Description, Files: len(files), Latest: files[0].At})
+	}
+	sort.Slice(d.Uploads, func(i, j int) bool { return d.Uploads[i].User < d.Uploads[j].User })
 	return d, nil
 }
 
@@ -519,26 +598,14 @@ func (u *UI) setLog(w http.ResponseWriter, r *http.Request) {
 	if s := strings.TrimSpace(r.FormValue("for_seconds")); s != "" {
 		var n int
 		if _, err := fmt.Sscanf(s, "%d", &n); err != nil || n <= 0 {
-			u.renderServer(w, r, "", "for_seconds must be a whole number of seconds", form)
+			u.renderDiagnostics(w, r, "Revert after must be a whole number of seconds.", form)
 			return
 		}
 		req.ForSeconds = &n
 	}
 	if _, err := u.cfg.Client.SetLog(ctx, req); err != nil {
-		u.renderServer(w, r, "", describe(err), form)
+		u.renderDiagnostics(w, r, describe(err), form)
 		return
 	}
-	http.Redirect(w, r, "/server", http.StatusSeeOther)
-}
-
-func (u *UI) calls(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := u.ctx(r)
-	defer cancel()
-	calls, err := u.cfg.Client.Calls(ctx)
-	got, lastAt, banner := u.fetched("calls", calls, err)
-	p := page{Title: "Calls", Nav: "calls", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Data: got}
-	if got == nil && err != nil && banner == "" {
-		p.Error = describe(err)
-	}
-	u.render(w, "calls.html", p)
+	http.Redirect(w, r, "/diagnostics"+u.flash("Logging updated."), http.StatusSeeOther)
 }

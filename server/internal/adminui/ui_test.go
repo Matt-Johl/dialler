@@ -301,7 +301,7 @@ func TestLoginRequiredAndWrongPassword(t *testing.T) {
 	api := newFakeAPI()
 	ui, _ := New(Config{Client: newTestClient(api, "tok"), Sessions: NewSessions("pw")})
 	h := &harness{t: t, ui: ui, api: api}
-	if rec := h.get("/devices"); rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+	if rec := h.get("/clients"); rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
 		t.Fatalf("no session: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	rec := h.do("POST", "/login", url.Values{"password": {"nope"}}, nil)
@@ -313,42 +313,60 @@ func TestLoginRequiredAndWrongPassword(t *testing.T) {
 	}
 }
 
-func TestFleetPage(t *testing.T) {
+func TestClientsPage(t *testing.T) {
 	h := newHarness(t)
-	rec := h.get("/devices")
+	rec := h.get("/clients")
 	if rec.Code != 200 {
 		t.Fatalf("fleet: %d", rec.Code)
 	}
-	mustContain(t, rec, "<h1>Devices</h1>", "dev-a", "Matt", "201", "202", "trunk up", "Add a device", `name="csrf" value="`+h.csrf+`"`)
-	if strings.Contains(rec.Body.String(), "Fleet") {
-		t.Fatal("the page is named Devices")
+	mustContain(t, rec, "<h1>Clients</h1>", "dev-a", "Matt", "201", "202", "trunk up", "Add a client", `name="csrf" value="`+h.csrf+`"`)
+	if strings.Contains(rec.Body.String(), "Fleet") || strings.Contains(rec.Body.String(), "Devices") {
+		t.Fatal("the page is named Clients")
 	}
 }
 
-func TestCreateDeviceShowsCodeAndQR(t *testing.T) {
+func TestCreateClientShowsCodeAndQR(t *testing.T) {
 	h := newHarness(t)
-	rec := h.post("/devices", "user", "204", "description", "Warehouse 3")
+	rec := h.post("/clients", "user", "204", "description", "Warehouse 3")
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/clients/dev_NEW/code?k=") {
+		t.Fatalf("create: %d %s %s", rec.Code, rec.Header().Get("Location"), rec.Body)
+	}
+	rec = h.get(rec.Header().Get("Location"))
 	if rec.Code != 200 {
-		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+		t.Fatalf("code page: %d", rec.Code)
 	}
-	mustContain(t, rec, "8XK2M4PQ", "data-link='dialler://enrol?h=10.0.0.1&amp;p=8080&amp;c=8XK2M4PQ'", "Device added")
-	// A taken user: the fleet page comes back with the error and the form kept.
-	rec = h.post("/devices", "user", "201", "description", "Dup")
+	mustContain(t, rec, "8XK2M4PQ", "data-link='dialler://enrol?h=10.0.0.1&amp;p=8080&amp;c=8XK2M4PQ'", "Ext 204")
+	// The code is shown once: a reload has nothing to show and offers a new one.
+	rec = h.get("/clients/dev_NEW/code")
+	mustContain(t, rec, "Make an enrolment code")
+	if strings.Contains(rec.Body.String(), "8XK2M4PQ") {
+		t.Fatal("the code was shown twice")
+	}
+	// Minting from the client page goes to the code page with the new code.
+	rec = h.post("/clients/dev-a/code")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("mint: %d", rec.Code)
+	}
+	mustContain(t, h.get(rec.Header().Get("Location")), "ABCD1234")
+	// A taken user: the add page comes back with the error and the form kept.
+	rec = h.post("/clients", "user", "201", "description", "Dup")
 	mustContain(t, rec, "another device already has that user", `value="Dup"`)
+	// The add page itself.
+	mustContain(t, h.get("/clients/new"), "<h1>Add a client</h1>")
 }
 
-func TestDevicePageAndActions(t *testing.T) {
+func TestClientPageAndActions(t *testing.T) {
 	h := newHarness(t)
-	rec := h.get("/devices/dev-a")
+	rec := h.get("/clients/dev-a")
 	if rec.Code != 200 {
 		t.Fatalf("device: %d", rec.Code)
 	}
-	mustContain(t, rec, "Matt", "Office", "line201", "Desk", "sip:100@asterisk", "applog.log", "Purge")
-	if rec := h.get("/devices/nope"); rec.Code != 404 {
+	mustContain(t, rec, "Matt", "Office", "line201", "Desk", "sip:100@asterisk", "applog.log", "Purge", "<h2>Status</h2>", "<h2>Enrolment</h2>", "<h2>Settings</h2>")
+	if rec := h.get("/clients/nope"); rec.Code != 404 {
 		t.Fatalf("unknown device: %d", rec.Code)
 	}
 	// Description with the right If-Match.
-	rec = h.post("/devices/dev-a/description", "description", "Renamed", "updated_at", h.api.devices["dev-a"].UpdatedAt.UTC().Format(time.RFC3339Nano))
+	rec = h.post("/clients/dev-a/description", "description", "Renamed", "updated_at", h.api.devices["dev-a"].UpdatedAt.UTC().Format(time.RFC3339Nano))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("rename: %d %s", rec.Code, rec.Body)
 	}
@@ -356,26 +374,26 @@ func TestDevicePageAndActions(t *testing.T) {
 		t.Fatal("rename did not reach the API")
 	}
 	// Stale If-Match → 412 explained, nothing changed.
-	rec = h.post("/devices/dev-a/description", "description", "Again", "updated_at", "2020-01-01T00:00:00Z")
+	rec = h.post("/clients/dev-a/description", "description", "Again", "updated_at", "2020-01-01T00:00:00Z")
 	mustContain(t, rec, "Changed by someone else since you opened this")
 	if h.api.devices["dev-a"].Description != "Renamed" {
 		t.Fatal("a refused rename changed the record")
 	}
 	// Purge needs the id typed.
-	rec = h.post("/devices/dev-a/purge", "confirm", "wrong")
-	mustContain(t, rec, "type the device id")
+	rec = h.post("/clients/dev-a/purge", "confirm", "wrong")
+	mustContain(t, rec, "type the client id")
 	if _, ok := h.api.devices["dev-a"]; !ok {
 		t.Fatal("purged without confirmation")
 	}
-	rec = h.post("/devices/dev-a/purge", "confirm", "dev-a")
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/devices" {
+	rec = h.post("/clients/dev-a/purge", "confirm", "dev-a")
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/clients?flash=") {
 		t.Fatalf("purge: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
 	if _, ok := h.api.devices["dev-a"]; ok {
 		t.Fatal("purge did not reach the API")
 	}
 	// Config: SSIDs one per line, pushed with the version.
-	rec = h.post("/devices/dev-b/config", "ssids", "Office\n Office-5G \n", "config_version", "0")
+	rec = h.post("/clients/dev-b/config", "ssids", "Office\n Office-5G \n", "config_version", "0")
 	if rec.Code != http.StatusSeeOther || !strings.Contains(h.api.lastBody, `["Office","Office-5G"]`) || h.api.lastIfMatch != "0" {
 		t.Fatalf("config: %d body %s if-match %q", rec.Code, h.api.lastBody, h.api.lastIfMatch)
 	}
@@ -388,14 +406,14 @@ func TestCSRFAndSessionExpiryReplay(t *testing.T) {
 	h := newHarness(t)
 	// Wrong CSRF token: refused, API untouched.
 	before := len(h.api.requests)
-	rec := h.do("POST", "/devices/dev-a/revoke", url.Values{"csrf": {"bogus"}}, nil)
+	rec := h.do("POST", "/clients/dev-a/revoke", url.Values{"csrf": {"bogus"}}, nil)
 	if rec.Code != http.StatusForbidden || len(h.api.requests) != before {
 		t.Fatalf("bad csrf: %d, api calls %d→%d", rec.Code, before, len(h.api.requests))
 	}
 	// Session expired mid-form: the form is stashed, login is shown, and
 	// the form is applied after login.
 	h.ui.cfg.Sessions.Logout(h.cookie.Value)
-	rec = h.do("POST", "/devices/dev-a/description", url.Values{"description": {"After expiry"}, "updated_at": {h.api.devices["dev-a"].UpdatedAt.UTC().Format(time.RFC3339Nano)}}, nil)
+	rec = h.do("POST", "/clients/dev-a/description", url.Values{"description": {"After expiry"}, "updated_at": {h.api.devices["dev-a"].UpdatedAt.UTC().Format(time.RFC3339Nano)}}, nil)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "session had expired") {
 		t.Fatalf("expired POST: %d", rec.Code)
 	}
@@ -420,32 +438,32 @@ func TestCSRFAndSessionExpiryReplay(t *testing.T) {
 
 func TestUnreachableServerBannerAndLastData(t *testing.T) {
 	h := newHarness(t)
-	if rec := h.get("/devices"); rec.Code != 200 {
+	if rec := h.get("/clients"); rec.Code != 200 {
 		t.Fatal("warm the cache")
 	}
 	h.api.down = true
-	rec := h.get("/devices")
+	rec := h.get("/clients")
 	if rec.Code != 200 {
 		t.Fatalf("fleet while down: %d", rec.Code)
 	}
 	mustContain(t, rec, "not answering", "last read at", "dev-a", "disabled")
-	if !strings.Contains(rec.Body.String(), `<button disabled>Add and show its code</button>`) {
+	if !strings.Contains(rec.Body.String(), `aria-disabled="true"`) {
 		t.Fatal("writes must be disabled while the server is down")
 	}
-	rec = h.post("/devices/dev-a/revoke")
+	rec = h.post("/clients/dev-a/revoke")
 	mustContain(t, rec, "not answering", "nothing was changed")
 	// A page never fetched shows the banner with no data.
 	rec = h.get("/calls")
 	mustContain(t, rec, "not answering")
 	h.api.down = false
-	if rec := h.get("/devices"); strings.Contains(rec.Body.String(), "not answering") {
+	if rec := h.get("/clients"); strings.Contains(rec.Body.String(), "not answering") {
 		t.Fatal("banner persisted after the server came back")
 	}
 }
 
 func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 	h := newHarness(t)
-	rec := h.get("/devices/dev-a/directory.csv")
+	rec := h.get("/clients/dev-a/directory.csv")
 	if rec.Code != 200 || rec.Header().Get("Content-Type") != "text/csv; charset=utf-8" {
 		t.Fatalf("download: %d %s", rec.Code, rec.Header().Get("Content-Type"))
 	}
@@ -459,7 +477,7 @@ func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 	fw, _ := mw.CreateFormFile("file", "dir.csv")
 	_, _ = fw.Write([]byte("display_name,uri,mode\nAlice,201,local\nDesk,sip:100@asterisk,trunk\n"))
 	mw.Close()
-	req := httptest.NewRequest("POST", "/devices/dev-a/directory/upload", &buf)
+	req := httptest.NewRequest("POST", "/clients/dev-a/directory/upload", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.AddCookie(h.cookie)
 	q := req.URL.Query()
@@ -471,7 +489,7 @@ func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 	fw, _ = mw.CreateFormFile("file", "dir.csv")
 	_, _ = fw.Write([]byte("display_name,uri,mode\nAlice,201,local\nDesk,sip:100@asterisk,trunk\n"))
 	mw.Close()
-	req = httptest.NewRequest("POST", "/devices/dev-a/directory/upload", &buf)
+	req = httptest.NewRequest("POST", "/clients/dev-a/directory/upload", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.AddCookie(h.cookie)
 	rec = httptest.NewRecorder()
@@ -487,7 +505,7 @@ func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 		t.Fatal("the preview applied something")
 	}
 	// Confirm applies against the version the preview saw.
-	rec = h.post("/devices/dev-a/directory/upload", "stage", "confirm", "directory_version", "5", "csv", "display_name,uri,mode\nAlice,201,local\n")
+	rec = h.post("/clients/dev-a/directory/upload", "stage", "confirm", "directory_version", "5", "csv", "display_name,uri,mode\nAlice,201,local\n")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("apply: %d %s", rec.Code, rec.Body)
 	}
@@ -495,13 +513,13 @@ func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 		t.Fatalf("apply: if-match %q body %s", h.api.lastIfMatch, h.api.lastBody)
 	}
 	// A stale confirm is refused and explained.
-	rec = h.post("/devices/dev-a/directory/upload", "stage", "confirm", "directory_version", "5", "csv", "display_name,uri,mode\nBob,202,local\n")
+	rec = h.post("/clients/dev-a/directory/upload", "stage", "confirm", "directory_version", "5", "csv", "display_name,uri,mode\nBob,202,local\n")
 	mustContain(t, rec, "Changed by someone else")
 }
 
 func TestCopyDirectoryReportsPerDevice(t *testing.T) {
 	h := newHarness(t)
-	rec := h.do("POST", "/devices/dev-a/directory/copy", url.Values{"targets": {"dev-b", "nope"}}, nil)
+	rec := h.do("POST", "/clients/dev-a/directory/copy", url.Values{"targets": {"dev-b", "nope"}}, nil)
 	if rec.Code != 200 {
 		t.Fatalf("copy: %d %s", rec.Code, rec.Body)
 	}
@@ -511,21 +529,38 @@ func TestCopyDirectoryReportsPerDevice(t *testing.T) {
 	}
 }
 
-func TestServerPageAndLogLevel(t *testing.T) {
+func TestServerAndDiagnosticsPages(t *testing.T) {
 	h := newHarness(t)
 	rec := h.get("/server")
 	if rec.Code != 200 {
 		t.Fatalf("server: %d", rec.Code)
 	}
-	mustContain(t, rec, "<h1>Server</h1>", "Recent events", "presence", "Logging")
-	rec = h.post("/server/log", "level", "debug")
+	mustContain(t, rec, "<h1>Server</h1>", "Identity", "<h2>Clients</h2>")
+	if strings.Contains(rec.Body.String(), "Fleet") || strings.Contains(rec.Body.String(), "Recent events") {
+		t.Fatal("the server page must not say Fleet nor carry the events (those are Diagnostics)")
+	}
+	rec = h.get("/diagnostics")
+	if rec.Code != 200 {
+		t.Fatalf("diagnostics: %d", rec.Code)
+	}
+	mustContain(t, rec, "<h1>Diagnostics</h1>", "Server logging", "Recent events", "presence", ">Matt<", "Files uploaded")
+	rec = h.post("/diagnostics/log", "level", "debug")
 	mustContain(t, rec, "for_seconds is required")
-	rec = h.post("/server/log", "level", "debug", "for_seconds", "600")
+	rec = h.post("/diagnostics/log", "level", "debug", "for_seconds", "600")
 	if rec.Code != http.StatusSeeOther || h.api.log.Level != "debug" {
 		t.Fatalf("set log: %d level %s", rec.Code, h.api.log.Level)
 	}
-	rec = h.post("/server/log", "level", "info", "for_seconds", "x")
+	rec = h.post("/diagnostics/log", "level", "info", "for_seconds", "x")
 	mustContain(t, rec, "whole number")
+	// The nav order is Server, Clients, Calls, Diagnostics.
+	body := h.get("/clients").Body.String()
+	i := strings.Index(body, ">Server</a>")
+	j := strings.Index(body, ">Clients</a>")
+	k := strings.Index(body, ">Calls</a>")
+	l := strings.Index(body, ">Diagnostics</a>")
+	if !(i > 0 && i < j && j < k && k < l) {
+		t.Fatalf("nav order: %d %d %d %d", i, j, k, l)
+	}
 }
 
 func TestCallsPageAndDiagDownload(t *testing.T) {
@@ -535,7 +570,7 @@ func TestCallsPageAndDiagDownload(t *testing.T) {
 	h.api.calls = []b2bua.CallView{{CallID: "c1", State: "bridged", Since: time.Now(), A: &b2bua.LegView{Leg: "app", User: "201"}, B: &b2bua.LegView{Leg: "trunk"}}}
 	rec = h.get("/calls")
 	mustContain(t, rec, "bridged", "trunk")
-	rec = h.get("/devices/dev-a/diag/20260925T085512.000Z-applog.log")
+	rec = h.get("/clients/dev-a/diag/20260925T085512.000Z-applog.log")
 	if rec.Code != 200 || rec.Body.String() != "log line\n" || rec.Header().Get("Content-Disposition") == "" {
 		t.Fatalf("diag download: %d %q", rec.Code, rec.Body.String())
 	}

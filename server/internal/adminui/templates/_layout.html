@@ -10,11 +10,12 @@
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/devices">Dialler</a>
+  <a class="brand" href="/clients">Dialler</a>
   {{if .CSRF}}<nav>
-    <a href="/devices" {{if eq .Nav "devices"}}class="on"{{end}}>Devices</a>
-    <a href="/calls" {{if eq .Nav "calls"}}class="on"{{end}}>Calls</a>
     <a href="/server" {{if eq .Nav "server"}}class="on"{{end}}>Server</a>
+    <a href="/clients" {{if eq .Nav "clients"}}class="on"{{end}}>Clients</a>
+    <a href="/calls" {{if eq .Nav "calls"}}class="on"{{end}}>Calls</a>
+    <a href="/diagnostics" {{if eq .Nav "diagnostics"}}class="on"{{end}}>Diagnostics</a>
   </nav>{{end}}
   <span class="spacer"></span>
   <div class="tools">

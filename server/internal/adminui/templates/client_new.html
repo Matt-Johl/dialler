@@ -1,0 +1,15 @@
+{{template "header" .}}
+<p class="crumb"><a href="/clients">Clients</a> ›</p>
+<h1>Add a client</h1>
+<p class="lede">A client is one phone. Give it the extension it answers to and a name people will recognise; the server picks its id.</p>
+<form method="post" action="/clients" class="stack narrow">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <label>Extension <input name="user" required autofocus pattern="[0-9A-Za-z._+-]{1,64}" placeholder="204" value="{{with .Data.Form}}{{index . "user"}}{{end}}"></label>
+  <label>Description <input name="description" maxlength="120" placeholder="Warehouse 3" value="{{with .Data.Form}}{{index . "description"}}{{end}}"></label>
+  <div class="actions-row">
+    <button>Add and show its enrolment code</button>
+    <a class="button quiet" href="/clients">Cancel</a>
+  </div>
+  <p class="hint">Next you will be shown a code and a QR to enrol the phone. It is valid for fifteen minutes and can be regenerated at any time.</p>
+</form>
+{{template "footer" .}}

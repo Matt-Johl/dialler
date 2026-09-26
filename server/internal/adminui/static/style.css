@@ -79,7 +79,7 @@ h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
 .card { padding: 20px 0; border-top: 1px solid var(--line); margin: 0; }
 .card.narrow { max-width: 560px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 0 40px; }
-.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 40px; }
 .danger-zone h2 { color: var(--bad); }
 
 /* ---- banners ---------------------------------------------------------------- */
@@ -208,3 +208,19 @@ ul.counts b { font-size: 20px; font-weight: 600; display: block; }
 }
 
 .mt { margin-top: 20px; }
+
+/* ---- layout helpers -------------------------------------------------------- */
+.titlebar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 0 0 12px; }
+.titlebar h1, .titlebar h2 { margin-bottom: 4px; }
+.titlebar .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--muted); font-size: 13px; }
+.stack { display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
+.stack.narrow { max-width: 420px; }
+.stack label input, .stack label textarea, .stack label select { width: 100%; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 40px; }
+.enrol { display: grid; grid-template-columns: 220px 1fr; gap: 32px; align-items: start; margin: 8px 0 20px; }
+.enrol ol { margin: 0 0 10px; padding-left: 20px; }
+.enrol li { margin: 0 0 6px; }
+.enrol .bigcode { margin: 6px 0 12px; }
+.enrol .qr svg { width: 200px; height: 200px; }
+.mt { margin-top: 20px; }
+@media (max-width: 760px) { .grid-3 { grid-template-columns: 1fr; } .enrol { grid-template-columns: 1fr; } .titlebar { flex-direction: column; } }

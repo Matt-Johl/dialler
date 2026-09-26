@@ -39,10 +39,10 @@ func (u *UI) addContact(w http.ResponseWriter, r *http.Request) {
 	}
 	form := map[string]string{"display_name": c.DisplayName, "uri": r.FormValue("uri"), "mode": string(c.Mode)}
 	if _, err := u.cfg.Client.AddContact(ctx, id, c, r.FormValue("directory_version")); err != nil {
-		u.renderDevice(w, r, id, "", describe(err), form, nil)
+		u.renderClient(w, r, id, "", describe(err), form)
 		return
 	}
-	u.redirectDevice(w, r, id, "Contact added and pushed to the phone.")
+	u.redirectClient(w, r, id, "Contact added and pushed to the phone.")
 }
 
 // editContact is save, delete, or a favourite toggle on one contact,
@@ -55,10 +55,10 @@ func (u *UI) editContact(w http.ResponseWriter, r *http.Request) {
 	switch r.FormValue("action") {
 	case "delete":
 		if err := u.cfg.Client.DeleteContact(ctx, id, cid, ifMatch); err != nil {
-			u.renderDevice(w, r, id, "", describe(err), nil, nil)
+			u.renderClient(w, r, id, "", describe(err), nil)
 			return
 		}
-		u.redirectDevice(w, r, id, "Contact deleted.")
+		u.redirectClient(w, r, id, "Contact deleted.")
 	case "star", "unstar", "save":
 		sv, _ := u.cfg.Client.Server(ctx)
 		c := directory.Contact{
@@ -75,12 +75,12 @@ func (u *UI) editContact(w http.ResponseWriter, r *http.Request) {
 			c.Favourite = false
 		}
 		if _, err := u.cfg.Client.UpdateContact(ctx, id, c, ifMatch); err != nil {
-			u.renderDevice(w, r, id, "", describe(err), nil, nil)
+			u.renderClient(w, r, id, "", describe(err), nil)
 			return
 		}
-		u.redirectDevice(w, r, id, "Contact saved.")
+		u.redirectClient(w, r, id, "Contact saved.")
 	default:
-		u.renderDevice(w, r, id, "", "unknown action", nil, nil)
+		u.renderClient(w, r, id, "", "unknown action", nil)
 	}
 }
 
@@ -126,25 +126,25 @@ func (u *UI) uploadCSV(w http.ResponseWriter, r *http.Request) {
 	} else {
 		f, _, err := r.FormFile("file")
 		if err != nil {
-			u.renderDevice(w, r, id, "", "Choose a CSV file to upload.", nil, nil)
+			u.renderClient(w, r, id, "", "Choose a CSV file to upload.", nil)
 			return
 		}
 		defer f.Close()
 		raw, err := io.ReadAll(io.LimitReader(f, MaxCSVBytes+1))
 		if err != nil || len(raw) > MaxCSVBytes {
-			u.renderDevice(w, r, id, "", "The file could not be read or is over 4 MiB.", nil, nil)
+			u.renderClient(w, r, id, "", "The file could not be read or is over 4 MiB.", nil)
 			return
 		}
 		text = string(raw)
 	}
 	sv, err := u.cfg.Client.Server(ctx)
 	if err != nil {
-		u.renderDevice(w, r, id, "", describe(err), nil, nil)
+		u.renderClient(w, r, id, "", describe(err), nil)
 		return
 	}
 	contacts, err := ReadCSV(strings.NewReader(text))
 	if err != nil {
-		u.renderDevice(w, r, id, "", "CSV: "+err.Error(), nil, nil)
+		u.renderClient(w, r, id, "", "CSV: "+err.Error(), nil)
 		return
 	}
 	for i := range contacts {
@@ -153,19 +153,19 @@ func (u *UI) uploadCSV(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("stage") == "confirm" {
 		res, err := u.cfg.Client.ReplaceDirectory(ctx, id, contacts, r.FormValue("directory_version"), false)
 		if err != nil {
-			u.renderDevice(w, r, id, "", describe(err), nil, nil)
+			u.renderClient(w, r, id, "", describe(err), nil)
 			return
 		}
-		u.redirectDevice(w, r, id, fmt.Sprintf("Directory replaced: %d added, %d changed, %d removed (version %d).", res.Added, res.Changed, res.Removed, res.Version))
+		u.redirectClient(w, r, id, fmt.Sprintf("Directory replaced: %d added, %d changed, %d removed (version %d).", res.Added, res.Changed, res.Removed, res.Version))
 		return
 	}
 	res, err := u.cfg.Client.ReplaceDirectory(ctx, id, contacts, "", true)
 	if err != nil {
-		u.renderDevice(w, r, id, "", describe(err), nil, nil)
+		u.renderClient(w, r, id, "", describe(err), nil)
 		return
 	}
 	dev, _ := u.cfg.Client.Device(ctx, id)
-	u.render(w, "upload.html", page{Title: "Upload directory", Nav: "devices", CSRF: csrf(r), Data: uploadData{
+	u.render(w, "upload.html", page{Title: "Upload directory", Nav: "clients", CSRF: csrf(r), Data: uploadData{
 		DeviceID: id, Device: dev.User + " · " + dev.Description, Result: res, Version: res.Version, CSV: text, Count: len(contacts),
 	}})
 }
@@ -192,12 +192,12 @@ func (u *UI) copyDirectory(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	targets := r.Form["targets"]
 	if len(targets) == 0 {
-		u.renderDevice(w, r, id, "", "Choose at least one device to copy to.", nil, nil)
+		u.renderClient(w, r, id, "", "Choose at least one client to copy to.", nil)
 		return
 	}
 	src, err := u.cfg.Client.Directory(ctx, id)
 	if err != nil {
-		u.renderDevice(w, r, id, "", describe(err), nil, nil)
+		u.renderClient(w, r, id, "", describe(err), nil)
 		return
 	}
 	contacts := make([]directory.Contact, 0, len(src.Contacts))
@@ -222,7 +222,7 @@ func (u *UI) copyDirectory(w http.ResponseWriter, r *http.Request) {
 		}
 		d.Results = append(d.Results, res)
 	}
-	u.render(w, "copy.html", page{Title: "Copy directory", Nav: "devices", CSRF: csrf(r), Data: d})
+	u.render(w, "copy.html", page{Title: "Copy directory", Nav: "clients", CSRF: csrf(r), Data: d})
 }
 
 func copyBody(w http.ResponseWriter, resp *http.Response) {

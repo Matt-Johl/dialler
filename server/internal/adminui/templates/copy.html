@@ -1,17 +1,17 @@
 {{template "header" .}}
 {{with .Data}}
-<p class="crumb"><a href="/devices">Devices</a> › <a href="/devices/{{.DeviceID}}">device</a> ›</p>
+<p class="crumb"><a href="/clients">Clients</a> › <a href="/clients/{{.DeviceID}}">device</a> ›</p>
 <h1>Copy directory: results</h1>
 <section class="card narrow">
   <table>
     <thead><tr><th>Ext</th><th>Device</th><th>Result</th></tr></thead>
     <tbody>
-    {{range .Results}}<tr><td>{{.User}}</td><td><a href="/devices/{{.DeviceID}}" class="mono small">{{.DeviceID}}</a></td>
+    {{range .Results}}<tr><td>{{.User}}</td><td><a href="/clients/{{.DeviceID}}" class="mono small">{{.DeviceID}}</a></td>
       <td>{{if .Err}}<span class="bad">failed: {{.Err}}</span>{{else}}{{.Result.Added}} added, {{.Result.Changed}} changed, {{.Result.Removed}} removed (version {{.Result.Version}}){{end}}</td></tr>{{end}}
     </tbody>
   </table>
   <p class="hint">Each device was done in turn; a failure did not stop the others and nothing is rolled back.</p>
-  <a class="button" href="/devices/{{.DeviceID}}">Back to the device</a>
+  <a class="button" href="/clients/{{.DeviceID}}">Back to the device</a>
 </section>
 {{end}}
 {{template "footer" .}}

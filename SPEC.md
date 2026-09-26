@@ -1597,8 +1597,11 @@ on by config — see §7.4.
      does not answer, with the last read and its time; If-Match on every
      edit and a 412 explained; copy-to as one request per device with a
      per-device result; CSV previewed through the dry run then one
-     replace-all). Pages: **Fleet** (the name, by decision), **Device**,
-     **Calls**, **Server**. `make admin`, `make dev-admin`. Tests drive
+     replace-all). Pages, in this order: **Server**, **Clients** (the
+     name, by decision, for what the API calls devices), **Calls**,
+     **Diagnostics** (server logging, the files phones uploaded, recent
+     events). Adding a client is its own page, and enrolment its own
+     page: the QR, the code and three steps, shown once. `make admin`, `make dev-admin`. Tests drive
      the UI over an in-memory fake of the API; `make harness-admin-ui`
      runs the real binary against the real server in compose, driven
      with curl, and is in `harness-regression`. Decided in the building:

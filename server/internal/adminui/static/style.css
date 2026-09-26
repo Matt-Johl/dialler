@@ -189,12 +189,14 @@ details summary { cursor: pointer; color: var(--ink-2); padding: 8px 0 4px; }
 .device-head .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; color: var(--muted); font-size: 13px; }
 
 /* ---- login ------------------------------------------------------------------------ */
-.login { max-width: 320px; margin: 80px auto 0; }
+.login { max-width: 320px; margin: 96px auto 0; text-align: center; }
 .login .card { border-top: 0; padding-top: 0; }
-.login .brand { font-size: 16px; }
-.login .lede { margin-bottom: 18px; }
-.login input { width: 100%; }
-.login button { width: 100%; justify-content: center; margin-top: 8px; }
+.login .mark svg { width: 72px; height: 72px; fill: currentColor; display: block; margin: 0 auto 14px; }
+.login h1 { font-size: 22px; margin: 0 0 28px; }
+.login form { text-align: left; }
+.login label { margin-bottom: 12px; }
+.login input { width: 100%; padding: 9px 11px; font-size: 15px; }
+.login button { width: 100%; justify-content: center; margin-top: 6px; padding: 9px; }
 
 /* ---- calls & events ------------------------------------------------------------------ */
 table.events td:first-child, table.calls td:first-child { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }

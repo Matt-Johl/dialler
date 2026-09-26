@@ -153,6 +153,39 @@ a wrong credential that must latch refused. Asterisk stands in for CUCM —
 what it can and cannot prove is in SPEC §6 item 3c, and the CUCM-only
 checklist is §7.3 item 10.
 
+## The admin UI: dialler-admin
+
+`dialler-admin` is the operator's web UI (SPEC §6 item 9c), a second
+binary that talks only to the call server's admin API on 8081 and to
+nothing else. It holds the admin token and one operator password, serves
+HTTPS on its own certificate, and keeps no state the API cannot re-read,
+so it can be restarted or redeployed with no effect on a call.
+
+```sh
+make dev-admin            # beside `make dev-server`; sign in as admin, password "dialler" (data/admin/password)
+open https://127.0.0.1:8443
+```
+
+Pages: **Fleet** (every device with its live state, and where a device is
+added and shown its enrolment code and QR), **Device** (description,
+enrolment, Wi-Fi networks, PBX line, the directory with inline edit, CSV
+download and upload with a preview, copy to other devices, diagnostics,
+purge), **Calls** (what is bridged right now) and **Server** (identity,
+certificate expiry, trunk and lines, logging, recent events).
+
+Production flags: `-listen`, `-server https://127.0.0.1:8081`,
+`-admin-token-file` (the same file `dialler-server` was started with),
+`-server-ca` (the call server's certificate; `-insecure` only against the
+self-signed dev one), `-password-file`, `-tls-cert`/`-tls-key` (self-signed
+and kept in `-data-dir` when absent). Every form carries the version it
+was loaded with; an edit that lands on something changed since is refused
+with a message rather than overwriting it. When the call server is not
+answering, every page says so and disables every write.
+
+The QR is drawn by `internal/qr`, an in-tree encoder (byte mode, level M,
+versions 1–10) whose output was checked against an independent decoder;
+there is nothing to download and the binary stays standard library only.
+
 ## Server packages
 
 ```

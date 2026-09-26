@@ -1,0 +1,46 @@
+{{template "header" .}}
+<h1>Server</h1>
+{{with .Data}}
+<div class="grid-2">
+<section class="card">
+  <h2>Identity</h2>
+  <dl>
+    <dt>Version</dt><dd>{{.Server.Version}} ({{.Server.Go}})</dd>
+    <dt>Up since</dt><dd>{{when .Server.StartedAt}} ({{seconds .Server.UptimeSeconds}})</dd>
+    <dt>Mode</dt><dd>{{.Server.Mode}}</dd>
+    <dt>Public host</dt><dd>{{.Server.PublicHost}} · SIP domain {{.Server.LocalDomain}}</dd>
+    <dt>Listeners</dt><dd class="mono">signal {{.Server.Listeners.Signal}} · sip {{.Server.Listeners.SIP}} · device api {{.Server.Listeners.HTTP}} · admin api {{.Server.Listeners.Admin}}{{if .Server.Listeners.Trunk}} · trunk {{.Server.Listeners.Trunk}}{{end}}</dd>
+    <dt>Certificate</dt><dd>{{.Server.TLS.Subject}}{{if .Server.TLS.SelfSigned}} (self-signed){{end}}<br>expires <strong>{{when .Server.TLS.NotAfter}}</strong><br><span class="mono">{{.Server.TLS.FingerprintSHA256}}</span><span class="sub-line">Every phone pins this certificate; replacing it means re-enrolling every phone.</span></dd>
+    <dt>Ring / peer timeout</dt><dd>{{.Server.RingTimeout}} s / {{.Server.PeerTimeout}} s</dd>
+    <dt>Media ports</dt><dd>{{.Server.RTP.Min}}–{{.Server.RTP.Max}} UDP</dd>
+    <dt>Data</dt><dd class="mono">{{.Server.DataDir}} · diagnostics kept {{seconds .Server.DiagRetain}}</dd>
+  </dl>
+</section>
+
+<section class="card">
+  <h2>Clients</h2>
+  <dl>
+    <dt>Clients</dt><dd>{{.Server.Counts.Devices}} ({{.Server.Counts.Enrolled}} enrolled, {{.Server.Counts.Revoked}} revoked)</dd>
+    <dt>Online</dt><dd>{{.Server.Counts.AppOnline}} apps, {{.Server.Counts.ExtensionOnline}} wake extensions</dd>
+    <dt>SIP registered</dt><dd>{{.Server.Counts.SIPRegistered}}</dd>
+    {{if eq .Server.Mode "lines"}}<dt>PBX lines</dt><dd>{{.Server.Counts.LinesRegistered}} registered{{if .Server.Counts.LinesFailed}}, <strong>{{.Server.Counts.LinesFailed}} failing</strong>{{end}}</dd>{{end}}
+    <dt>Calls</dt><dd><a href="/calls">{{.Server.Counts.Calls}}</a></dd>
+    <dt>Admin API</dt><dd>{{.Server.Admin.InFlight}} in flight · refused {{.Server.Admin.RejectedRate}} by rate, {{.Server.Admin.RejectedBusy}} as busy · {{.Server.Admin.EventsDropped}} events dropped</dd>
+  </dl>
+  {{with .Server.Trunk}}
+  <h2 class="mt">Trunk</h2>
+  <dl>
+    <dt>PBX</dt><dd class="mono">{{.URI}}</dd>
+    <dt>State</dt><dd><span class="chip {{if eq .Qualify "up"}}ok{{else if eq .Qualify "down"}}bad{{end}}">{{.Qualify}}</span>{{if .QualifySince.IsZero}}{{else}} since {{when .QualifySince}}{{end}}{{if .QualifyLastError}} · {{.QualifyLastError}}{{end}}</dd>
+    <dt>Media</dt><dd>SRTP {{.SRTP}} · codecs {{join .Codecs ", "}}</dd>
+    <dt>TLS</dt><dd>{{if eq .Transport "tls"}}min {{.TLS.MinVersion}}{{if .TLS.Insecure}} · <strong>certificate not verified</strong>{{end}}{{if not .TLS.CertSet}} · no certificate: inbound calls cannot complete{{end}}{{else}}not TLS ({{.Transport}}){{end}}</dd>
+  </dl>
+  {{end}}
+  {{with .Server.PBX}}
+  <h2 class="mt">Lines</h2>
+  <dl><dt>Registrar</dt><dd>{{.Registrar}} · domain {{.Domain}} · expiry {{seconds .RegisterExpirySeconds}}{{if .DefaultLine}} · default line {{.DefaultLine}}{{end}}</dd></dl>
+  {{end}}
+</section>
+</div>
+{{end}}
+{{template "footer" .}}

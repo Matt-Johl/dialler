@@ -1,0 +1,24 @@
+{{template "header" .}}
+<h1>Calls</h1>
+<section class="card">
+<table class="calls">
+  <thead><tr><th>Since</th><th>State</th><th>A</th><th>B</th><th>Codec</th><th>Relay A→B</th><th>Relay B→A</th></tr></thead>
+  <tbody>
+  {{range .Data}}
+  <tr>
+    <td>{{when .Since}} ({{since .Since}})</td>
+    <td>{{.State}}{{if .HeldBy}} by {{.HeldBy}}{{end}}</td>
+    <td>{{with .A}}{{.Party.DisplayName}} <span class="mono small">{{.Party.URI}}</span> <small>{{.Leg}}{{if .SRTP}} · SRTP{{end}}</small>{{end}}</td>
+    <td>{{with .B}}{{.Party.DisplayName}} <span class="mono small">{{.Party.URI}}</span> <small>{{.Leg}}{{if .SRTP}} · SRTP{{end}}</small>{{end}}</td>
+    <td>{{with .A}}{{.Codec}}{{end}}{{with .B}} / {{.Codec}}{{end}}</td>
+    <td class="small">{{with .Stats}}{{.AToB.Packets}} pkts, {{.AToB.Lost}} lost, jitter {{printf "%.1f" .AToB.JitterMs}} ms{{end}}</td>
+    <td class="small">{{with .Stats}}{{.BToA.Packets}} pkts, {{.BToA.Lost}} lost, jitter {{printf "%.1f" .BToA.JitterMs}} ms{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="7">No calls in progress.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<p class="hint">Read-only, refreshed on load; the server rebuilds this view at most once a second.</p>
+</section>
+{{template "footer" .}}

@@ -113,6 +113,26 @@ leg). Encrypting the leg to the exchange is unscheduled — see SPEC §6
 one shared connection is the right shape for it. `TRUNK_TLS` and
 `TRUNK_SRTP` configure the trunk and are refused alongside `LINES=1`.
 
+### Test lines 301–310
+
+`pjsip-lines.conf` also carries ten spare lines, 301 to 310, for trying the
+admin UI's add and delete: create a client with one of those extensions,
+give it the line (digest user `line301`, secret `dialler-line-301`, and so
+on), watch it register on the Clients page, purge the client, watch the
+line drop. Nothing on the dialler side needs to exist for them in advance.
+
+To put them on the box after this change, re-run the installer, which
+copies the file and reloads:
+
+```sh
+scp -r harness/asterisk-native ubuntu-box:~/
+ssh ubuntu-box 'sudo LINES=1 sh asterisk-native/install-ubuntu.sh'
+# or, for a running box: sudo cp ~/asterisk-native/pjsip-lines.conf /etc/asterisk/pjsip.conf
+#                        sudo cp ~/asterisk-native/extensions-lines.conf /etc/asterisk/extensions.conf
+#                        sudo asterisk -rx 'core reload'
+ssh ubuntu-box "sudo asterisk -rx 'pjsip show endpoints' | grep -c '^ Endpoint:  3'"   # 10
+```
+
 ## Transfers
 
 When the app transfers a PBX phone to another PBX extension (say 101 is

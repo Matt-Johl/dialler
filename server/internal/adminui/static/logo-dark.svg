@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Dialler">
+  <g fill="#ffffff">
+<g transform="translate(512 512) rotate(-45)">
+  <rect x="-500" y="-35" width="1000" height="70"/>
+  <rect x="-450" y="-140" width="340" height="70"/>
+  <rect x="-390" y="-245" width="200" height="70"/>
+  <rect x="110" y="70" width="340" height="70"/>
+  <rect x="190" y="175" width="200" height="70"/>
+</g>
+  </g>
+</svg>

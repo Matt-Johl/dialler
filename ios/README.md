@@ -275,8 +275,8 @@ after REGISTER and INVITE and therefore after activation.
    Once enrolled the Status page has no tab: press and hold the
    **Settings** title for five seconds and it is pushed; Back or any
    tab-bar tap closes it. It shows `connected`, and the directory tab
-   fills from `/v1/directory`. Settings › **Re-enrol this device** clears
-   the credential and returns to setup.
+   fills from `/v1/directory`. Settings › **Log out** clears the
+   credential, removes the Local Push configuration and returns to setup.
 4. Ring it: `make harness-ring-sim` makes the harness phone 202 dial 201.
    Nothing else holds 201's registration, so the server wakes `dev-a`, the
    app, over its socket and the simulator shows the CallKit incoming-call
@@ -286,8 +286,7 @@ after REGISTER and INVITE and therefore after activation.
 
 `make ios-test` runs the package tests; `make ios-typecheck` compiles the
 packages for the simulator and type-checks the app and extension sources
-without Xcode's package resolution (both pass as of 2026-09-05);
-`make ios-build` is the Xcode build.
+without Xcode's package resolution; `make ios-build` is the Xcode build.
 
 ## Running on a real device
 
@@ -317,12 +316,15 @@ Not available in the simulator.
 `swift test` in these packages needs `--disable-sandbox` and redirected module
 caches — `make` now sets `SWIFTPM_MODULECACHE_OVERRIDE` and
 `CLANG_MODULE_CACHE_PATH` itself, because without them even a package
-*manifest* will not compile. Since the Xcode that ships Swift 6.4,
-`make ios-typecheck` also cannot expand SwiftUI macros in the sandbox: the
-`swift-plugin-server` returns a malformed response, so any view using
-`@State` reports that and a cascade of "cannot find '$binding'". Non-view
-sources still typecheck, and the real gate is `make ios-build`
-(`xcodebuild`); an Xcode update also changes SwiftPM's scratch layout, which
+*manifest* will not compile. For the same reason `make ios-typecheck` passes
+`-Xfrontend -disable-sandbox`: swiftc runs macro plugins (SwiftUI's `@State`)
+in `swift-plugin-server` under its own `sandbox-exec`, and a nested sandbox
+is refused, which surfaced as "produced malformed response" on every macro
+use and a cascade of "cannot find '$binding'" (2026-09-16 to 2026-09-26,
+during which the check could not pass on the app sources). The real gate is
+still `make ios-build` (`xcodebuild`), which the sandbox cannot run: its
+package resolution hits the same refusal. An Xcode update also changes
+SwiftPM's scratch layout, which
 is why the module search paths in the Makefile list several. `xcodebuild` additionally needs the
 `CLANG_MODULE_CACHE_PATH` / `SWIFTPM_MODULECACHE_OVERRIDE` environment and a
 `-derivedDataPath` under `~/Library/Developer`.

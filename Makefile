@@ -23,6 +23,23 @@ server:
 run: server
 	./bin/dialler-server -data-dir ./data -admin-token dev
 
+# dialler-admin, the operator's web UI (SPEC §6 item 9c): a second binary
+# that talks only to the call server's admin API on 8081.
+admin:
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
+
+# Dev run beside `make dev-server` (token "harness") or `make run` (token
+# "dev": ADMIN_TOKEN=dev make dev-admin). Sign in as "admin"; the password lives in
+# data/admin/password, created as "dialler" on first run; the UI serves
+# https://127.0.0.1:8443 on a self-signed certificate kept in data/admin.
+ADMIN_TOKEN ?= harness
+dev-admin: admin
+	@mkdir -p data/admin
+	@test -f data/admin/password || { printf 'dialler\n' > data/admin/password; echo "created data/admin/password (password: dialler)"; }
+	@grep -q '^pbkdf2' data/admin/password && { echo "data/admin/password is a hash from the old UI; dialler-admin reads the plain password. Replace it: printf 'dialler\\n' > data/admin/password"; exit 1; } || true
+	./bin/dialler-admin -listen 127.0.0.1:8443 -server https://127.0.0.1:8081 -admin-token $(ADMIN_TOKEN) -insecure \
+	  -password-file data/admin/password -data-dir data/admin
+
 tone:
 	python3 harness/baresip/media/gen_tone.py
 
@@ -156,6 +173,11 @@ harness-pbx-lines:
 harness-admin:
 	sh harness/admin_test.sh
 
+# dialler-admin end to end: the real UI against the real server, driven
+# with curl inside the compose network (SPEC §6 item 9c).
+harness-admin-ui:
+	sh harness/admin_ui_test.sh
+
 harness-regression:
 	@set -e; \
 	echo "=== harness-test (SIPp conformance; needs the stack up, unlike the rest)"; \
@@ -165,7 +187,7 @@ harness-regression:
 	for t in harness-call harness-wake harness-qos \
 	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
 	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
-	         harness-hold-music harness-cancel-before-answer harness-admin; do \
+	         harness-hold-music harness-cancel-before-answer harness-admin harness-admin-ui; do \
 	  echo "=== $$t"; $(MAKE) $$t || { echo "REGRESSION FAILED: $$t"; exit 1; }; \
 	done; \
 	echo "=== NARROWBAND=1 harness-trunk"; NARROWBAND=1 sh harness/trunk_test.sh || exit 1; \
@@ -286,11 +308,15 @@ ios-test:
 # Compile the packages for the simulator and type-check the app + extension
 # sources against the iOS SDK without Xcode's package resolution. Useful in
 # restricted sandboxes; the real build is `xcodebuild -scheme Dialler`.
+# `-disable-sandbox`: swiftc runs macro plugins (SwiftUI's @State etc.) in
+# swift-plugin-server under its own sandbox-exec, and a nested sandbox is
+# refused inside a restricted shell, which reads as "produced malformed
+# response" on every macro use.
 ios-typecheck:
 	cd ios/DiallerEngine && $(SWIFT_CACHE_ENV) swift build --disable-sandbox --scratch-path "$(IOS_SCRATCH)" --triple $(IOS_TRIPLE) --sdk "$(IOS_SDK)" --target DiallerEngine 2>&1 | grep -vE 'Wincomplete-umbrella|Wvisibility' || true
-	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
+	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -Xfrontend -disable-sandbox -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
 	  $(IOS_MODULE_PATHS) App/*.swift
-	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
+	cd ios/Dialler && $(SWIFT_CACHE_ENV) swiftc -typecheck -Xfrontend -disable-sandbox -parse-as-library -swift-version 5 -target $(IOS_TRIPLE) -sdk "$(IOS_SDK)" -module-cache-path "$${TMPDIR:-/tmp}/swift-modcache" \
 	  $(IOS_MODULE_PATHS) PushProvider/*.swift
 
 # Cross-compile libre/baresip/Opus/OpenSSL for iOS device, simulator and macOS

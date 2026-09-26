@@ -1176,8 +1176,9 @@ on by config — see §7.4.
      `EnrolmentClient.claim(host:port:code:)` (DiallerCore, testable), then
      `AppConfig` is saved (token in the keychain, as now) and the app
      connects. `onOpenURL` takes a `dialler://enrol…` link from the iOS
-     Camera app down the same path. Settings gains **Re-enrol this
-     device**, which wipes the credential and returns to onboarding.
+     Camera app down the same path. Settings gains **Log out**, which
+     wipes the credential, removes the Local Push configuration and
+     returns to onboarding.
      *Status (decided 2026-09-21, replacing an earlier keypad gesture):*
      the tab is removed. The Status page is reached by a **five-second
      press on the Settings title** at the top of the Settings tab, which
@@ -1190,7 +1191,7 @@ on by config — see §7.4.
      host, port, device id and token entered directly, and
      accept-any-certificate — leave Settings for this page too, and
      Settings keeps only what a user should see: server address and
-     device id (read-only), call waiting, Local Push SSIDs, re-enrol,
+     device id (read-only), call waiting, Local Push SSIDs, log out,
      and the version and acknowledgements screen of item 4. Until then
      Settings keeps its fields, since they are the only way in.
      *Dev path:* `make dev-server` and `harness/provision.sh` print an
@@ -1219,8 +1220,9 @@ on by config — see §7.4.
      overrides the dev toggle on the signal socket and every HTTPS
      session (`CertificatePin`, `EndpointTrust`); the manual path trusts
      the first connection and refuses to continue if the certificate it
-     saw is not the one the reply names. Re-enrol clears the credential
-     and the directory book. **Not done, and worth knowing:** the SIP
+     saw is not the one the reply names. Log out clears the credential,
+     the directory book and the Local Push configuration. **Not done,
+     and worth knowing:** the SIP
      leg still accepts any certificate (`BaresipCallEngine` passes
      `acceptAnyCertificate: true` to the stack); pinning there means
      handing baresip the fingerprint or a CA file (`sip_cafile` /
@@ -1280,7 +1282,7 @@ on by config — see §7.4.
      start, which re-issued dev-a's fixed token over it. `provision.sh`
      now leaves an enrolled dev-a's credential alone and only mints it a
      fresh code; the fixed token is issued only into a fresh data
-     directory. Settings › Re-enrol (not a reinstall) is the recovery for
+     directory. Settings › Log out (not a reinstall) is the recovery for
      a phone whose credential the server no longer holds.
 
   *Item 9 split into 9a/9b/9c on 2026-09-23.* It was one item covering a
@@ -1583,6 +1585,35 @@ on by config — see §7.4.
      fallback is a vendored single-file JavaScript encoder (a one-off
      download outside the sandbox). **Independent of 9a and 9b — start it
      whenever.**
+     *Built 2026-09-25 (branch `feature/admin-ui`, awaiting approval):*
+     `internal/qr` first — byte mode, level M, versions 1–10, all eight
+     masks scored by the standard's rules — checked by unit vectors, by an
+     independent decoder in its own tests run on every length 0–213, and
+     by a one-off oracle: fifteen codes through zbar in Docker, every one
+     decoded byte-exact; those matrices are the goldens. The fallback was
+     not needed. Then `dialler-admin` as specified: the typed client over
+     the server's own types, one password, a twelve-hour session refreshed
+     on use, CSRF on every form, and the contract's §9 answers built in
+     (a form submitted on an expired session is stashed and applied after
+     the re-login; one banner and every write disabled when the server
+     does not answer, with the last read and its time; If-Match on every
+     edit and a 412 explained; copy-to as one request per device with a
+     per-device result; CSV previewed through the dry run then one
+     replace-all). Pages, in this order: **Server**, **Clients** (the
+     name, by decision, for what the API calls devices), **Calls**,
+     **Diagnostics** (server logging, the files phones uploaded, recent
+     events). Adding a client is its own page, and enrolment its own
+     page: the QR, the code and three steps, shown once. `make admin`, `make dev-admin`. Tests drive
+     the UI over an in-memory fake of the API; `make harness-admin-ui`
+     runs the real binary against the real server in compose, driven
+     with curl, and is in `harness-regression`. Decided in the building:
+     bare numbers in a CSV or the add-contact form get the server's SIP
+     domain in the UI (the store does not normalise them); an uploaded
+     file cannot ride a stashed form, so after a re-login the operator
+     re-attaches it; the enrolment code and QR are shown once, on the
+     page that minted them, and never stored. *Not yet done:* one scan of
+     a real code on a phone camera (Matt offered; sample PNGs are in
+     `data/qr-samples/`), and a look at the pages in a browser.
      *Isolation:* the rule of §4.8 applies in full — every admin action
      touches one device's entry and one device's file, notifies one
      device, and never restarts, reloads or re-binds anything. `make

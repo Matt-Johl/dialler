@@ -1,0 +1,34 @@
+{{template "header" .}}
+<div class="titlebar">
+  <h1>Clients</h1>
+  <a class="button" href="/clients/new" {{if .ReadOnly}}aria-disabled="true"{{end}}>Add a client</a>
+</div>
+{{with .Data}}
+<p class="stats">
+  <span><b>{{index .Counts "clients"}}</b> clients</span>
+  <span><b>{{index .Counts "online"}}</b> online</span>
+  <span><b>{{index .Counts "registered"}}</b> registered</span>
+  <span><b>{{index .Counts "calls"}}</b> on a call</span>
+  {{if index .Counts "revoked"}}<span><b>{{index .Counts "revoked"}}</b> revoked</span>{{end}}
+  {{if .Trunk.Trunk.Configured}}<span class="status {{if eq .Trunk.Trunk.Qualify "down"}}bad{{else if eq .Trunk.Trunk.Qualify "off"}}faint{{end}}"><i class="dot"></i> trunk {{.Trunk.Trunk.Qualify}}{{if .Trunk.Trunk.LastError}} · {{.Trunk.Trunk.LastError}}{{end}}</span>{{end}}
+</p>
+
+<table class="clients">
+  <thead><tr><th>Ext</th><th>Client</th><th>Phone</th><th>SIP</th><th>PBX line</th><th>State</th></tr></thead>
+  <tbody>
+  {{range .Rows}}
+  <tr class="{{if .Revoked}}revoked{{end}}">
+    <td class="name"><a href="/clients/{{.DeviceID}}">{{.User}}</a></td>
+    <td><a href="/clients/{{.DeviceID}}">{{.Description}}</a><span class="sub-line mono">{{.DeviceID}}</span></td>
+    <td>{{with index .Sessions "app"}}<span class="status"><i class="dot"></i> App{{if .AppVersion}} {{.AppVersion}}{{end}}</span>{{else}}{{with index .Sessions "extension"}}<span class="status warn"><i class="dot"></i> Wake only</span>{{else}}<span class="status off"><i class="dot"></i> Offline</span>{{end}}{{end}}</td>
+    <td>{{with .SIP}}<span class="status"><i class="dot"></i> Registered</span>{{else}}<span class="status off"><i class="dot"></i> —</span>{{end}}</td>
+    <td>{{if .Line}}<span class="chip {{if eq .Line.State "registered"}}ok{{else if eq .Line.State "refused"}}bad{{else}}warn{{end}}">{{.Line.State}}</span>{{else if .HasLine}}<span class="chip" title="a line is configured but the server is not registering it: trunk mode, or the client is revoked">stored</span>{{else}}<span class="sub">—</span>{{end}}</td>
+    <td>{{if .Revoked}}<span class="chip bad">Revoked</span>{{if .CodePending}}<span class="sub-line">code valid until {{clock .CodeExpiresAt}}</span>{{end}}{{else if .Call}}<span class="status call"><i class="dot"></i> On a call · {{since .Call.Since}}</span>{{else if not .Enrolled}}<span class="chip warn">Not enrolled</span>{{if .CodePending}}<span class="sub-line">code valid until {{clock .CodeExpiresAt}}</span>{{end}}{{else}}<span class="chip ok">Enrolled</span>{{if .CodePending}}<span class="sub-line">new code valid until {{clock .CodeExpiresAt}}</span>{{end}}{{end}}</td>
+  </tr>
+  {{else}}
+  <tr><td colspan="6" class="empty">No clients yet. <a href="/clients/new">Add the first one.</a></td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{template "footer" .}}

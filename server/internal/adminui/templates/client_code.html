@@ -1,0 +1,30 @@
+{{template "header" .}}
+{{with .Data}}
+<p class="crumb"><a href="/clients">Clients</a> › <a href="/clients/{{.Device.DeviceID}}">{{if .Device.Description}}{{.Device.Description}}{{else}}Ext {{.Device.User}}{{end}}</a> ›</p>
+<h1>Enrol {{if .Device.Description}}{{.Device.Description}}{{else}}the phone{{end}} <small>Ext {{.Device.User}}</small></h1>
+{{if .Code}}
+<div class="enrol">
+  <div class="enrol-qr">{{if .QR}}<div class="qr">{{.QR}}</div>{{end}}</div>
+  <div class="enrol-steps">
+    <ol>
+      <li>Install Dialler on the phone and open it.</li>
+      <li>Point the phone's <strong>Camera</strong> at this QR, or tap <em>Enter manually</em> in the app and type the server <span class="mono">{{.Server.PublicHost}}</span> and this code:</li>
+    </ol>
+    <p class="bigcode">{{.Code.Code}}</p>
+    <ol start="3">
+      <li>The phone connects and registers as <strong>Ext {{.Device.User}}</strong>. This page updates nothing; check the <a href="/clients/{{.Device.DeviceID}}">client page</a> to see it come online.</li>
+    </ol>
+    <p class="hint">Valid until <strong>{{when .Code.ExpiresAt}}</strong>, single use. It is shown once: leave this page and you will need a new one.</p>
+    <details><summary>The link inside the QR</summary><p class="mono small link">{{.Code.URL}}</p></details>
+  </div>
+</div>
+{{else}}
+<p class="lede">{{if .Device.CodePending}}A code is pending until {{clock .Device.CodeExpiresAt}}, but a code is shown only once, when it is made.{{else}}There is no enrolment code outstanding for this client.{{end}} Make a new one to show it here; any earlier code stops working.</p>
+{{end}}
+<div class="actions-row">
+  <form method="post" action="/clients/{{.Device.DeviceID}}/code"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button {{if $.ReadOnly}}disabled{{end}}>{{if .Code}}Make a new code{{else}}Make an enrolment code{{end}}</button></form>
+  {{if .Device.CodePending}}<form method="post" action="/clients/{{.Device.DeviceID}}/code/cancel"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="quiet" {{if $.ReadOnly}}disabled{{end}}>Cancel the pending code</button></form>{{end}}
+  <a class="button quiet" href="/clients/{{.Device.DeviceID}}">Done</a>
+</div>
+{{end}}
+{{template "footer" .}}

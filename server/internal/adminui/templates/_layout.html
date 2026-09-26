@@ -1,0 +1,38 @@
+{{define "header"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · Dialler</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<script src="/static/app.js"></script>
+</head>
+<body>
+<header class="top"><div class="bar">
+  {{if .CSRF}}<a class="brand" href="/server" title="Dialler" aria-label="Dialler"><svg viewBox="0 0 1024 1024" aria-hidden="true"><g transform="translate(512 512) rotate(-45)"><rect x="-500" y="-35" width="1000" height="70"/><rect x="-450" y="-140" width="340" height="70"/><rect x="-390" y="-245" width="200" height="70"/><rect x="110" y="70" width="340" height="70"/><rect x="190" y="175" width="200" height="70"/></g></svg></a>
+  <nav>
+    <a href="/server" {{if eq .Nav "server"}}class="on"{{end}}>Server</a>
+    <a href="/clients" {{if eq .Nav "clients"}}class="on"{{end}}>Clients</a>
+    <a href="/calls" {{if eq .Nav "calls"}}class="on"{{end}}>Calls</a>
+    <a href="/diagnostics" {{if eq .Nav "diagnostics"}}class="on"{{end}}>Diagnostics</a>
+  </nav>{{end}}
+  <span class="spacer"></span>
+  <div class="tools">
+    <button class="icon" type="button" data-toggle-theme title="Light or dark (Shift-D)" aria-label="Toggle light or dark theme"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18 7 7 0 0 1 0-18z"/></svg></button>
+    {{if .CSRF}}<form method="post" action="/logout" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button class="link">Sign out</button></form>{{end}}
+  </div>
+</div></header>
+<main>
+{{if .Banner}}<div class="banner warn"><strong>{{.Banner}}.</strong> Nothing can be changed until it does.{{if not .LastAt.IsZero}} Showing what was last read at {{when .LastAt}}.{{end}}</div>{{end}}
+{{if .Error}}<div class="banner error">{{.Error}}</div>{{end}}
+{{if .Flash}}<div class="banner ok">{{.Flash}}</div>{{end}}
+{{end}}
+
+{{define "footer"}}
+</main>
+<footer><div>dialler-admin {{.Version}} · Shift-D for light or dark</div></footer>
+</body>
+</html>
+{{end}}

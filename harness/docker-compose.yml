@@ -161,6 +161,25 @@ services:
     network_mode: "service:dialler"
     cap_add: [NET_ADMIN, NET_RAW]
 
+  # dialler-admin, the operator's web UI (SPEC §6 item 9c), from the same
+  # image, talking to the server's admin API on 8081 inside the network.
+  # Operator password: "harness" (harness/admin/password). admin_ui_test.sh
+  # drives it with curl; nothing is published on the host.
+  admin:
+    image: dialler-harness-dialler
+    profiles: [test]
+    depends_on: [dialler]
+    entrypoint: ["/dialler-admin"]
+    command:
+      - -listen=:8443
+      - -server=https://dialler:8081
+      - -admin-token=harness
+      - -insecure
+      - -password-file=/admin-password
+      - -data-dir=/data/admin
+    volumes:
+      - admin-data:/data
+
   sipp:
     build: ./sipp
     profiles: [test]
@@ -214,6 +233,7 @@ services:
 
 volumes:
   dialler-data: {}
+  admin-data: {}
 
 # Fixed addresses: Asterisk identifies the light server as its trunk peer
 # by source address (pjsip.conf `match=`), which it resolves only at load,

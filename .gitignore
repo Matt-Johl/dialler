@@ -26,3 +26,6 @@ harness/tls/**/*.srl
 .DS_Store
 *.swp
 
+
+# UI screenshots (harness/screenshot.sh)
+harness/shots/

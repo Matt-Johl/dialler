@@ -116,6 +116,11 @@ expect() { # expect STATUS METHOD PATH [BODY]
 expect 204 DELETE /v1/admin/devices/dev-s
 expect 200 PUT /v1/admin/devices/dev-a/directory '{"contacts":[{"display_name":"Replaced","uri":"sip:900@dialler","mode":"local"}]}'
 expect 200 POST /v1/admin/devices/dev-a/enrol-code
+# A PBX line set while the server is in trunk mode: stored for a later
+# switch, nothing to register, and the request must be answered (it
+# panicked the handler on 2026-09-26; the connection just closed).
+expect 200 PUT /v1/admin/devices/dev-a/pbx-line '{"digest_user":"line201","secret":"dialler-line-201"}'
+expect 204 DELETE /v1/admin/devices/dev-a/pbx-line
 expect 200 PUT /v1/admin/log '{"level":"debug","for_seconds":30}'
 expect 200 PUT /v1/admin/log '{"level":"info"}'
 expect 200 GET /v1/admin/status

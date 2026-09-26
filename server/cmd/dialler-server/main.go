@@ -547,78 +547,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	}
 	_, signalPortStr, _ := net.SplitHostPort(o.signalAddr)
 	signalPort, _ := strconv.Atoi(signalPortStr)
-	hooks := enroll.Hooks{
-		OnIssue: func(deviceID, user string) { reg.Provision(user, deviceID) },
-		OnEvent: func(kind, deviceID string, detail map[string]any) { ring.Emit(kind, deviceID, "", detail) },
-		OnRevoke: func(deviceID string) {
-			if ep, ok := reg.LookupDevice(deviceID); ok {
-				reg.Deprovision(ep.User)
-				// Its phone can no longer connect, so its line must not
-				// stay registered: the exchange would go on ringing a
-				// number nobody can answer for the whole ring timeout.
-				if lines != nil {
-					lines.Delete(ep.User)
-				}
-			}
-			gw.Disconnect(deviceID)
-			ring.Emit(events.KindDeviceRevoked, deviceID, "", nil)
-		},
-		// Purge (ADMIN-API.md §5.1): everything a revoke does, then the
-		// device's directory and diagnostics go with its record. One
-		// device's entries and files; nothing else is touched.
-		OnPurge: func(deviceID string) {
-			if ep, ok := reg.LookupDevice(deviceID); ok {
-				reg.Deprovision(ep.User)
-				if lines != nil {
-					lines.Delete(ep.User)
-				}
-			}
-			gw.Disconnect(deviceID)
-			if err := dir.Purge(deviceID); err != nil {
-				log.Error("purge: directory", "device", deviceID, "err", err)
-			}
-			if err := diag.Purge(filepath.Join(o.dataDir, "diag"), deviceID); err != nil {
-				log.Error("purge: diagnostics", "device", deviceID, "err", err)
-			}
-			log.Info("device purged", "device", deviceID)
-			ring.Emit(events.KindDevicePurged, deviceID, "", nil)
-		},
-		// A claim rotates the credential: whatever is connected with the
-		// old one is dropped (it reconnects with the new one, or it was a
-		// phone this device id no longer belongs to). One device only.
-		OnClaim: func(deviceID, user string) {
-			log.Info("enrolment code claimed", "device", deviceID, "user", user)
-			ring.Emit(events.KindCodeClaimed, deviceID, user, nil)
-			reg.Provision(user, deviceID)
-			gw.Disconnect(deviceID)
-			// A claim un-revokes, so a line that was dropped on revocation
-			// comes back with the replacement phone.
-			if lines != nil {
-				if cred, ok, err := devices.PBXCredential(deviceID); err != nil {
-					log.Error("pbx line for the claimed device could not be read", "device", deviceID, "err", err)
-				} else if ok {
-					lines.Put(pbxline.Line{User: cred.User, DN: cred.DN, DigestUser: cred.DigestUser, Secret: cred.Secret})
-				}
-			}
-		},
-		// Settings changed: that device's live sessions get them now; a
-		// device not connected gets them in its next welcome.
-		OnConfig: func(deviceID string, cfg enroll.DeviceConfig) {
-			log.Info("device settings changed", "device", deviceID, "version", cfg.Version, "ssids", cfg.SSIDs)
-			ring.Emit(events.KindConfigChanged, deviceID, "", map[string]any{"version": cfg.Version})
-			gw.NotifyConfig(deviceID, wire.DeviceConfig{Version: cfg.Version, SSIDs: cfg.SSIDs})
-		},
-		// A PBX line written or removed: that one line re-registers, and
-		// nothing else on the server is touched.
-		OnPBXLine: func(deviceID string, line *enroll.PBXCredential) {
-			if line == nil {
-				ring.Emit(events.KindLineRemoved, deviceID, "", nil)
-			} else {
-				ring.Emit(events.KindLineChanged, deviceID, line.User, nil)
-			}
-			pbxLineHook(log, lines, devices)(deviceID, line)
-		},
-	}
+	hooks := adminHooks(log, ring, reg, gw, lines, devices, dir, diagDir)
 	adminAPI.Handle("/v1/admin/", enroll.NewAdminHandler(devices, o.adminToken,
 		enroll.Link{Host: o.publicHost, HTTPSPort: httpPort, CertSHA256: certSHA256}, hooks))
 	mux.Handle("POST /v1/enrol", enroll.NewEnrolHandler(devices,
@@ -766,6 +695,85 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// adminHooks is what the admin API's writes do to the live server: the
+// registry, the gateway, the line manager (nil in trunk mode), the
+// directory, the diagnostics directory and the event ring. Kept out of
+// run so it can be tested without listeners.
+func adminHooks(log *slog.Logger, ring *events.Ring, reg *registry.Registry, gw *gateway.Gateway, lines *pbxline.Manager, devices *enroll.Store, dir *directory.Store, diagDir string) enroll.Hooks {
+	return enroll.Hooks{
+		OnIssue: func(deviceID, user string) { reg.Provision(user, deviceID) },
+		OnEvent: func(kind, deviceID string, detail map[string]any) { ring.Emit(kind, deviceID, "", detail) },
+		OnRevoke: func(deviceID string) {
+			if ep, ok := reg.LookupDevice(deviceID); ok {
+				reg.Deprovision(ep.User)
+				// Its phone can no longer connect, so its line must not
+				// stay registered: the exchange would go on ringing a
+				// number nobody can answer for the whole ring timeout.
+				if lines != nil {
+					lines.Delete(ep.User)
+				}
+			}
+			gw.Disconnect(deviceID)
+			ring.Emit(events.KindDeviceRevoked, deviceID, "", nil)
+		},
+		// Purge (ADMIN-API.md §5.1): everything a revoke does, then the
+		// device's directory and diagnostics go with its record. One
+		// device's entries and files; nothing else is touched.
+		OnPurge: func(deviceID string) {
+			if ep, ok := reg.LookupDevice(deviceID); ok {
+				reg.Deprovision(ep.User)
+				if lines != nil {
+					lines.Delete(ep.User)
+				}
+			}
+			gw.Disconnect(deviceID)
+			if err := dir.Purge(deviceID); err != nil {
+				log.Error("purge: directory", "device", deviceID, "err", err)
+			}
+			if err := diag.Purge(diagDir, deviceID); err != nil {
+				log.Error("purge: diagnostics", "device", deviceID, "err", err)
+			}
+			log.Info("device purged", "device", deviceID)
+			ring.Emit(events.KindDevicePurged, deviceID, "", nil)
+		},
+		// A claim rotates the credential: whatever is connected with the
+		// old one is dropped (it reconnects with the new one, or it was a
+		// phone this device id no longer belongs to). One device only.
+		OnClaim: func(deviceID, user string) {
+			log.Info("enrolment code claimed", "device", deviceID, "user", user)
+			ring.Emit(events.KindCodeClaimed, deviceID, user, nil)
+			reg.Provision(user, deviceID)
+			gw.Disconnect(deviceID)
+			// A claim un-revokes, so a line that was dropped on revocation
+			// comes back with the replacement phone.
+			if lines != nil {
+				if cred, ok, err := devices.PBXCredential(deviceID); err != nil {
+					log.Error("pbx line for the claimed device could not be read", "device", deviceID, "err", err)
+				} else if ok {
+					lines.Put(pbxline.Line{User: cred.User, DN: cred.DN, DigestUser: cred.DigestUser, Secret: cred.Secret})
+				}
+			}
+		},
+		// Settings changed: that device's live sessions get them now; a
+		// device not connected gets them in its next welcome.
+		OnConfig: func(deviceID string, cfg enroll.DeviceConfig) {
+			log.Info("device settings changed", "device", deviceID, "version", cfg.Version, "ssids", cfg.SSIDs)
+			ring.Emit(events.KindConfigChanged, deviceID, "", map[string]any{"version": cfg.Version})
+			gw.NotifyConfig(deviceID, wire.DeviceConfig{Version: cfg.Version, SSIDs: cfg.SSIDs})
+		},
+		// A PBX line written or removed: that one line re-registers, and
+		// nothing else on the server is touched.
+		OnPBXLine: func(deviceID string, line *enroll.PBXCredential) {
+			if line == nil {
+				ring.Emit(events.KindLineRemoved, deviceID, "", nil)
+			} else {
+				ring.Emit(events.KindLineChanged, deviceID, line.User, nil)
+			}
+			pbxLineHook(log, lines, devices)(deviceID, line)
+		},
+	}
 }
 
 // checkPublicHost reports a -public-host that is an IP literal this machine

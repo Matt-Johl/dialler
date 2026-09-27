@@ -17,53 +17,27 @@ struct OnboardingView: View {
     @State private var port = "8080"
     @State private var code = ""
 
+    private var device: String { UIDevice.current.model }
+
     var body: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 40)
-            VStack(spacing: 18) {
-                Rings(size: 140, inner: 0.43) {
-                    Image(systemName: "phone")
-                        .font(.system(size: 22, weight: .light))
-                        .foregroundStyle(Palette.ink)
-                }
-                .contentShape(Circle())
-                .onLongPressGesture(minimumDuration: 5) { showStatus = true }
-                Text(AppName.display)
-                    .font(.title3.weight(.medium))
-                    .tracking(-0.6)
-                    .foregroundStyle(Palette.ink)
+        GeometryReader { geo in
+            ScrollView {
+                // A short screen (iPhone SE) gets a smaller mark and tighter
+                // spacing, so the welcome fits above the buttons unscrolled.
+                welcome(compact: geo.size.height < 560)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .center)
             }
-            Spacer(minLength: 40)
-            VStack(spacing: 14) {
-                Text("Your office line.")
-                    .font(.system(size: 38, weight: .regular))
-                    .tracking(-1.5)
-                    .foregroundStyle(Palette.ink)
-                    .minimumScaleFactor(0.7)
-                    .lineLimit(1)
-                Text("Scan the code your administrator shows you,\nor enter it yourself.")
-                    .font(.subheadline)
-                    .foregroundStyle(Palette.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            actions
-                .padding(.top, 40)
-            if let err = model.enrolmentError {
-                Text(err)
-                    .font(.footnote)
-                    .foregroundStyle(Palette.end)
-                    .multilineTextAlignment(.center)
-                    .padding(.top, 16)
-            }
-            Spacer(minLength: 32)
-            Label("Works on your office Wi-Fi", systemImage: "wifi")
-                .font(.footnote)
-                .foregroundStyle(Palette.secondary)
-                .padding(.bottom, 12)
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .padding(.horizontal, 32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The buttons stay at the bottom, over the content if it has to
+        // scroll (a small phone, the largest text sizes).
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            actions
+                .padding(.horizontal, 28)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+                .background(Palette.ground)
+        }
         .background(Palette.ground)
         .sheet(isPresented: $showScanner) {
             QRScannerView { url in
@@ -82,28 +56,94 @@ struct OnboardingView: View {
         }
     }
 
+    private func welcome(compact: Bool) -> some View {
+        VStack(spacing: 0) {
+            logo(compact: compact)
+                .contentShape(Circle())
+                .onLongPressGesture(minimumDuration: 5) { showStatus = true }
+            VStack(spacing: 10) {
+                Text("Welcome to \(AppName.display)")
+                    .font(.system(size: 34, weight: .regular))
+                    .tracking(-1.2)
+                    .foregroundStyle(Palette.ink)
+                    .multilineTextAlignment(.center)
+                    .accessibilityAddTraits(.isHeader)
+                Text("Your office phone line, on your \(device).")
+                    .font(.body)
+                    .foregroundStyle(Palette.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.top, compact ? 16 : 28)
+            VStack(alignment: .leading, spacing: compact ? 14 : 22) {
+                Feature(glyph: "phone", title: "Your Extension",
+                        detail: "Make and answer calls on your office number.")
+                Feature(glyph: "person.2", title: "The Company Directory",
+                        detail: "Everyone you work with, a tap away.")
+                Feature(glyph: "wifi", title: "Reachable at Work",
+                        detail: "On office Wi-Fi, calls ring even when \(AppName.display) is closed.")
+            }
+            .padding(.top, compact ? 22 : 40)
+        }
+        .padding(.horizontal, 32)
+        .padding(.vertical, compact ? 8 : 24)
+    }
+
+    /// The Dialler mark on an ink tile, as on the Home Screen, inside the
+    /// canvas's hairline rings.
+    private func logo(compact: Bool) -> some View {
+        let k: CGFloat = compact ? 0.72 : 1
+        return ZStack {
+            Circle().strokeBorder(Palette.hairline, lineWidth: 1)
+            Circle().strokeBorder(Palette.ring, lineWidth: 1).padding(26 * k)
+            RoundedRectangle(cornerRadius: 19 * k, style: .continuous)
+                .fill(Palette.ink)
+                .frame(width: 84 * k, height: 84 * k)
+                .shadow(color: .black.opacity(0.14), radius: 16 * k, y: 8 * k)
+            DiallerMark()
+                .fill(Palette.ground)
+                .frame(width: 58 * k, height: 58 * k)
+        }
+        .frame(width: 172 * k, height: 172 * k)
+        .accessibilityElement()
+        .accessibilityLabel(AppName.display)
+        .accessibilityAddTraits(.isImage)
+    }
+
     @ViewBuilder
     private var actions: some View {
-        if model.enrolling {
-            HStack(spacing: 10) {
-                ProgressView()
-                Text("Setting Up…").foregroundStyle(Palette.secondary)
+        VStack(spacing: 6) {
+            if let err = model.enrolmentError {
+                Label(err, systemImage: "exclamationmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(Palette.end)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 8)
             }
-            .frame(height: 118)
-        } else {
-            VStack(spacing: 10) {
-                Button("Scan QR Code") { showScanner = true }
-                    .buttonStyle(WideButtonStyle(kind: .primary))
-                    .disabled(!QRScannerView.isAvailable)
-                Button("Enter Code Manually") { manual = true }
-                    .buttonStyle(WideButtonStyle(kind: .secondary))
-                if !QRScannerView.isAvailable {
-                    Text("Scanning needs a camera. Enter the code instead.")
-                        .font(.footnote)
-                        .foregroundStyle(Palette.secondary)
-                        .padding(.top, 4)
+            if model.enrolling {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Setting Up…").foregroundStyle(Palette.secondary)
                 }
+                .frame(maxWidth: .infinity, minHeight: 54 + 44 + 6)
+            } else if QRScannerView.isAvailable {
+                Button { showScanner = true } label: {
+                    Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                }
+                .buttonStyle(WideButtonStyle(kind: .primary))
+                Button("Enter Code Manually") { manual = true }
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(Palette.ink)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            } else {
+                // No camera (the simulator, some iPads): typing is the way in.
+                Button("Enter Enrolment Code") { manual = true }
+                    .buttonStyle(WideButtonStyle(kind: .primary))
+                Color.clear.frame(height: 44)
             }
+            Text("Your administrator gives you the enrolment code.")
+                .font(.footnote)
+                .foregroundStyle(Palette.tertiary)
+                .multilineTextAlignment(.center)
         }
     }
 
@@ -144,6 +184,36 @@ struct OnboardingView: View {
             }
         }
         .tint(Palette.ink)
+    }
+}
+
+/// One line of the welcome: a glyph in an outlined circle, a title and a
+/// sentence.
+private struct Feature: View {
+    let glyph: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            Image(systemName: glyph)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(Palette.ink)
+                .frame(width: 44, height: 44)
+                .overlay { Circle().strokeBorder(Palette.ring, lineWidth: 1) }
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Palette.ink)
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 2)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

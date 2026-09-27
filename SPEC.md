@@ -981,7 +981,7 @@ on by config — see §7.4.
      forwarding, voicemail and ringtone). Wording follows Apple's: Title
      Case for buttons, rows and titles, sentence case with contractions
      for explanations, "Sign Out" for Log out; the app names itself from
-     `CFBundleDisplayName` (vPhone), permission prompts included.
+     `CFBundleDisplayName` (Dialler), permission prompts included.
   5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
      tuning (parked 2026-09-07). *2026-09-10:* the "received audio 0–2 s
      late, varying per call" symptom was the media relay, not the app: the

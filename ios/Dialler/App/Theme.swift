@@ -48,6 +48,29 @@ enum AppName {
     static let display = Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Dialler"
 }
 
+/// The Dialler mark: a line with stepped bars either side, turned 45°.
+/// The same five bars as the admin console's logo and the app icon
+/// (server/internal/adminui/static/logo-light.svg), in its 1024-unit box,
+/// so it fills with whatever colour the view gives it.
+struct DiallerMark: Shape {
+    private static let bars = [
+        CGRect(x: -500, y: -35, width: 1000, height: 70),
+        CGRect(x: -450, y: -140, width: 340, height: 70),
+        CGRect(x: -390, y: -245, width: 200, height: 70),
+        CGRect(x: 110, y: 70, width: 340, height: 70),
+        CGRect(x: 190, y: 175, width: 200, height: 70),
+    ]
+
+    func path(in rect: CGRect) -> Path {
+        let scale = min(rect.width, rect.height) / 1024
+        var path = Path()
+        for bar in Self.bars { path.addRect(bar) }
+        return path.applying(CGAffineTransform(translationX: rect.midX, y: rect.midY)
+            .scaledBy(x: scale, y: scale)
+            .rotated(by: -.pi / 4))
+    }
+}
+
 // MARK: - Screen furniture
 
 /// A tab's title, drawn by the screen rather than the navigation bar: the

@@ -351,7 +351,7 @@
 				DEVELOPMENT_TEAM = 568U7M6YTX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = vPhone;
+				INFOPLIST_KEY_CFBundleDisplayName = Dialler;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -375,7 +375,7 @@
 				DEVELOPMENT_TEAM = 568U7M6YTX;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = vPhone;
+				INFOPLIST_KEY_CFBundleDisplayName = Dialler;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.business";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

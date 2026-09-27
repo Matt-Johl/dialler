@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>vPhone</string>
+	<string>Dialler</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -34,11 +34,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>vPhone connects to your organisation’s call server on the office network.</string>
+	<string>Dialler connects to your organisation’s call server on the office network.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>vPhone uses the camera to scan the enrolment code your administrator shows you.</string>
+	<string>Dialler uses the camera to scan the enrolment code your administrator shows you.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>vPhone uses the microphone so the person you’re talking to can hear you.</string>
+	<string>Dialler uses the microphone so the person you’re talking to can hear you.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>voip</string>

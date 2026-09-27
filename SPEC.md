@@ -2303,7 +2303,7 @@ it is neither linked nor redistributed.
    asserted by `make sim-call-ring-reset` (the reset issued while the
    simulated phone rings; the stack must refuse it and the call must be
    answered as in the plain run).
-8. **FIXED 2026-09-27 (libre patch level 7), awaiting device confirmation — SIP
+8. **FIXED 2026-09-27 (libre patch level 7), confirmed on device the same day — SIP
    loop thread spinning at 100 % CPU: a UDP socket iOS defuncted under the
    suspended app, level-triggered and never dropped from the poll set
    (first seen 2026-09-12; spin contained the same day).** Report
@@ -2452,7 +2452,13 @@ it is neither linked nor redistributed.
    calls it once. *Device confirmation still owed:* engine start line says
    `libre patch level 7`; after a lock of ≥ 5 min, the first resume logs the
    two lines above and no `LOOP THREAD BUSY`; a call answered from the lock
-   screen runs past 60 s without `cpu_resource_fatal`. Not the same as
+   screen runs past 60 s without `cpu_resource_fatal`. *Confirmed on
+   device 2026-09-27 13:50–14:08 (diag uploads 115414 and 120839):* three
+   resumes from suspension (62 s, 45 s, 494 s), each logging both DNS
+   sockets dead with ENOTCONN and reopened within 1 ms, then three calls
+   answered from the lock screen of 2:23, 0:40 and 4:09 — zero `LOOP
+   THREAD BUSY` in 24 minutes of runs on level 7 against one per call on
+   level 6, and no kill. Not the same as
    issue 6 (the Foundation string matching on the same thread), which
    stays open on its own merits. The MetricKit CPU exception from 12:29
    (144 s) is this too.

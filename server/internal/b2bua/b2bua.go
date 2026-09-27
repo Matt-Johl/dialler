@@ -1620,6 +1620,17 @@ func (s *Server) callEvent(c *bridgedCall, started bool, reason string) {
 // as delay rather than restarting the far end's buffer over.
 const pumpTimelineBreak = 2 * time.Second
 
+// pumpFrozenBreak is how much timeline a source may fail to produce while
+// its packets keep arriving on time before the relay stops copying its
+// timestamps and paces them itself (pump.forward). A step of 20 ms per
+// packet is under any per-packet limit, so a clock that freezes or slows
+// is invisible to pumpTimelineBreak: the PBX sent 94 packets on one
+// timestamp after a desk phone's resume (2026-09-27 08:02), the app's
+// playout buffer, which counts frames by timestamp, never had one to play,
+// and dropped the lot. Ten frames is far beyond jitter and well short of
+// what a listener notices.
+const pumpFrozenBreak = 200 * time.Millisecond
+
 // declineGrace is how long a decline or busy wake_ack waits for the app's
 // own 486 on the INVITE before the server CANCELs it itself (bridge). The
 // 486 normally lands within a few ms of the ack, on another connection.
@@ -1673,6 +1684,15 @@ type pump struct {
 	timelineBreak time.Duration
 	breaks        atomic.Int64 // timeline breaks rebased so far
 	lastBreakMs   atomic.Int64 // size of the last one, signed
+	// Timeline the source has failed to produce while its packets kept
+	// arriving on time — a clock that froze or slowed. Reset as soon as
+	// the timestamps keep up again. Beyond frozenBreak (zero =
+	// pumpFrozenBreak) the relay paces the packets itself, one frame each,
+	// until the source's clock moves again; `frozen` marks that episode
+	// so it is counted once. See forward.
+	lag         time.Duration
+	frozen      bool
+	frozenBreak time.Duration
 	// Arrival skew of the source against its own timeline, for the log.
 	skewMs     atomic.Int64
 	earlyMaxMs atomic.Int64
@@ -1799,6 +1819,40 @@ func (p *pump) forward(payload []byte) error {
 			newStream = true
 			p.breaks.Add(1)
 			p.lastBreakMs.Store(diff.Milliseconds())
+		} else {
+			// A clock that freezes or slows loses ground by less than a
+			// frame per packet, under any per-packet limit, and the far
+			// end's playout buffer counts frames by timestamp: 94 packets
+			// on one timestamp were 94 packets it never played
+			// (2026-09-27 08:02, the PBX after a desk phone's resume).
+			// Ground lost while packets arrive on time adds up; a stall
+			// (judged by diff above) does not count, and a timestamp that
+			// keeps up again clears it. Past pumpFrozenBreak the relay
+			// paces each packet one frame after the last it sent — no
+			// marker, one break per episode — until the source's clock
+			// moves again, from where our timeline then carries on.
+			frame := time.Duration(p.codec.SampleTimestamp()) * time.Second / time.Duration(p.codec.SampleRate)
+			switch {
+			case arrivalGap >= 2*frame:
+			case diff < -frame/4:
+				p.lag -= diff
+			default:
+				p.lag = 0
+			}
+			flimit := p.frozenBreak
+			if flimit == 0 {
+				flimit = pumpFrozenBreak
+			}
+			if p.lag > flimit {
+				if !p.frozen {
+					p.frozen = true
+					p.breaks.Add(1)
+					p.lastBreakMs.Store(-p.lag.Milliseconds())
+				}
+				p.tsOffset = p.lastOut + p.codec.SampleTimestamp() - hdr.Timestamp
+			} else {
+				p.frozen = false
+			}
 		}
 	}
 	if newStream {
@@ -1818,6 +1872,7 @@ func (p *pump) forward(payload []byte) error {
 		p.t0, p.ts0 = now, hdr.Timestamp
 		p.expectSeq = hdr.SequenceNumber + 1
 		p.lastArrival, p.lastTs = now, hdr.Timestamp
+		p.lag, p.frozen = 0, false
 	} else {
 		// Arrival skew against the source's own timeline since its first
 		// packet: negative = early (a burst / backlog draining), positive =

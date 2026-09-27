@@ -492,3 +492,82 @@ func TestRelayRebasesATimelineThatBreaksWithinOneSSRC(t *testing.T) {
 		})
 	}
 }
+
+// A clock that freezes or slows while packets keep arriving loses less
+// than a frame per packet, under any per-packet limit, and the far end's
+// playout buffer counts frames by timestamp: it never has one to play. The
+// PBX did that for 94 packets after a desk phone's resume (2026-09-27
+// 08:02). Past pumpFrozenBreak the relay paces the packets itself, one
+// frame each and no marker, counted as one break; when the source's clock
+// moves again our timeline carries on from there, an honest gap and all.
+func TestRelayPacesAFrozenOrSlowedClock(t *testing.T) {
+	const frameDur = 20 * time.Millisecond
+	shapes := []struct {
+		name string
+		step uint32 // the source's timestamp advance per packet, packets 20–39
+	}{
+		{"frozen", 0},
+		{"half speed", ulawFrame / 2},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			src := &fakeSource{delayBefore: map[int]time.Duration{}}
+			const base = uint32(5000)
+			for i := 0; i < 60; i++ {
+				ts := base + uint32(i)*ulawFrame // the honest timeline
+				if i >= 20 && i < 40 {
+					ts = base + 20*ulawFrame + uint32(i-20)*sh.step
+					src.delayBefore[i+1] = frameDur // packets keep arriving on time
+				}
+				src.pkts = append(src.pkts, packet(uint16(i), ts, 0x111, false))
+			}
+			sink := &fakeSink{}
+			rr := media.NewRTPPacketReader(src, media.CodecAudioUlaw)
+			rw := media.NewRTPPacketWriter(sink, media.CodecAudioUlaw)
+			p := &pump{r: rr, w: rw, frozenBreak: 100 * time.Millisecond}
+			p.setPacketPath(rr, rw, media.CodecAudioUlaw)
+			drive(t, p, 60)
+			out := sink.all()
+			if got := p.breaks.Load(); got != 1 {
+				t.Fatalf("breaks=%d, want 1 (the episode counted once)", got)
+			}
+			// Detection: the first packet of the stretch we paced ourselves.
+			detected := 0
+			for i := 21; i < 40; i++ {
+				if out[i].hdr.Timestamp-out[i-1].hdr.Timestamp == ulawFrame {
+					detected = i
+					break
+				}
+			}
+			if detected == 0 || detected > 34 {
+				t.Fatalf("paced from packet %d, want within the stretch and early enough to matter", detected)
+			}
+			for i := detected; i < 40; i++ {
+				if d := out[i].hdr.Timestamp - out[i-1].hdr.Timestamp; d != ulawFrame {
+					t.Fatalf("packet %d: paced step %d, want %d", i, d, ulawFrame)
+				}
+			}
+			// The clock moves again: the time it skipped is an honest gap
+			// from where we were, and the stream then runs on normally.
+			if d := out[40].hdr.Timestamp - out[39].hdr.Timestamp; d <= ulawFrame {
+				t.Fatalf("resume: step %d, want a gap", d)
+			}
+			for i := 41; i < 60; i++ {
+				if d := out[i].hdr.Timestamp - out[i-1].hdr.Timestamp; d != ulawFrame {
+					t.Fatalf("packet %d after resume: step %d, want %d", i, d, ulawFrame)
+				}
+			}
+			for i := 1; i < len(out); i++ {
+				if out[i].hdr.Marker {
+					t.Fatalf("packet %d: marker on a stream that never restarted", i)
+				}
+				if d := out[i].hdr.SequenceNumber - out[i-1].hdr.SequenceNumber; d != 1 {
+					t.Fatalf("packet %d: sequence stepped %d", i, d)
+				}
+				if d := int32(out[i].hdr.Timestamp - out[i-1].hdr.Timestamp); d < 0 {
+					t.Fatalf("packet %d: timestamp went backwards by %d", i, -d)
+				}
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ import AVFoundation
 import CallKit
 import DiallerCore
 import Foundation
+import OSLog
 import UIKit
 import os
 
@@ -30,16 +31,43 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     /// while diagnosing on a device).
     var onLog: (String) -> Void = { _ in }
 
-    private let provider: CXProvider
+    /// The app's registration with the system's call daemon. Replaced, not
+    /// kept, when the system reports that registration lost (`providerDidReset`)
+    /// or refuses a start for want of one — see `ProviderRecovery`.
+    private var provider: CXProvider
     private let controller = CXCallController()
     private let observer = CXCallObserver()
     private var uuids: [String: UUID] = [:]
     private var callIDs: [UUID: String] = [:]
     private var lastUpdate: [UUID: CXCallUpdate] = [:]
+    /// Which of `uuids` CallKit has accepted (see `CallRoster`). Main thread only.
+    private var roster = CallRoster()
+    private var recovery = ProviderRecovery()
+    /// What each outgoing start asked for, until the start is performed or
+    /// given up, so a refused one can be asked again on a new provider.
+    private var pendingStarts: [String: (handle: String, displayName: String)] = [:]
     private var notificationTokens: [NSObjectProtocol] = []
 
     override init() {
         Breadcrumb.drop("CallKit: creating the provider")
+        provider = CXProvider(configuration: Self.makeConfiguration())
+        super.init()
+        provider.setDelegate(self, queue: .main)
+        observer.setDelegate(self, queue: .main)
+        observeSystemNotifications()
+        // Category, mode and hardware preferences are set once, at launch.
+        // If the first call is also the first time they are applied, the
+        // change only takes effect when CallKit activates the session, the
+        // hardware is still reconfiguring while the engine creates its
+        // VoiceProcessingIO units, and every render fails for that call
+        // (observed: route change reason 3 at activation, then render -1).
+        Breadcrumb.drop("CallKit: provider registered; configuring the audio session")
+        configureAudioSession()
+        Breadcrumb.drop("CallKit: audio session configured")
+        requestMicrophonePermission()
+    }
+
+    private static func makeConfiguration() -> CXProviderConfiguration {
         let config = CXProviderConfiguration()
         config.supportsVideo = false
         // Call waiting (plan Phase I): TWO call groups of ONE call each —
@@ -62,21 +90,72 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         config.maximumCallsPerCallGroup = 1
         config.supportedHandleTypes = [.generic]
         config.includesCallsInRecents = true
-        provider = CXProvider(configuration: config)
-        super.init()
+        return config
+    }
+
+    // MARK: Provider registration
+
+    /// Register with the system afresh: a new `CXProvider` opens a new
+    /// connection to the call daemon and sends it the configuration, which
+    /// is what a relaunch does and what fixed 2026-09-27 by hand. The old
+    /// one is released; `invalidate` is a no-op on iOS 26 (the framework
+    /// says so in its own log) but is the documented courtesy. Main thread.
+    ///
+    /// Not a restart of anything else: calls, engine and session are
+    /// untouched, and after a reset there are no CallKit calls to move.
+    private func rebuildProvider(reason: String) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        let retired = provider
+        retired.setDelegate(nil, queue: nil)
+        retired.invalidate()
+        provider = CXProvider(configuration: Self.makeConfiguration())
         provider.setDelegate(self, queue: .main)
-        observer.setDelegate(self, queue: .main)
-        observeSystemNotifications()
-        // Category, mode and hardware preferences are set once, at launch.
-        // If the first call is also the first time they are applied, the
-        // change only takes effect when CallKit activates the session, the
-        // hardware is still reconfiguring while the engine creates its
-        // VoiceProcessingIO units, and every render fails for that call
-        // (observed: route change reason 3 at activation, then render -1).
-        Breadcrumb.drop("CallKit: provider registered; configuring the audio session")
-        configureAudioSession()
-        Breadcrumb.drop("CallKit: audio session configured")
-        requestMicrophonePermission()
+        onLog("callkit: provider rebuilt and registered afresh (\(reason))")
+    }
+
+    private func perform(_ actions: [ProviderRecovery.Action]) {
+        for action in actions {
+            switch action {
+            case .rebuild(let reason):
+                rebuildProvider(reason: reason)
+            case .retryStart(let callID):
+                guard let want = pendingStarts[callID] else { break }
+                onLog("callkit: asking again for \(callID) on the new provider")
+                requestStart(callID: callID, handle: want.handle, displayName: want.displayName)
+            case .giveUp(let callID):
+                pendingStarts[callID] = nil
+                if let uuid = uuids.removeValue(forKey: callID) { callIDs[uuid] = nil }
+                roster.remove(callID)
+                onStartFailed(callID)
+            }
+        }
+    }
+
+    /// CallKit's own lines from this process (subsystem com.apple.callkit)
+    /// for the last `seconds`, into the app log. The framework logs why a
+    /// provider connection was interrupted and what the daemon answered;
+    /// without this the next reset is as opaque as 2026-09-27's, whose
+    /// device log could not be pulled. Read off the main thread; the log
+    /// sink hops back.
+    private func dumpSystemCallKitLog(lastSeconds seconds: TimeInterval, why: String) {
+        let onLog = self.onLog
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                let store = try OSLogStore(scope: .currentProcessIdentifier)
+                let from = store.position(date: Date().addingTimeInterval(-seconds))
+                let entries = try store.getEntries(at: from, matching: NSPredicate(format: "subsystem == %@", "com.apple.callkit"))
+                let stamp = ISO8601DateFormatter()
+                stamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                var lines: [String] = []
+                for case let entry as OSLogEntryLog in entries {
+                    lines.append("    \(stamp.string(from: entry.date)) [\(entry.category)] \(entry.composedMessage)")
+                    if lines.count == 60 { lines.append("    …"); break }
+                }
+                onLog("callkit: system log for \(why), last \(Int(seconds)) s, \(lines.count) line(s):\n" + lines.joined(separator: "\n"))
+            } catch {
+                onLog("callkit: system log for \(why) unavailable: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// The recorder unit needs record permission; without it the voice
@@ -150,19 +229,35 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     /// and audio-session activation all work as for incoming calls).
     func startOutgoing(callID: String, handle: String, displayName: String) {
         DispatchQueue.main.async { [self] in
-            let uuid = UUID()
-            uuids[callID] = uuid
-            callIDs[uuid] = callID
-            let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: handle))
-            action.contactIdentifier = displayName
-            onLog("callkit: requesting outgoing call \(callID) to \(handle) as \(short(uuid))")
-            controller.request(CXTransaction(action: action)) { [weak self] err in
-                guard let self, let err else { return }
-                self.onLog("callkit: start request failed: \(err.localizedDescription)")
-                self.uuids[callID] = nil
-                self.callIDs[uuid] = nil
-                self.onStartFailed(callID)
+            pendingStarts[callID] = (handle, displayName)
+            requestStart(callID: callID, handle: handle, displayName: displayName)
+        }
+    }
+
+    /// One start request. A fresh UUID each time: the system keeps a record
+    /// of a refused one. Until the delegate performs the action this is a
+    /// request, not a call (`CallRoster.State.awaitingStart`).
+    private func requestStart(callID: String, handle: String, displayName: String) {
+        let uuid = UUID()
+        uuids[callID] = uuid
+        callIDs[uuid] = callID
+        roster.add(callID, .awaitingStart)
+        let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: handle))
+        action.contactIdentifier = displayName
+        onLog("callkit: requesting outgoing call \(callID) to \(handle) as \(short(uuid))")
+        controller.request(CXTransaction(action: action)) { [weak self] err in
+            guard let self, let err else { return }
+            // `unknownCallProvider` (code 2): the daemon has no registration
+            // for this app and waited 10 s for one; every start after the
+            // 2026-09-27 reset ended here. Rebuild and ask once more; any
+            // other refusal, or a second one, is final.
+            let code = (err as? CXErrorCodeRequestTransactionError)?.code.rawValue ?? -1
+            self.onLog("callkit: start request for \(callID) failed: \(err.localizedDescription) (code \(code))")
+            if code == ProviderRecovery.unknownCallProviderCode {
+                self.dumpSystemCallKitLog(lastSeconds: 30, why: "start refused, unknown call provider")
             }
+            self.callIDs[uuid] = nil
+            self.perform(self.recovery.startFailed(callID: callID, code: code))
         }
     }
 
@@ -201,10 +296,6 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
     /// second report for the same id (INVITE path and push path can both
     /// ask) replaces the entry and still runs, to reach its own completion.
     private var pendingReports: [String: (token: UUID, run: () -> Void)] = [:]
-    /// Calls reported to CallKit whose completion has not come back yet:
-    /// not counted as "another call is up" (below), because a report can
-    /// still be refused. Main thread only.
-    private var awaitingReport = Set<String>()
 
     func reportIncoming(callID: String, displayName: String, handle: String, completion: @escaping (Error?) -> Void) {
         // PushKit's contract (iOS 13+): reportNewIncomingCall must be called
@@ -235,31 +326,34 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             // re-configuring the category mid-call is the hardware
             // reconfiguration hazard noted at the top of this file.
             //
-            // "Up" means CallKit has accepted it. A call whose report is
-            // still out can yet be refused — and was, by a Focus filter, on
-            // 2026-09-17: the refusal came back only when the next call
-            // resumed the app, so that call counted a ghost as a live one,
-            // played the call-waiting beep at nobody, and skipped the audio
-            // session setup it was the only call for.
-            let callWaiting = uuids.keys.contains { !awaitingReport.contains($0) }
+            // "Up" means CallKit has accepted it (`CallRoster`). A call whose
+            // report is still out can yet be refused — and was, by a Focus
+            // filter, on 2026-09-17; an outgoing call whose start has not
+            // been performed can too — and was, for 10 s at a time, on
+            // 2026-09-27. Either counted as live made this call ring as call
+            // waiting: beep at nobody, no audio-session setup for the call
+            // it was the only one for.
+            let callWaiting = roster.anyUp
             if !callWaiting { configureAudioSession() }
             let uuid = UUID()
             uuids[callID] = uuid
             callIDs[uuid] = callID
-            awaitingReport.insert(callID)
+            roster.add(callID, .awaitingReport)
             let update = callUpdate(handle: CXHandle(type: .generic, value: handle), name: displayName)
             lastUpdate[uuid] = update
             onLog("callkit: reporting \(callID) as \(short(uuid)) (app \(appState))")
             provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
                 guard let self else { return }
-                self.awaitingReport.remove(callID)
                 if let error {
                     self.onLog("callkit: report of \(callID) refused: \(error.localizedDescription)")
                     self.uuids[callID] = nil
                     self.callIDs[uuid] = nil
                     self.lastUpdate[uuid] = nil
+                    self.roster.remove(callID)
                 } else {
                     self.onLog("callkit: report of \(callID) accepted")
+                    self.roster.confirm(callID)
+                    self.recovery.providerAnswered()
                     if callWaiting {
                         self.onLog("callkit: \(callID) is waiting behind another call; playing the call-waiting tone")
                         self.waitingCallID = callID
@@ -340,6 +434,9 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             guard let uuid = uuids.removeValue(forKey: callID) else { return }
             callIDs[uuid] = nil
             lastUpdate[uuid] = nil
+            roster.remove(callID)
+            pendingStarts[callID] = nil
+            recovery.forget(callID)
             let cxReason: CXCallEndedReason
             switch reason {
             case .remoteEnded: cxReason = .remoteEnded
@@ -470,7 +567,12 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             self?.onLog("app: will resign active")
         })
         notificationTokens.append(nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.onLog("app: did become active")
+            guard let self else { return }
+            self.onLog("app: did become active")
+            // A reset taken in the background (2026-09-27) is the one whose
+            // registration did not come back; the foreground is where it
+            // is needed and, on the evidence, where it is honoured.
+            self.perform(self.recovery.didBecomeActive())
         })
     }
 
@@ -493,6 +595,7 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             return "\(name)(\(call)\(held))"
         }
         onLog("callkit: transaction \(names.joined(separator: ",")) (app \(appState))")
+        recovery.providerAnswered()
         return false
     }
 
@@ -520,12 +623,27 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         onAudioDeactivated()
     }
 
-    func providerDidReset(_: CXProvider) {
-        onLog("callkit: PROVIDER RESET (\(uuids.count) call(s) dropped)")
+    /// The provider's connection to the call daemon was interrupted (the
+    /// framework calls this from its interruption handler); on this phone
+    /// that has only ever happened while suspended, delivered on resume. The
+    /// system's record of our calls is gone with it, and so, on 2026-09-27,
+    /// was our registration: register afresh here, at the event, instead of
+    /// hoping the framework does (`ProviderRecovery` has the history).
+    func providerDidReset(_ reset: CXProvider) {
+        guard reset === provider else {
+            onLog("callkit: reset from a retired provider ignored")
+            return
+        }
+        let active = UIApplication.shared.applicationState == .active
+        onLog("callkit: PROVIDER RESET (\(uuids.count) call(s) dropped, app \(appState))")
+        dumpSystemCallKitLog(lastSeconds: 20, why: "provider reset")
         for id in uuids.keys { onEnd(id) }
         uuids.removeAll()
         callIDs.removeAll()
         lastUpdate.removeAll()
+        roster.removeAll()
+        pendingStarts.removeAll()
+        perform(recovery.didReset(appActive: active))
     }
 
     func provider(_: CXProvider, perform action: CXAnswerCallAction) {
@@ -549,6 +667,9 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         if let id = callIDs.removeValue(forKey: action.callUUID) {
             uuids[id] = nil
             lastUpdate[action.callUUID] = nil
+            roster.remove(id)
+            pendingStarts[id] = nil
+            recovery.forget(id)
             onLog("callkit: end for \(id)")
             clearWaiting(id)
             onEnd(id)
@@ -565,6 +686,10 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
             return
         }
         onLog("callkit: start accepted for \(id) → \(action.handle.value)")
+        // Only now is it a call (CallRoster); the request is spent.
+        roster.confirm(id)
+        pendingStarts[id] = nil
+        recovery.forget(id)
         // Same shape as answering: hand it to the engine, fulfill; CallKit
         // then activates the session and the engine releases its audio.
         onStart(id)

@@ -114,6 +114,34 @@ if ! grep -q 'Dialler: fatal recv' "$SRC/src/tcp/tcp.c"; then
 fi
 echo "   re: fatal recv error closes the connection"
 
+# A dead UDP descriptor must leave the poll set. udp_read() returns on any
+# recv error and keeps the descriptor registered; on Darwin the kqueue is
+# level-triggered, so a socket that is permanently errored — one iOS
+# defuncted under a suspended app, ENOTCONN for ever — is reported readable
+# on every kevent(), udp_read() runs again at once (mbuf_alloc, recvfrom,
+# mem_deref, nothing else), and the loop never blocks: the engine thread at
+# 99 % CPU until iOS kills the app for it (cpu_resource_fatal 2026-09-27
+# 12:49 and 12:56, 48 s of CPU in 49 s, both mid-call in the background;
+# every one of that day's 13 runs that spun had been suspended first, and
+# none that had not). The TCP twin of this is patch level 6. The sockets
+# that live across a suspension are the DNS client's two (dnsc_alloc), so
+# that client also reopens a socket it is told has died.
+if ! grep -q 'Dialler: udp fd' "$SRC/src/udp/udp.c"; then
+  perl -0pi -e 's{(\tbool conn;[^\n]*\n)}{$1\tunsigned rxerrs;     /**< Dialler: consecutive recv errors */\n};
+    s{(static void udp_read\(struct udp_sock \*us, re_sock_t fd\)\n\{)}{/* Dialler: is this receive error the end of the descriptor? ENOTCONN is what\n * a socket iOS defuncted under a suspended app returns for ever; EBADF,\n * ENOTSOCK and EPIPE likewise never clear. Any other error is transient (an\n * ICMP for a connected socket, say) and is reported as before; a streak of\n * them with no datagram between is announced once, so an unknown permanent\n * errno names itself next time. See ios/vendor/patches/apply-re.sh */\nstatic bool udp_rx_dead(struct udp_sock *us, int err)\n{\n\tswitch (err) {\n\n\tcase ENOTCONN:\n\tcase EBADF:\n\tcase ENOTSOCK:\n\tcase EPIPE:\n\t\treturn true;\n\n\tdefault:\n\t\tif (++us->rxerrs == 64)\n\t\t\tDEBUG_WARNING("Dialler: udp fd %d: 64 consecutive recv errors (%m)\\n", us->fd, err);\n\t\treturn false;\n\t}\n}\n\n\n$1};
+    s{(\t\tif \(us->eh\)\n\t\t\tus->eh\(err, us->arg\);\n\n\t\tgoto out;\n\t\}\n\n)(\tmb->pos = us->rx_presz;\n)}{\t\t/* Dialler: a dead descriptor leaves the poll set now, before the\n\t\t * owner hears of it (it may free us); kqueue would otherwise report\n\t\t * it readable on every call and the loop would never block again. */\n\t\tif (udp_rx_dead(us, err)) {\n\t\t\tDEBUG_WARNING("Dialler: udp fd %d dead (%m); dropping it from the poll set\\n", fd, err);\n\t\t\tus->fhs = fd_close(us->fhs);\n\t\t}\n\n$1\tus->rxerrs = 0;\n$2};' "$SRC/src/udp/udp.c"
+  grep -q 'unsigned rxerrs' "$SRC/src/udp/udp.c" || { echo "patch: re udp.c struct anchor not found"; exit 1; }
+  grep -q 'static bool udp_rx_dead' "$SRC/src/udp/udp.c" || { echo "patch: re udp.c udp_read anchor not found"; exit 1; }
+  grep -q 'Dialler: udp fd %d dead' "$SRC/src/udp/udp.c" || { echo "patch: re udp.c error path anchor not found"; exit 1; }
+fi
+if ! grep -q 'Dialler: dns client socket' "$SRC/src/dns/client.c"; then
+  perl -0pi -e 's{(^int dnsc_alloc\(struct dnsc \*\*dcpp, const struct dnsc_conf \*conf,)}{/* Dialler: the client keeps its two sockets for the life of the stack. One\n * iOS defuncted under a suspended app is reported dead by udp_read() (patch\n * level 7) and dropped from the poll set; reopen it here so name resolution\n * outlives a suspension. See ios/vendor/patches/apply-re.sh */\nstatic void udp_error_handler4(int err, void *arg);\nstatic void udp_error_handler6(int err, void *arg);\n\n\nstatic void dns_udp_reopen(struct dnsc *dnsc, struct udp_sock **usp, int af,\n\t\t\t   int err)\n{\n\tstruct sa laddr;\n\tint e;\n\n\tif (err != ENOTCONN && err != EBADF && err != ENOTSOCK && err != EPIPE)\n\t\treturn;\n\n\t*usp = mem_deref(*usp);\n\tsa_set_str(&laddr, af == AF_INET6 ? "::" : "0.0.0.0", 0);\n\te = udp_listen(usp, &laddr, udp_recv_handler, dnsc);\n\tif (!e)\n\t\tudp_error_handler_set(*usp, af == AF_INET6 ? udp_error_handler6\n\t\t\t\t\t\t\t: udp_error_handler4);\n\n\tif (e)\n\t\tDEBUG_WARNING("Dialler: dns client socket (af %d) died (%m); reopen failed (%m)\\n",\n\t\t\t      af, err, e);\n\telse\n\t\tDEBUG_WARNING("Dialler: dns client socket (af %d) died (%m); reopened\\n",\n\t\t\t      af, err);\n}\n\n\nstatic void udp_error_handler4(int err, void *arg)\n{\n\tstruct dnsc *dnsc = arg;\n\n\tdns_udp_reopen(dnsc, &dnsc->us, AF_INET, err);\n}\n\n\nstatic void udp_error_handler6(int err, void *arg)\n{\n\tstruct dnsc *dnsc = arg;\n\n\tdns_udp_reopen(dnsc, &dnsc->us6, AF_INET6, err);\n}\n\n\n$1}m;
+    s{(\terr &= udp_listen\(&dnsc->us6, &laddr6, udp_recv_handler, dnsc\);\n)}{$1\tudp_error_handler_set(dnsc->us, udp_error_handler4);  /* Dialler */\n\tudp_error_handler_set(dnsc->us6, udp_error_handler6); /* Dialler */\n};' "$SRC/src/dns/client.c"
+  grep -q 'static void dns_udp_reopen' "$SRC/src/dns/client.c" || { echo "patch: re client.c dnsc_alloc anchor not found"; exit 1; }
+  grep -q 'udp_error_handler_set(dnsc->us6' "$SRC/src/dns/client.c" || { echo "patch: re client.c socket anchor not found"; exit 1; }
+fi
+echo "   re: dead UDP descriptors leave the poll set; DNS client reopens its sockets"
+
 # ---- patch level ------------------------------------------------------------
 # Exported so the app can log which libre it was linked against; bump when a
 # patch above changes. cb_version() prints it as "libre patch level N".
@@ -122,7 +150,8 @@ echo "   re: fatal recv error closes the connection"
 #   4: + fd_poll drops a ready kqueue descriptor that has no handler
 #   5: + SIP connections say when they open and close, by local port
 #   6: + a fatal recv() error closes the TCP connection instead of spinning
-RE_PATCH_LEVEL=6
+#   7: + a dead UDP descriptor leaves the poll set; the DNS client reopens its sockets
+RE_PATCH_LEVEL=7
 if ! grep -q 're_dialler_patchlevel' "$SRC/src/main/main.c"; then
   printf '\n/* Dialler: patch level, see ios/vendor/patches/apply-re.sh */\nint re_dialler_patchlevel(void)\n{\n\treturn %s;\n}\n' "$RE_PATCH_LEVEL" >> "$SRC/src/main/main.c"
 fi

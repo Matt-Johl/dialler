@@ -196,7 +196,10 @@ profile sets 184 and 96 (plan Phase E, SPEC §4.4 rule 5a).
 
 `re_dialler_patchlevel()` is appended to libre's `main.c` and returns
 `RE_PATCH_LEVEL` from apply-re.sh (1: EBADF guard; 2: + the QoS marks;
-3: + close-before-flush; 4: + the kqueue no-handler descriptor guard).
+3: + close-before-flush; 4: + the kqueue no-handler descriptor guard;
+5: + SIP connection lifecycle lines; 6: + a fatal TCP recv() closes the
+connection; 7: + a dead UDP descriptor leaves the poll set and the DNS
+client reopens its sockets).
 `cb_version()` prints it in the engine's "started baresip …" log line, so a
 field report says which XCFramework the build carried — an app built from
 between an XCFramework rebuild and a source fix has cost an afternoon
@@ -264,3 +267,30 @@ a descriptor from the kqueue where it is seen and warns with its number,
 so the next occurrence names whoever left it. Paired with the app change
 that routes `stderr` into the uploaded log (`FileLog`), which is where the
 engine watchdog's `LOOP THREAD BUSY` dump had been going unseen.
+
+## apply-re.sh — a dead UDP descriptor must leave the poll set (level 7)
+
+iOS defuncts a suspended app's sockets: every read fails at once, for ever,
+with ENOTCONN, and kqueue — level-triggered — reports the descriptor
+readable on every call. `udp_read()` returned on the error and left the
+descriptor registered, so `re_main()` never blocked again: the engine thread
+at 99 % CPU (`re_main` → `udp_read_handler` → `mbuf_alloc`/`mem_deref`, over
+and over) until iOS killed the app for it — `cpu_resource_fatal` on
+2026-09-12, -18, -20 and twice on -27 (12:49 and 12:56, 48 s of CPU in 49 s,
+each 48 s into a call answered from the lock screen). Of the 13 runs on
+2026-09-27, every one that spun had been suspended first and none that had
+not. The TCP twin is level 6.
+
+The sockets that live across a suspension are the DNS client's two
+(`dnsc_alloc`, no error handler, never recreated — the SIP UDP transport is
+rebuilt by `uag_reset_transp` on every resume). Now: `udp_read()` treats
+ENOTCONN / EBADF / ENOTSOCK / EPIPE as the end of the descriptor, drops it
+from the poll set (`fd_close`) *before* telling the owner (the owner may free
+the socket), and warns with the descriptor number; a streak of 64 transient
+errors with no datagram between them is announced once, so an unknown
+permanent errno names itself. The DNS client installs error handlers on
+both sockets and reopens one that has died, so resolution outlives a
+suspension. `make re-udp-dead-probe` pins it on the macOS slice: a pipe
+with no writer dup2'd over a UDP socket's descriptor (the sandbox refuses
+bind and SO_DEFUNCTIT) — readable for ever, recvfrom ENOTSOCK for ever —
+and the loop must stay idle for a second and the owner must be told.

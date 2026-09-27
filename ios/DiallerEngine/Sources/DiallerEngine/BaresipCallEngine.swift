@@ -346,13 +346,17 @@ public final class BaresipCallEngine: CallEngine {
     /// activation and the establishment paths call in; whichever is last
     /// wins, the other is a no-op).
     private var flowCheckScheduled = false
+    /// Bumped when the last call ends: the windows an earlier call scheduled
+    /// (up to 300 s of them) kept firing through the next call, so one device
+    /// log carried three verdicts per window on three clocks (2026-09-27).
+    private var flowCheckGeneration = 0
 
     private func verifyAudioFlow() {
-        let already: Bool = lock.withLock {
+        let (already, gen): (Bool, Int) = lock.withLock {
             let a = flowCheckScheduled
             flowCheckScheduled = true
             if !a { audioVerdicts.removeAll() } // verdicts are per call
-            return a
+            return (a, flowCheckGeneration)
         }
         if already { return }
         var p0: UInt64 = 0, r0: UInt64 = 0, e0: UInt64 = 0
@@ -364,7 +368,8 @@ public final class BaresipCallEngine: CallEngine {
         let checkpoints: [Double] = [2.0, 5.0] + stride(from: 10.0, through: 300.0, by: 5.0).map { $0 }
         for delay in checkpoints {
             DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
-                guard let self, self.state == .inCall else { return }
+                guard let self, self.state == .inCall,
+                      self.lock.withLock({ self.flowCheckGeneration == gen }) else { return }
                 var p1: UInt64 = 0, r1: UInt64 = 0, e1: UInt64 = 0
                 cb_audio_stats(&p1, &r1, &e1)
                 var m = cb_media_stats_t()
@@ -669,7 +674,7 @@ public final class BaresipCallEngine: CallEngine {
             log("engine: call \(callID) closed (\(Self.closeReason(text)))\(status == 0 ? "" : " [\(status)]")")
             let last: Bool = lock.withLock {
                 calls[callID] = nil
-                if calls.isEmpty { flowCheckScheduled = false }
+                if calls.isEmpty { flowCheckScheduled = false; flowCheckGeneration += 1 }
                 return calls.isEmpty
             }
             // sessionActive is cleared by didDeactivate, which CallKit sends

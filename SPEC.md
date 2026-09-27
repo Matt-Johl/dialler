@@ -2303,8 +2303,10 @@ it is neither linked nor redistributed.
    asserted by `make sim-call-ring-reset` (the reset issued while the
    simulated phone rings; the stack must refuse it and the call must be
    answered as in the plain run).
-8. **OPEN — SIP loop thread spinning at 100 % CPU; root cause not found
-   (2026-09-12; spin contained the same day).** Report
+8. **FIXED 2026-09-27 (libre patch level 7), awaiting device confirmation — SIP
+   loop thread spinning at 100 % CPU: a UDP socket iOS defuncted under the
+   suspended app, level-triggered and never dropped from the poll set
+   (first seen 2026-09-12; spin contained the same day).** Report
    `Dialler.cpu_resource_fatal-2026-09-12-141400.ips` (iOS 26.6.2, the
    Phase C build): iOS killed the app after 48 s at 99 % CPU while in the
    background ("Non-Frontmost App"). Heaviest stack: the engine's loop
@@ -2414,6 +2416,46 @@ it is neither linked nor redistributed.
    and rebuild the stack) was considered and rejected as masking the
    cause. *Next time:* the `LOOP THREAD BUSY` backtrace and any
    `fd_poll: fd N ready … with no handler` line are in the app log.
+   *Fifth and sixth episodes, 2026-09-27 12:49 and 12:56, and the root
+   cause:* `Dialler.cpu_resource_fatal-2026-09-27-124907.ips` and
+   `…-125627.ips`, both 48 s of CPU in 49 s, both exactly 48 s into an
+   incoming call answered from the lock screen (the background CPU budget
+   is 80 % over 60 s; a foreground spin is never killed, which is why the
+   kills are always mid-call with the screen off). Heaviest stack both
+   times: `loop_thread → re_main → udp_read_handler → mbuf_alloc /
+   mem_deref`, i.e. a full read cycle per loop iteration with no receive
+   handler ever reached: recvfrom failing. The discriminator was in the
+   day's 13 app logs: every run that spun (`LOOP THREAD BUSY`) had been
+   suspended first (`did not run for N ms`), and no run that had not been
+   suspended ever spun — 13/13. Mechanism: iOS defuncts a suspended app's
+   sockets; a defunct socket fails every read at once with ENOTCONN (the
+   `Socket is not connected [57]` the TLS socket logs on each resume) and
+   kqueue, level-triggered, reports it readable on every call. libre's
+   `udp_read()` returned on the error and left the descriptor registered,
+   so the loop never blocked again — the UDP twin of the TCP case fixed as
+   patch level 6 on 09-25. Which socket: the SIP UDP transport is destroyed
+   and re-created by `uag_reset_transp` on every resume, so not that; the
+   DNS client's two sockets (`dnsc_alloc`, no error handler, never
+   re-created) live for the life of the stack, and are the ones. *Fixed:*
+   libre patch level 7 (`ios/vendor/patches/apply-re.sh`, README) —
+   `udp_read()` treats ENOTCONN/EBADF/ENOTSOCK/EPIPE as the end of the
+   descriptor, drops it from the poll set before telling the owner, and
+   warns with its number (`Dialler: udp fd N dead (…); dropping it from the
+   poll set`); a streak of 64 transient errors is announced once so an
+   unknown permanent errno names itself; the DNS client installs error
+   handlers and reopens a socket that died (`Dialler: dns client socket …
+   reopened`), so resolution outlives a suspension. *Pinned:* `make
+   re-udp-dead-probe` (a pipe with no writer dup2'd over a UDP socket's
+   descriptor — the sandbox refuses bind and SO_DEFUNCTIT — readable for
+   ever, ENOTSOCK for ever): level 6 burns 0.999 s of CPU per second and
+   calls the error handler 2.4 million times; level 7 uses 0.000 s and
+   calls it once. *Device confirmation still owed:* engine start line says
+   `libre patch level 7`; after a lock of ≥ 5 min, the first resume logs the
+   two lines above and no `LOOP THREAD BUSY`; a call answered from the lock
+   screen runs past 60 s without `cpu_resource_fatal`. Not the same as
+   issue 6 (the Foundation string matching on the same thread), which
+   stays open on its own merits. The MetricKit CPU exception from 12:29
+   (144 s) is this too.
 9. **CLOSED — "app silent after a wake, then launches that hang and cannot
    be killed" (2026-09-13 06:13 SAST; same shape as the 00:37 episode and
    the 2026-09-12 "restart needed a reboot"): the app was running under

@@ -336,6 +336,14 @@ symbolicate:
 plc-test:
 	cc -std=c99 -Wall -Wextra -O2 -o "$${TMPDIR:-/tmp}/plc_test" ios/vendor/patches/plc/plc.c ios/vendor/patches/plc/plc_test.c -lm && "$${TMPDIR:-/tmp}/plc_test"
 
+# Does libre drop a dead UDP descriptor from its poll set instead of spinning
+# on it (patch level 7; ios/vendor/patches/README.md)? Links the macOS slice
+# of libre, so rebuild it first after a patch: `sh ios/vendor/build-baresip.sh re macos`.
+re-udp-dead-probe:
+	cc -std=c11 -Wall -O2 -o "$${TMPDIR:-/tmp}/re_udp_dead_probe" ios/vendor/patches/re/udp_dead_probe.c \
+	  -Iios/vendor/prefix/macos/include/re -Lios/vendor/prefix/macos/lib -lre -lssl -lcrypto -lz -lresolv \
+	  -framework SystemConfiguration -framework CoreFoundation && "$${TMPDIR:-/tmp}/re_udp_dead_probe"
+
 # Headless run of the real baresip engine on this Mac against the docker
 # server: registers 203 (dev-s, the simulator/probe identity), answers a call if one arrives. Needs the macOS slice
 # (ios-vendor) and a server started with DIALLER_PUBLIC_HOST=<mac-ip>.

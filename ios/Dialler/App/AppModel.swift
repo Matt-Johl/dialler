@@ -38,6 +38,13 @@ final class AppModel: ObservableObject {
 
     // Status
     @Published private(set) var status = "disconnected"
+    /// The same, reduced to what Settings tells the user.
+    enum Link: Equatable { case offline, connecting, waiting, connected, refused }
+    @Published private(set) var link: Link = .offline
+    /// This phone's line (the SIP user the welcome names, e.g. "204"),
+    /// remembered so Settings and the keypad can show it before the first
+    /// welcome of a launch. Empty until one has arrived.
+    @Published private(set) var line = UserDefaults.standard.string(forKey: "line") ?? ""
     @Published private(set) var sessionID = ""
     @Published private(set) var contacts: [DirectoryContact] = []
     /// The Recents list (SPEC §6 item 6), newest first. Written by the
@@ -54,6 +61,10 @@ final class AppModel: ObservableObject {
     /// undeliverable". It had been visible only as a log line, which cost
     /// a morning's debugging to work out (2026-09-16).
     @Published private(set) var backgroundCalls = "unknown"
+    /// The same state for Settings: whether a call can reach the phone
+    /// while the app is closed, in the user's terms.
+    enum BackgroundCalls: Equatable { case off, on, waitingForNetwork }
+    @Published private(set) var backgroundCallsMode: BackgroundCalls = .off
     /// The SSIDs of the saved Local Push configuration, as loaded from
     /// the framework's preferences (the source of truth; the app persists
     /// nothing of its own).
@@ -80,7 +91,7 @@ final class AppModel: ObservableObject {
             if connectedAt == nil {
                 return outgoing ? progress.label : "Connecting…"
             }
-            return held ? "On hold" : "Connected"
+            return held ? "On Hold" : "Connected"
         }
     }
     /// Every call the in-call screen shows (answered, or outgoing and
@@ -303,7 +314,7 @@ final class AppModel: ObservableObject {
                 // On screen, not only in the log: the call carries on, so
                 // without this the user taps Transfer and nothing visible
                 // happens at all.
-                self.show(notice: progress.map { "Transfer failed — \($0.label)" } ?? "Transfer failed")
+                self.show(notice: progress.map { "Transfer Failed — \($0.label)" } ?? "Transfer Failed")
             }
         }
         // Show the directory's friendly name for a known incoming caller
@@ -499,7 +510,7 @@ final class AppModel: ObservableObject {
 
     func enrol(url: URL) async {
         guard let link = EnrolmentLink(url: url) else {
-            enrolmentError = "That QR code is not an enrolment code."
+            enrolmentError = "This QR code isn’t an enrolment code."
             return
         }
         await enrol(link)
@@ -557,6 +568,8 @@ final class AppModel: ObservableObject {
         deviceID = ""
         token = ""
         certSHA256 = nil
+        line = ""
+        UserDefaults.standard.removeObject(forKey: "line")
         enrolmentError = nil
         enrolled = false
         append("logged out: credential cleared, Local Push removed")
@@ -629,14 +642,16 @@ final class AppModel: ObservableObject {
     private func refreshBackgroundCalls() {
         guard let m = pushManager else {
             backgroundCalls = Self.backgroundCallState(enabled: false, active: false)
+            backgroundCallsMode = .off
             return
         }
         backgroundCalls = Self.backgroundCallState(enabled: m.isEnabled, active: m.isActive)
+        backgroundCallsMode = !m.isEnabled ? .off : m.isActive ? .on : .waitingForNetwork
     }
 
     func connect() {
         let cfg = currentConfig
-        guard cfg.isComplete else { status = "incomplete settings"; return }
+        guard cfg.isComplete else { status = "incomplete settings"; link = .offline; return }
         do { try store.save(cfg) } catch { append("config save failed: \(error)") }
         enrolled = true // the dev path: fields entered directly on the Status page
         // The same enrolment credential authenticates the SIP leg (Digest).
@@ -648,6 +663,7 @@ final class AppModel: ObservableObject {
         sessionDropped = false
         controller.attach(transport: s)
         status = "connecting to \(cfg.gateway.host):\(cfg.gateway.port)"
+        link = .connecting
         eventTask = Task { [weak self] in
             for await ev in s.events {
                 guard let self else { return }
@@ -663,6 +679,7 @@ final class AppModel: ObservableObject {
         session?.disconnect()
         session = nil
         status = "disconnected"
+        link = .offline
         sessionID = ""
     }
 
@@ -704,13 +721,16 @@ final class AppModel: ObservableObject {
         case .waiting(let reason):
             if reason.hasPrefix("reconnecting") {
                 status = reason
+                link = .connecting
                 append("gateway: \(reason)")
             } else {
                 status = "waiting for network (\(reason))"
+                link = .waiting
                 append("waiting: \(reason) — allow Local Network access if prompted")
             }
         case .connected(let w):
             status = "connected"
+            link = .connected
             sessionID = w.sessionID
             append("welcome: session \(w.sessionID), heartbeat \(w.heartbeatSeconds)s, directory v\(w.directoryVersion)")
             if sessionDropped {
@@ -723,6 +743,10 @@ final class AppModel: ObservableObject {
                 // Foreground path (SPEC §2): stay registered while running so
                 // calls reach us directly; wakes are for the background.
                 sipDomain = sip.domain
+                if line != sip.user {
+                    line = sip.user
+                    UserDefaults.standard.set(sip.user, forKey: "line")
+                }
                 controller.setAccount(user: "\(sip.user)@\(sip.domain)",
                                       sip: SIPTarget(host: sip.host, port: sip.port, transport: sip.transport))
             }
@@ -738,7 +762,7 @@ final class AppModel: ObservableObject {
             apply(deviceConfig: cfg)
         case .protocolError(let e):
             append("gateway error \(e.code.rawValue): \(e.message ?? "")")
-            if e.fatal { status = "rejected: \(e.code.rawValue)" }
+            if e.fatal { status = "rejected: \(e.code.rawValue)"; link = .refused }
         case .disconnected(let reason):
             // Logged, not just shown: a session that goes down mid-call left
             // no trace in the diagnostics at all, so an incident could only
@@ -746,6 +770,7 @@ final class AppModel: ObservableObject {
             // says whether the drop happened while calls were up.
             append("gateway: session down (\(reason)); \(controller.activeCalls.count) call(s) tracked, app \(UIApplication.shared.applicationState == .active ? "active" : "background")")
             status = "disconnected (\(reason))"
+            if link != .refused { link = .offline } // keep saying why
             sessionID = ""
             sessionDropped = true
         }
@@ -843,7 +868,7 @@ final class AppModel: ObservableObject {
             return true
         } catch {
             append("directory \(what) failed: \(error.localizedDescription)")
-            directoryError = "Could not \(what): \(error.localizedDescription)"
+            directoryError = "Couldn’t \(what). \(error.localizedDescription)"
             return false
         }
     }
@@ -918,7 +943,7 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 if let error { self.localPushStatus = "load failed: \(error.localizedDescription)"; return }
                 let manager = managers?.first ?? NEAppPushManager()
-                manager.localizedDescription = "Dialler on-prem calls"
+                manager.localizedDescription = "\(AppName.display) Background Calls"
                 manager.providerBundleIdentifier = DiallerIDs.pushProviderBundleID
                 manager.matchSSIDs = ssids
                 manager.providerConfiguration = ["gateway": "\(self.host):\(self.port)"]

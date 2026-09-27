@@ -34,11 +34,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Dialler connects to your organisation's on-premises call server.</string>
+	<string>vPhone connects to your organisation’s call server on the office network.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Dialler uses the camera to scan the enrolment QR code your administrator shows you.</string>
+	<string>vPhone uses the camera to scan the enrolment code your administrator shows you.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Dialler needs the microphone for phone calls.</string>
+	<string>vPhone uses the microphone so the person you’re talking to can hear you.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>voip</string>

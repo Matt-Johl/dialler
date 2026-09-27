@@ -1621,6 +1621,20 @@ on by config — see §7.4.
      revoke dev-s, upload a CSV to dev-a and mint a code for dev-a; the
      call's audio continues, and neither dev-ha nor dev-hb sees a session
      close, a re-INVITE or a `directory_changed`.
+   10. **Per-destination codec on the PBX leg (scheduled; later in
+     priority, decided 2026-09-27).** The server offers the PBX one global
+     codec order (`-trunk-codecs`, default G.722 first). For a phone that
+     only does G.711 that makes Asterisk transcode on the server's leg, and
+     Asterisk 20.6 loses the phone's audio after some hold/resume cycles on
+     exactly that transcoded leg (GitHub issue 11: trunk capture, Asterisk's
+     own `rtp set debug` and the relay counters agree; PCMU on both legs
+     never fails; `musiconhold.conf format=ulaw` did not help). The
+     interim is PCMU first on the PBX leg. The item: the server chooses the
+     offer per destination — the phone's own codec for a directory entry
+     that names one, or what the PBX answered last time for that number —
+     so the PBX never transcodes for a narrowband phone while wideband peers
+     keep G.722. Needs a codec field on the directory entry (admin contract
+     addition, 9a) and a harness scenario with a G.711-only phone leg.
 
 ### Much later (not scheduled)
 

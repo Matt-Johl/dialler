@@ -332,6 +332,20 @@ func TestClientsPage(t *testing.T) {
 	}
 }
 
+// Each of the Phone, SIP, PBX line and State headings has an "i" button that
+// opens a bubble explaining that column's values, and every value the rows
+// can show is explained there.
+func TestClientsColumnHelp(t *testing.T) {
+	h := newHarness(t)
+	rec := h.get("/clients")
+	for _, id := range []string{"help-phone", "help-sip", "help-line", "help-state"} {
+		mustContain(t, rec, `aria-controls="`+id+`"`, `id="`+id+`" hidden`)
+	}
+	mustContain(t, rec, "Wake only", "Offline", "Registered",
+		">registered<", ">pending<", ">retrying<", ">refused<", ">stored<",
+		">Enrolled<", ">Not enrolled<", "On a call", ">Revoked<", "code valid until")
+}
+
 func TestCreateClientShowsCodeAndQR(t *testing.T) {
 	h := newHarness(t)
 	rec := h.post("/clients", "user", "204", "description", "Warehouse 3")

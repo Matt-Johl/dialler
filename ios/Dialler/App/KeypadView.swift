@@ -7,6 +7,15 @@ struct KeypadView: View {
     /// Set by a long press on 0, which has already typed "+": the tap that
     /// ends the press must not type a 0 after it.
     @State private var plusTyped = false
+    /// The call last placed from here, and the number as it was dialled.
+    /// When its Recents record appears the call is over: a completed call
+    /// clears the number; any other outcome leaves it to redial or correct.
+    @State private var placed: PlacedCall?
+
+    struct PlacedCall: Equatable {
+        var id: String
+        var number: String
+    }
 
     private static let keys: [[(digit: String, letters: String)]] = [
         [("1", ""), ("2", "ABC"), ("3", "DEF")],
@@ -56,6 +65,16 @@ struct KeypadView: View {
         }
         .frame(maxWidth: .infinity)
         .background(Palette.ground)
+        .onChange(of: model.recents) { _, recents in settle(recents) }
+        .onAppear { settle(model.recents) }
+    }
+
+    /// The placed call has ended if it has a Recents record.
+    private func settle(_ recents: [CallRecord]) {
+        guard let call = placed, let record = recents.first(where: { $0.matches(callID: call.id) }) else { return }
+        // Only the number that was dialled: never anything typed since.
+        if record.outcome == .completed && number == call.number { number = "" }
+        placed = nil
     }
 
     private var display: some View {
@@ -110,8 +129,8 @@ struct KeypadView: View {
         Button {
             if number.isEmpty {
                 number = lastDialled ?? ""
-            } else {
-                model.dial(number)
+            } else if let id = model.dial(number) {
+                placed = PlacedCall(id: id, number: number)
             }
         } label: {
             Image(systemName: "phone.fill").font(.system(size: 26))

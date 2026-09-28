@@ -59,6 +59,7 @@ struct OnboardingView: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showStatus = false } } }
             }
             .tint(Palette.ink)
+            .toggleStyle(.ink)
         }
     }
 

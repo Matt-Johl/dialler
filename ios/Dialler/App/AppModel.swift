@@ -369,13 +369,18 @@ final class AppModel: ObservableObject {
     /// ("sip:202@dialler"), a user ("202") or digits from the keypad; the
     /// engine completes bare targets with the account's domain and the
     /// server routes local users to apps and everything else to the trunk.
-    func dial(_ target: String) {
+    /// Place a call; the controller's id for it, or nil when it could not
+    /// start. The id is also the call's Recents record id when it ends.
+    @discardableResult
+    func dial(_ target: String) -> String? {
         let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
+        guard !t.isEmpty else { return nil }
         let name = contacts.first { $0.uri == t || CallController.userPart(of: $0.uri) == t }?.displayName
-        if controller.startCall(to: t, displayName: name) == nil {
+        let id = controller.startCall(to: t, displayName: name)
+        if id == nil {
             append("call to \(t) not started (see log above)")
         }
+        return id
     }
 
     func hangUp() {

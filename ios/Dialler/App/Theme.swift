@@ -22,9 +22,13 @@ enum Palette {
     static let fill = Color(light: 0xEEF0F3, dark: 0x16181E)
     /// A raised surface on a fill: the selected segment.
     static let raised = Color(light: 0xFFFFFF, dark: 0x2A2D36)
-    /// A switch that is on: the ink in light mode; in dark mode a grey, since
-    /// near-white would hide the switch's white knob.
-    static let switchOn = Color(light: 0x0B0D12, dark: 0x8A909C)
+    /// A switch that is off: a pale track in light mode, a dark one in dark
+    /// mode. On is the ink, so the two never read alike in either.
+    static let switchOff = Color(light: 0xDDE0E6, dark: 0x2A2D36)
+    /// The knob: white in light mode; in dark mode the ground on an ink
+    /// (near-white) track, a grey on the dark off track.
+    static let knobOn = Color(light: 0xFFFFFF, dark: 0x0A0B0F)
+    static let knobOff = Color(light: 0xFFFFFF, dark: 0x8A909C)
     /// Ending a call. The one colour that is not ink.
     static let end = Color(light: 0xE5484D, dark: 0xE5484D)
 }
@@ -208,4 +212,41 @@ struct CircleButtonStyle: ButtonStyle {
             .opacity(fill != nil && configuration.isPressed ? 0.75 : isEnabled ? 1 : 0.35)
             .contentShape(Circle())
     }
+}
+
+/// The canvas's switch: an ink track with the knob right when on, a quiet
+/// track with the knob left when off. The system switch cannot take a
+/// knob colour, and with a white knob no dark-mode "on" colour both
+/// contrasts with the knob and stands apart from the dark "off" track.
+/// VoiceOver still meets a standard switch.
+struct InkSwitchStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 12) {
+            configuration.label
+            Spacer(minLength: 0)
+            Capsule()
+                .fill(configuration.isOn ? Palette.ink : Palette.switchOff)
+                .frame(width: 51, height: 31)
+                .overlay(alignment: configuration.isOn ? .trailing : .leading) {
+                    Circle()
+                        .fill(configuration.isOn ? Palette.knobOn : Palette.knobOff)
+                        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+                        .padding(2)
+                }
+                .opacity(isEnabled ? 1 : 0.4)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.snappy(duration: 0.2)) { configuration.isOn.toggle() }
+        }
+        .accessibilityRepresentation {
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+        }
+    }
+}
+
+extension ToggleStyle where Self == InkSwitchStyle {
+    static var ink: InkSwitchStyle { InkSwitchStyle() }
 }

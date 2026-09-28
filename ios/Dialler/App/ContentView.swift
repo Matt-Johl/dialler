@@ -19,6 +19,7 @@ struct ContentView: View {
             }
         }
         .tint(Palette.ink)
+        .toggleStyle(.ink)
         // A dialler://enrol link from the iOS Camera app.
         .onOpenURL { model.handle(url: $0) }
         // Ringing is CallKit's UI alone (banner, lock screen, Recents). While

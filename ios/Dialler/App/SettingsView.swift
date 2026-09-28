@@ -95,7 +95,6 @@ struct SettingsView: View {
             Toggle(isOn: $model.callWaiting) {
                 Text("Call Waiting").font(.callout).foregroundStyle(Palette.ink)
             }
-            .tint(Palette.switchOn)
             .frame(minHeight: 52)
             .overlay(alignment: .bottom) { Palette.hairline.frame(height: 1) }
             SettingsFooter("When this is on, a second caller rings while you’re on a call. When it’s off, they hear a busy tone.")

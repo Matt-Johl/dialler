@@ -71,7 +71,16 @@ struct OnboardingView: View {
                     .font(.footnote)
                     .foregroundStyle(Palette.end)
                     .multilineTextAlignment(.center)
+                    .padding(.bottom, model.localNetworkDenied ? 2 : 8)
+                if model.localNetworkDenied {
+                    // The app's page in Settings has the Local Network switch.
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Palette.ink)
                     .padding(.bottom, 8)
+                }
             }
             if model.enrolling {
                 HStack(spacing: 10) {

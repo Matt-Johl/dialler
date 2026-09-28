@@ -134,6 +134,15 @@ int cb_ua_free(void);
 /// signalling connection too. Returns 0 or a negative errno.
 int cb_reset_transports(void);
 
+/// Which server certificate the SIP TLS connection accepts (SPEC §4.8).
+/// With `sha256` (32 bytes, the SHA-256 of the certificate's DER — the
+/// fingerprint enrolment pinned): that certificate and no other, whoever
+/// issued it and whatever its dates, as the gateway connection does.
+/// Without it: any certificate when `accept_any` (the dev path), otherwise
+/// none. Takes effect from the next TLS handshake; may be called from any
+/// thread, before or after cb_start, and outlives cb_stop.
+void cb_set_tls_trust(const uint8_t *sha256, bool accept_any);
+
 /// Whether the UA holds a live registration.
 bool cb_registered(void);
 

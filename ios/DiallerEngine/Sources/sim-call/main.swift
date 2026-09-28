@@ -375,7 +375,17 @@ callKit.onDecline = {
 callKit.onStart = { controller.userStarted(callID: $0) }
 callKit.noCallsLeft = { controller.activeCalls.isEmpty }
 
-let cfg = AppConfig(gateway: GatewayEndpoint(host: host, port: port, acceptAnyCertificate: true), deviceID: deviceID, token: token)
+// SIP_PIN (via SIMCTL_CHILD_SIP_PIN): the server certificate's pin, as
+// enrolment stores it. Both legs then accept that certificate only, as the
+// app does after enrolment; unset, both accept any (the harness default).
+// SIP_LEG_PIN overrides the SIP leg's pin alone: a wrong one there, with
+// the gateway pinned right, shows the SIP check refusing by itself.
+let sipPin = ProcessInfo.processInfo.environment["SIP_PIN"].flatMap { $0.isEmpty ? nil : $0 }
+let sipLegPin = ProcessInfo.processInfo.environment["SIP_LEG_PIN"].flatMap { $0.isEmpty ? nil : $0 } ?? sipPin
+engine.setServerTrust(pin: sipLegPin, acceptAnyCertificate: sipLegPin == nil)
+if let sipPin { out("pinned to \(sipPin) (SIP leg \(sipLegPin ?? "unpinned"))") }
+let cfg = AppConfig(gateway: GatewayEndpoint(host: host, port: port, acceptAnyCertificate: sipPin == nil, certSHA256: sipPin),
+                    deviceID: deviceID, token: token)
 // The same session keeper as the app: reconnects after a drop, so a server
 // restart mid-run (sim_call.sh RESTART_SERVER=1) must be survived.
 let transport = GatewaySession(endpoint: cfg.gateway)

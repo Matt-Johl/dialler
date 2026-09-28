@@ -23,6 +23,16 @@ public enum CertificatePin {
         return fingerprint(of: leaf)
     }
 
+    /// The 32 bytes a pin stands for, for code that checks certificates
+    /// itself (the SIP engine's OpenSSL); nil unless `pin` is base64url of
+    /// exactly a SHA-256.
+    public static func digest(of pin: String) -> Data? {
+        var b64 = pin.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+        guard let data = Data(base64Encoded: b64), data.count == 32 else { return nil }
+        return data
+    }
+
     /// Whether the presented chain's leaf is the pinned certificate.
     public static func matches(_ trust: SecTrust, pin: String) -> Bool {
         guard let got = leafFingerprint(of: trust) else { return false }

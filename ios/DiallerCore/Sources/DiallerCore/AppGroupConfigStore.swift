@@ -29,7 +29,7 @@ public final class AppGroupConfigStore: AppConfigStore {
         let token = readToken() ?? ""
         let pin = defaults.string(forKey: Key.pin).flatMap { $0.isEmpty ? nil : $0 }
         return AppConfig(
-            gateway: GatewayEndpoint(host: host, port: port == 0 ? 7443 : port, acceptAnyCertificate: defaults.bool(forKey: Key.acceptAny), certSHA256: pin),
+            gateway: GatewayEndpoint(host: host, port: port == 0 ? 7443 : port, acceptAnyCertificate: DevSettings.allowsAnyCertificate && defaults.bool(forKey: Key.acceptAny), certSHA256: pin),
             deviceID: deviceID,
             token: token
         )
@@ -83,4 +83,17 @@ public final class AppGroupConfigStore: AppConfigStore {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "keychain write failed (\(status))"])
         }
     }
+}
+
+/// Settings that exist for the development harness only (appstore.md,
+/// must-fix 4). A release build — TestFlight or the App Store — never
+/// trusts an unpinned server, even if a development build saved "accept any
+/// certificate" on this phone; Debug builds (Xcode, the tests, the headless
+/// tools) keep it.
+public enum DevSettings {
+    #if DEBUG
+    public static let allowsAnyCertificate = true
+    #else
+    public static let allowsAnyCertificate = false
+    #endif
 }

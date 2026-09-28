@@ -8,7 +8,7 @@ struct SettingsView: View {
     @Binding var path: NavigationPath
     @State private var confirmSignOut = false
 
-    enum Route: Hashable { case status }
+    enum Route: Hashable { case status, acknowledgements }
 
     static var version: String {
         let info = Bundle.main.infoDictionary
@@ -45,6 +45,7 @@ struct SettingsView: View {
             .navigationDestination(for: Route.self) { route in
                 switch route {
                 case .status: StatusView()
+                case .acknowledgements: AcknowledgementsView()
                 }
             }
         }
@@ -105,6 +106,19 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSection("About")
             SettingsRow("Version", value: Self.version)
+            NavigationLink(value: Route.acknowledgements) {
+                HStack {
+                    Text("Acknowledgements").font(.callout).foregroundStyle(Palette.ink)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Palette.tertiary)
+                }
+                .frame(minHeight: 52)
+                .overlay(alignment: .bottom) { Palette.hairline.frame(height: 1) }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 

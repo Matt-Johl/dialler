@@ -13,6 +13,22 @@ from a review of the project as it stood on `main` at 58bb0c7.
 | 3 | The hidden Status page | **Open.** It is a hidden feature (guideline 2.3.1). Release builds must at least drop its developer fields; keep a documented diagnostics page, or remove the page from release builds. |
 | 4 | Store name | **Done.** "Dialler" is reserved; the app record exists in App Store Connect (pre-submission). |
 
+## Progress
+
+On `feature/app-store-readiness` (2026-09-28), awaiting approval:
+
+| Item | State |
+|------|-------|
+| 1. Icon without transparency | **Done.** Every pixel was already opaque, so dropping the channel changed nothing visible. |
+| 2. Privacy manifests | **Done**, for the app and the PushProvider extension. |
+| 3. SIP certificate pinning | **Done and tested** against the native server from the iOS simulator: the right pin registers and the call carries audio; a wrong SIP-leg pin, with the gateway pinned right, is refused by the new check. |
+| 4. Release builds without developer settings | **Done.** Decision 3 (the hidden page itself) is still open. |
+| 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
+| 6. Version and encryption key | Version **1.0 done.** Build numbers: let Xcode raise them at upload ("Manage Version and Build Number" when distributing). `ITSAppUsesNonExemptEncryption` **waits** for the export-compliance answer. |
+| 7. Demo mode | **Waits** for decision 2 (and Apple's approval). |
+| 8. Permission prompts | **Built.** Needs Matt's fresh-install check on a phone: the simulator does not enforce Local Network privacy. |
+| Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
+
 ## Review access
 
 App Review has to be able to sign in and use the app (guideline 2.1). The app
@@ -127,6 +143,21 @@ On a branch `feature/app-store-readiness`, merged on approval.
    `sip_verify_server no`, even after enrolment has pinned the server's
    certificate. The SIP leg must be checked against the same pin. This is
    a security fix for a shipped product, not only a review matter.
+   *Built:* the shim (`cbaresip.c`, `verify_server_cert`) replaces
+   OpenSSL's chain check on baresip's SIP TLS context with a comparison of
+   the leaf's SHA-256 against the enrolment pin, as the gateway connection
+   does. Issuer, dates and name are not consulted, so self-signed
+   certificates work, and nothing needs a publicly trusted CA.
+   *Certificates:* one server certificate (self-signed, kept in
+   `<data-dir>/tls`) serves the gateway, the phone API, SIP and the
+   internal admin API; phones pin it, so it never needs renewing for them,
+   and `<data-dir>/tls` belongs in backups (losing it means re-enrolling
+   every phone). The admin console (`dialler-admin`) has its own
+   certificate, which can be publicly trusted and renewed freely. Two
+   server follow-ups: issue #15 (the console stops reaching the server
+   when the server's self-signed certificate passes its one-year expiry)
+   and issue #16 (pick up a renewed console certificate without a
+   restart).
 4. **Release builds without the developer settings:** Accept Any
    Certificate, manual device ID and token, and Local Push by hand
    (decision 3 settles the rest of the Status page).

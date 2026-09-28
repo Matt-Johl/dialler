@@ -64,7 +64,6 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
         Breadcrumb.drop("CallKit: provider registered; configuring the audio session")
         configureAudioSession()
         Breadcrumb.drop("CallKit: audio session configured")
-        requestMicrophonePermission()
     }
 
     private static func makeConfiguration() -> CXProviderConfiguration {
@@ -160,7 +159,9 @@ final class CallKitBridge: NSObject, CallUI, CXProviderDelegate, CXCallObserverD
 
     /// The recorder unit needs record permission; without it the voice
     /// processing unit fails to render. Ask at launch, not mid-call.
-    private func requestMicrophonePermission() {
+    /// Asked by `AppModel.connect()`, once the phone is set up: not at
+    /// provider registration, which is first launch, before setup.
+    func requestMicrophonePermission() {
         switch AVAudioApplication.shared.recordPermission {
         case .granted:
             onLog("audio: microphone permission granted")

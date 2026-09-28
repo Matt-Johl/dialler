@@ -63,7 +63,7 @@ public struct DirectorySync: Codable, Equatable, Sendable {
 /// Delta-sync client for the directory API (SPEC §5 component 8, server
 /// side in server/internal/directory). Device-authenticated with the same
 /// credential as the gateway.
-public struct DirectoryClient {
+public struct DirectoryClient: DirectoryService {
     private let base: URL
     private let deviceID: String
     private let token: String
@@ -80,26 +80,6 @@ public struct DirectoryClient {
     public func changes(since: Int64) async throws -> DirectorySync {
         let req = request("GET", path: "v1/directory", query: [.init(name: "since", value: String(since))])
         return try JSONDecoder().decode(DirectorySync.self, from: try await perform(req))
-    }
-
-    /// Brings `book` up to date: the delta from its cursor — or, when the
-    /// server's version is *behind* the cursor, a reset and a full sync.
-    /// A version can go backwards when the server's counter restarted: a
-    /// re-provisioned harness, or the move to per-device directories
-    /// (each starts at 1 while the app still held the old global cursor,
-    /// 702 on 2026-09-21 — every write landed on the server and the app
-    /// saw none of them). Returns true when it had to reset.
-    @discardableResult
-    public func sync(_ book: inout AddressBook) async throws -> Bool {
-        var delta = try await changes(since: book.version)
-        var reset = false
-        if delta.version < book.version {
-            book.reset()
-            delta = try await changes(since: 0)
-            reset = true
-        }
-        book.apply(delta)
-        return reset
     }
 
     // MARK: Writes (SPEC §6 item 7): the device's own directory, online only.

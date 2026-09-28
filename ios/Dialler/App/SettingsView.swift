@@ -46,6 +46,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 0) {
                         summary
                         connection
+                        if model.isDemo { demo }
                         calls
                         about
                         signOut
@@ -99,10 +100,27 @@ struct SettingsView: View {
     private var connection: some View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSection("Connection")
-            SettingsRow("Server", value: model.host.isEmpty ? "—" : model.host)
-            SettingsRow("Background Calls", value: backgroundValue)
-            SettingsRow("Office Wi-Fi", value: officeNetworks)
-            SettingsFooter(backgroundFooter)
+            if model.isDemo {
+                SettingsRow("Server", value: "None")
+                SettingsFooter("This is a demo. Calls are simulated on this \(device): they ring, connect and play your voice back, and nothing leaves the phone.")
+            } else {
+                SettingsRow("Server", value: model.host.isEmpty ? "—" : model.host)
+                SettingsRow("Background Calls", value: backgroundValue)
+                SettingsRow("Office Wi-Fi", value: officeNetworks)
+                SettingsFooter(backgroundFooter)
+            }
+        }
+    }
+
+    /// Demo mode only: an incoming call on request, since no one else can
+    /// ring a demo phone.
+    private var demo: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SettingsSection("Demo")
+            Button("Receive a Demo Call") { model.receiveDemoCall() }
+                .buttonStyle(WideButtonStyle(kind: .outline))
+                .padding(.top, 8)
+            SettingsFooter("\(Demo.caller.name) calls in a few seconds. Calls to Sales Line are always busy.")
         }
     }
 
@@ -162,6 +180,7 @@ struct SettingsView: View {
     }
 
     private var linkText: String {
+        if model.isDemo { return "Demo" }
         switch model.link {
         case .connected: return "Connected"
         case .connecting: return "Connecting…"

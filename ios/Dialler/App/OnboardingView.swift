@@ -143,7 +143,9 @@ struct OnboardingView: View {
                         Task { await model.enrol(host: host, port: UInt16(port) ?? 8080, code: code) }
                     }
                     .fontWeight(.semibold)
-                    .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || EnrolmentLink.normalise(code).count < 8)
+                    // The demo's code needs no server.
+                    .disabled((host.trimmingCharacters(in: .whitespaces).isEmpty && !Demo.isCode(code))
+                        || EnrolmentLink.normalise(code).count < 8)
                 }
             }
         }

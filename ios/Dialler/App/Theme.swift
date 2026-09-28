@@ -22,13 +22,10 @@ enum Palette {
     static let fill = Color(light: 0xEEF0F3, dark: 0x16181E)
     /// A raised surface on a fill: the selected segment.
     static let raised = Color(light: 0xFFFFFF, dark: 0x2A2D36)
-    /// A switch that is off: a pale track in light mode, a dark one in dark
-    /// mode. On is the ink, so the two never read alike in either.
-    static let switchOff = Color(light: 0xDDE0E6, dark: 0x2A2D36)
-    /// The knob: white in light mode; in dark mode the ground on an ink
-    /// (near-white) track, a grey on the dark off track.
-    static let knobOn = Color(light: 0xFFFFFF, dark: 0x0A0B0F)
-    static let knobOff = Color(light: 0xFFFFFF, dark: 0x8A909C)
+    /// Switches: green on, red off (2026-09-28), iOS's own green and red so
+    /// both adjust for dark mode. The knob is white either way.
+    static let switchOn = Color(uiColor: .systemGreen)
+    static let switchOff = Color(uiColor: .systemRed)
     /// Ending a call. The one colour that is not ink.
     static let end = Color(light: 0xE5484D, dark: 0xE5484D)
 }
@@ -214,11 +211,9 @@ struct CircleButtonStyle: ButtonStyle {
     }
 }
 
-/// The canvas's switch: an ink track with the knob right when on, a quiet
-/// track with the knob left when off. The system switch cannot take a
-/// knob colour, and with a white knob no dark-mode "on" colour both
-/// contrasts with the knob and stands apart from the dark "off" track.
-/// VoiceOver still meets a standard switch.
+/// A switch that is green with the knob right when on, red with the knob
+/// left when off. Drawn here because the system switch's off track is
+/// always grey. VoiceOver still meets a standard switch.
 struct InkSwitchStyle: ToggleStyle {
     @Environment(\.isEnabled) private var isEnabled
 
@@ -227,11 +222,11 @@ struct InkSwitchStyle: ToggleStyle {
             configuration.label
             Spacer(minLength: 0)
             Capsule()
-                .fill(configuration.isOn ? Palette.ink : Palette.switchOff)
+                .fill(configuration.isOn ? Palette.switchOn : Palette.switchOff)
                 .frame(width: 51, height: 31)
                 .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                     Circle()
-                        .fill(configuration.isOn ? Palette.knobOn : Palette.knobOff)
+                        .fill(Color.white)
                         .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
                         .padding(2)
                 }

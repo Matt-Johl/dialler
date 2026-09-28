@@ -33,7 +33,21 @@ public final class BaresipCallEngine: CallEngine {
     public var onTransferFailed: ((String, String) -> Void)?
     /// Observed by the app for status display.
     public var onStateChange: ((State) -> Void)?
-    public var log: (String) -> Void = { _ in }
+    /// The engine's log, into the app's (shown on the Status page and
+    /// uploaded with diagnostics). Every line goes through `redacted`: the
+    /// SIP account line carries the device token as `auth_pass`, and it
+    /// reached the log in full (found 2026-09-28).
+    public var log: (String) -> Void {
+        get { let sink = logSink; return { sink(Self.redacted($0)) } }
+        set { logSink = newValue }
+    }
+    private var logSink: (String) -> Void = { _ in }
+
+    /// A log line with any SIP password replaced.
+    static func redacted(_ line: String) -> String {
+        guard line.contains("auth_pass") else { return line }
+        return line.replacingOccurrences(of: #"auth_pass=[^;>\s"]*"#, with: "auth_pass=•••", options: .regularExpression)
+    }
 
     /// Headless tools only (engine-probe): answer every INVITE at once, with
     /// no controller in the loop.
@@ -88,6 +102,7 @@ public final class BaresipCallEngine: CallEngine {
 
     public init(acceptAnyCertificate: Bool = true) {
         self.acceptAnyCertificate = acceptAnyCertificate
+        cb_set_tls_trust(nil, acceptAnyCertificate) // until a pin is set
     }
 
     /// SIP Digest credential for the app leg: the device id and enrolment
@@ -97,6 +112,25 @@ public final class BaresipCallEngine: CallEngine {
 
     public func setCredentials(username: String, password: String) {
         lock.withLock { credentials = (username, password) }
+    }
+
+    /// The SIP leg's certificate check, done in the shim (cbaresip.c
+    /// `verify_server_cert`): the pinned certificate, whatever its issuer
+    /// and dates; with no pin, any certificate only on the dev path. A pin
+    /// that is not a SHA-256 pins nothing and accepts nothing.
+    public func setServerTrust(pin: String?, acceptAnyCertificate: Bool) {
+        guard let pin else {
+            cb_set_tls_trust(nil, acceptAnyCertificate)
+            log("engine: SIP TLS trusts \(acceptAnyCertificate ? "any certificate (dev)" : "no certificate: none pinned")")
+            return
+        }
+        guard let digest = CertificatePin.digest(of: pin) else {
+            cb_set_tls_trust(nil, false)
+            log("engine: SIP TLS pin \(pin) is not a SHA-256; trusting no certificate")
+            return
+        }
+        digest.withUnsafeBytes { cb_set_tls_trust($0.bindMemory(to: UInt8.self).baseAddress, false) }
+        log("engine: SIP TLS pinned to \(pin)")
     }
 
     deinit { cb_stop() }
@@ -682,7 +716,7 @@ public final class BaresipCallEngine: CallEngine {
             if last { state = cb_registered() ? .registered : .idle } else { refreshState() }
             onCallEnded?(callID, text, status)
         case CB_EVENT_LOG:
-            logger.info("baresip: \(text, privacy: .public)")
+            logger.info("baresip: \(Self.redacted(text), privacy: .public)")
             if Self.stackLineReachesAppLog(text, warning: status != 0) {
                 log("baresip: \(text)")
             }

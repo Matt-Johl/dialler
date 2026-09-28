@@ -72,6 +72,11 @@ public protocol CallEngine: AnyObject {
     /// password on the app leg (username = device id, password = token). The
     /// server refuses registrations and calls without it.
     func setCredentials(username: String, password: String)
+    /// Which server certificate the SIP leg accepts: the one pinned at
+    /// enrolment (base64url SHA-256 of its DER, as `CertificatePin`), else
+    /// any certificate when `acceptAnyCertificate` (the dev path), else
+    /// none. The gateway connection applies the same rule.
+    func setServerTrust(pin: String?, acceptAnyCertificate: Bool)
     /// Register `user` (e.g. "201@dialler") to `sip` and stay registered, so
     /// calls reach this app directly while it runs. Idempotent.
     func register(user: String, sip: SIPTarget)
@@ -116,6 +121,7 @@ public protocol CallEngine: AnyObject {
 
 public extension CallEngine {
     func setCredentials(username _: String, password _: String) {}
+    func setServerTrust(pin _: String?, acceptAnyCertificate _: Bool) {}
     func resetRegistration() {}
     func audioSessionActivated() {}
     func audioSessionDeactivated() {}

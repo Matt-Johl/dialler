@@ -9,9 +9,25 @@ from a review of the project as it stood on `main` at 58bb0c7.
 | # | Question | Decision |
 |---|----------|----------|
 | 1 | Distribution route | **Public App Store** (2026-09-28). |
-| 2 | How App Review uses the app | **Open.** A public demo server, or a demo mode in the app. Compared under [Review access](#review-access); recommendation: demo mode. |
-| 3 | The hidden Status page | **Open.** It is a hidden feature (guideline 2.3.1). Release builds must at least drop its developer fields; keep a documented diagnostics page, or remove the page from release builds. |
+| 2 | How App Review uses the app | **Demo mode** (2026-09-28), built after the other must-fixes are done and tested. Compared under [Review access](#review-access). |
+| 3 | The hidden Status page | **Debug builds only** (2026-09-28). Release builds (every archive: TestFlight and the App Store) contain no page and no gesture. The manual "Send Diagnostics" goes with it; the automatic upload at launch stays. |
 | 4 | Store name | **Done.** "Dialler" is reserved; the app record exists in App Store Connect (pre-submission). |
+
+## Progress
+
+`feature/app-store-readiness`, merged 2026-09-28 as **v1.0.0 (build 1)**:
+
+| Item | State |
+|------|-------|
+| 1. Icon without transparency | **Done.** Every pixel was already opaque, so dropping the channel changed nothing visible. |
+| 2. Privacy manifests | **Done**, for the app and the PushProvider extension. |
+| 3. SIP certificate pinning | **Done and tested** against the native server from the iOS simulator: the right pin registers and the call carries audio; a wrong SIP-leg pin, with the gateway pinned right, is refused by the new check. |
+| 4. Release builds without developer settings | **Done.** The Status page itself is Debug-only (decision 3); a release binary has no trace of it. Debug builds say so on Settings › Version ("· Debug"). |
+| 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
+| 6. Version and encryption key | **Done.** 1.0.0 (build 1), then bumped and tagged at every merge to main (see [Versions](#versions)). `ITSAppUsesNonExemptEncryption` = YES (2026-09-28). |
+| 7. Demo mode | **Next**, after 1–6 and 8 are tested; ask App Review first. |
+| 8. Permission prompts | **Done, confirmed on Matt's phone** (fresh install, 2026-09-28): the Local Network prompt comes up during "Setting Up…" and enrolment then succeeds. The first attempt had failed ahead of the prompt: the probe took a TCP connection's privacy wait (a POSIX error with the reason on the path) for an ordinary failure. |
+| Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
 
 ## Review access
 
@@ -127,6 +143,21 @@ On a branch `feature/app-store-readiness`, merged on approval.
    `sip_verify_server no`, even after enrolment has pinned the server's
    certificate. The SIP leg must be checked against the same pin. This is
    a security fix for a shipped product, not only a review matter.
+   *Built:* the shim (`cbaresip.c`, `verify_server_cert`) replaces
+   OpenSSL's chain check on baresip's SIP TLS context with a comparison of
+   the leaf's SHA-256 against the enrolment pin, as the gateway connection
+   does. Issuer, dates and name are not consulted, so self-signed
+   certificates work, and nothing needs a publicly trusted CA.
+   *Certificates:* one server certificate (self-signed, kept in
+   `<data-dir>/tls`) serves the gateway, the phone API, SIP and the
+   internal admin API; phones pin it, so it never needs renewing for them,
+   and `<data-dir>/tls` belongs in backups (losing it means re-enrolling
+   every phone). The admin console (`dialler-admin`) has its own
+   certificate, which can be publicly trusted and renewed freely. Two
+   server follow-ups: issue #15 (the console stops reaching the server
+   when the server's self-signed certificate passes its one-year expiry)
+   and issue #16 (pick up a renewed console certificate without a
+   restart).
 4. **Release builds without the developer settings:** Accept Any
    Certificate, manual device ID and token, and Local Push by hand
    (decision 3 settles the rest of the Status page).
@@ -163,6 +194,82 @@ On a branch `feature/app-store-readiness`, merged on approval.
 9. **`audio` background mode.** `UIBackgroundModes` has `audio` as well as
    `voip`; reviewers sometimes question it. Test whether CallKit calls work
    without it and drop it if they do.
+
+## Building for the App Store
+
+- **Which build is which.** The shared `Dialler` scheme runs **Debug** (Run,
+  ⌘R) and archives **Release** (Product › Archive). Only Debug builds
+  define `DEBUG`, which is what keeps the Status page, Accept Any
+  Certificate and the manual connection. Settings › Version on the phone
+  ends in "· Debug" on a Debug build and has no suffix on an archive.
+  Check once in Product › Scheme › Edit Scheme › Archive that Build
+  Configuration is Release (it is in the shared scheme file).
+- **Version and build** are managed in the repository, not by hand and
+  not by Xcode: see [Versions](#versions). When distributing, **untick**
+  "Manage Version and Build Number", or Xcode renumbers the upload and it no
+  longer matches its tag.
+- **Archiving.** Choose "Any iOS Device (arm64)" as the destination
+  (Archive is greyed out for a simulator), Product › Archive, then in the
+  Organizer: Distribute App › App Store Connect › Upload. Xcode signs with
+  the distribution certificate and validates the build before uploading.
+- **Trying a release build on your own phone before uploading:** install
+  it through TestFlight, or temporarily set Edit Scheme › Run › Build
+  Configuration to Release. A release build trusts only a pinned server,
+  so it has to be enrolled by QR or code, not through the Debug-only
+  manual connection.
+
+## Versions
+
+Every merge to main is a release candidate with its own numbers and a tag
+(Matt, 2026-09-28):
+
+- **Version** (`MARKETING_VERSION`, what the App Store shows): X.Y.Z. A
+  merge raises Z unless the approval asks for a minor or major bump.
+- **Build** (`CURRENT_PROJECT_VERSION`): one more on every merge. App Store
+  Connect needs it to rise with every upload.
+- **Where:** in the merge commit itself (`git merge --no-ff --no-commit`,
+  `tools/bump-version.sh patch|minor|major`, commit), so the commit holds
+  exactly the numbers it is tagged with. The app and the extension get the
+  same values; the script refuses to run if they disagree.
+- **Tag:** `vX.Y.Z` on that merge commit, annotated "Dialler X.Y.Z
+  (build N)", pushed with it. The server binaries take their version from
+  the same tags (`git describe --tags --match 'v[0-9]*'` in the Makefile).
+- **Upload only tagged commits of main.** A build from a feature branch
+  carries main's numbers and would collide with the next real one.
+- The first tagged release is the merge of `feature/app-store-readiness`:
+  v1.0.0, build 1.
+
+## Export compliance
+
+What the app encrypts, and with what:
+
+- **Apple's encryption:** the gateway connection (Network.framework TLS) and
+  every HTTPS call (URLSession).
+- **Its own, bundled OpenSSL:** the SIP connection (TLS) and call audio
+  (SRTP, AES). Standard, published algorithms, used for confidentiality.
+
+So in App Store Connect's questions: the app **uses encryption**, and the type
+is **"standard encryption algorithms instead of, or in addition to, using or
+accessing the encryption within Apple's operating system"**. It is not
+proprietary encryption, and it is not exempt (it is not only authentication,
+and not only Apple's).
+
+What that asks of us:
+
+- **France.** App Store Connect asks whether the app will be available in
+  France; for this category that needs a French encryption declaration
+  (ANSSI) uploaded to App Store Connect. The alternative is to leave France
+  out of the territories until one exists.
+- **United States.** Standard encryption in a consumer-available app is
+  treated as mass-market (category 5D992.c). Whether a BIS year-end
+  self-classification report is needed has changed with the regulations
+  (the 2021 rule removed it for many mass-market products); confirm against
+  Apple's "Complying with encryption export regulations" page, or with an
+  export adviser, before the first submission. This is not legal advice.
+- **Info.plist.** `ITSAppUsesNonExemptEncryption` = YES (added 2026-09-28),
+  so each upload stops asking. If Apple issues an export compliance code
+  after reviewing documents (the French declaration), it goes in as
+  `ITSEncryptionExportComplianceCode`.
 
 ## Tests before submitting
 

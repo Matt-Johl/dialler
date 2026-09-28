@@ -4,7 +4,10 @@ import SwiftUI
 /// The hidden Status page (SPEC §6 item 8): pushed onto the Settings tab by
 /// a five-second press on its title, popped by Back or any tab-bar tap.
 /// An engineering surface: raw states, the manual connection, Local Push
-/// by hand and the log — in the same look and wording as Settings.
+/// by hand and the log — in the same look and wording as Settings. Debug
+/// builds only: a release build has no page and no way to reach one
+/// (appstore.md, decision 3; App Review guideline 2.3.1).
+#if DEBUG
 struct StatusView: View {
     @EnvironmentObject private var model: AppModel
     /// Comma-separated, as typed; parsed by `SSIDList` on save.
@@ -168,3 +171,4 @@ private struct FieldRow: View {
         .overlay(alignment: .bottom) { Palette.hairline.frame(height: 1) }
     }
 }
+#endif

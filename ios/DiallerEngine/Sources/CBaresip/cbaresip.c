@@ -35,6 +35,24 @@
 #include <re_dbg.h> /* not in re.h's umbrella: libre's debug channel */
 #include <baresip.h>
 
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+
+/* libre exports this (re/src/tls/openssl/tls.c) but re_tls.h does not
+ * declare it: the OpenSSL context behind a struct tls. */
+SSL_CTX *tls_ssl_ctx(const struct tls *tls);
+
+/* The SIP leg's server-certificate trust (cb_set_tls_trust). Written from
+ * any thread, read by the loop thread in each handshake. */
+static struct {
+    pthread_mutex_t mu;
+    bool has_pin;
+    uint8_t pin[32];
+    bool accept_any;
+} g_trust = { .mu = PTHREAD_MUTEX_INITIALIZER, .accept_any = true };
+
 /* Loop-thread liveness. libre's re_main() returns on re_cancel (our
  * OP_STOP) — or on a poll error it treats as fatal. Then the thread is
  * gone, no op can ever run, and cb_alive() tells the engine to rebuild the
@@ -728,6 +746,53 @@ static void *watchdog_thread(void *arg)
     return NULL;
 }
 
+/* The SIP connection's whole certificate check, in place of OpenSSL's chain
+ * building (SSL_CTX_set_cert_verify_callback): the presented leaf must be
+ * the pinned certificate. Issuer, dates and name are not consulted — the
+ * server's certificate is usually self-signed, and the pin is the identity,
+ * exactly as for the gateway connection (CertificatePin in DiallerCore). */
+static int verify_server_cert(X509_STORE_CTX *store, void *arg)
+{
+    (void)arg;
+    bool has_pin, accept_any;
+    uint8_t pin[32];
+
+    pthread_mutex_lock(&g_trust.mu);
+    has_pin = g_trust.has_pin;
+    accept_any = g_trust.accept_any;
+    memcpy(pin, g_trust.pin, sizeof(pin));
+    pthread_mutex_unlock(&g_trust.mu);
+
+    if (has_pin) {
+        X509 *leaf = X509_STORE_CTX_get0_cert(store);
+        uint8_t md[EVP_MAX_MD_SIZE];
+        unsigned int n = 0;
+        if (leaf && X509_digest(leaf, EVP_sha256(), md, &n) && n == sizeof(pin)
+            && CRYPTO_memcmp(md, pin, sizeof(pin)) == 0)
+            return 1;
+        warning("cbaresip: tls: SIP server certificate is not the one pinned at enrolment; refused\n");
+        X509_STORE_CTX_set_error(store, X509_V_ERR_CERT_REJECTED);
+        return 0;
+    }
+    if (accept_any)
+        return 1;
+    warning("cbaresip: tls: no certificate pinned for the SIP server; refused\n");
+    X509_STORE_CTX_set_error(store, X509_V_ERR_CERT_REJECTED);
+    return 0;
+}
+
+void cb_set_tls_trust(const uint8_t *sha256, bool accept_any)
+{
+    pthread_mutex_lock(&g_trust.mu);
+    g_trust.has_pin = sha256 != NULL;
+    if (sha256)
+        memcpy(g_trust.pin, sha256, sizeof(g_trust.pin));
+    else
+        memset(g_trust.pin, 0, sizeof(g_trust.pin));
+    g_trust.accept_any = accept_any;
+    pthread_mutex_unlock(&g_trust.mu);
+}
+
 /* Loop thread only: bring libre/baresip up. Everything created here is
  * bound to this thread's libre context, which lives as long as the loop. */
 static int stack_open(const char *config)
@@ -747,6 +812,22 @@ static int stack_open(const char *config)
         err = baresip_init(conf_config());
     if (!err)
         err = ua_init("Dialler", false, true, true); /* udp=off, tcp, tls */
+    if (!err) {
+        /* ua_init built the SIP TLS context, once for the life of the
+         * stack (transport resets reuse it), and every connection's SSL
+         * inherits it. The cert-verify callback replaces the chain check
+         * itself, so it decides whatever libre sets per connection
+         * (sip_verify_server only adds a hostname check inside the chain
+         * check this replaces). */
+        SSL_CTX *ctx = tls_ssl_ctx(uag_tls());
+        if (ctx) {
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+            SSL_CTX_set_cert_verify_callback(ctx, verify_server_cert, NULL);
+        }
+        else {
+            warning("cbaresip: tls: no SIP TLS context to pin\n");
+        }
+    }
     if (!err)
         err = conf_modules();
     if (!err)

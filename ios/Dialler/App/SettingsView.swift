@@ -8,13 +8,24 @@ struct SettingsView: View {
     @Binding var path: NavigationPath
     @State private var confirmSignOut = false
 
-    enum Route: Hashable { case status }
+    enum Route: Hashable {
+        case acknowledgements
+        #if DEBUG
+        case status
+        #endif
+    }
 
+    /// "1.0 (12)", and "· Debug" on a Debug build, so a glance at Settings
+    /// says whether the phone runs what Xcode's Run built or an archive.
     static var version: String {
         let info = Bundle.main.infoDictionary
         let v = info?["CFBundleShortVersionString"] as? String ?? "?"
         let b = info?["CFBundleVersion"] as? String ?? "?"
+        #if DEBUG
+        return "\(v) (\(b)) · Debug"
+        #else
         return "\(v) (\(b))"
+        #endif
     }
 
     private var device: String { UIDevice.current.model }
@@ -22,12 +33,15 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack(path: $path) {
             VStack(spacing: 0) {
-                // The title takes the gesture: a five-second press opens the
-                // hidden Status page. Five seconds, on purpose: nothing a
-                // user does by accident.
+                // Debug builds only: a five-second press on the title opens
+                // the hidden Status page. Release builds (every archive, so
+                // TestFlight and the App Store) have no page and no gesture:
+                // App Review does not allow hidden features (guideline 2.3.1).
                 ScreenHeader(title: "Settings")
+                    #if DEBUG
                     .contentShape(Rectangle())
                     .onLongPressGesture(minimumDuration: 5) { path.append(Route.status) }
+                    #endif
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         summary
@@ -44,7 +58,10 @@ struct SettingsView: View {
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Route.self) { route in
                 switch route {
+                case .acknowledgements: AcknowledgementsView()
+                #if DEBUG
                 case .status: StatusView()
+                #endif
                 }
             }
         }
@@ -105,6 +122,19 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
             SettingsSection("About")
             SettingsRow("Version", value: Self.version)
+            NavigationLink(value: Route.acknowledgements) {
+                HStack {
+                    Text("Acknowledgements").font(.callout).foregroundStyle(Palette.ink)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Palette.tertiary)
+                }
+                .frame(minHeight: 52)
+                .overlay(alignment: .bottom) { Palette.hairline.frame(height: 1) }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
     }
 

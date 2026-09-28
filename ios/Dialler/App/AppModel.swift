@@ -24,7 +24,9 @@ final class AppModel: ObservableObject {
     @Published var port = "7443"
     @Published var deviceID = ""
     @Published var token = ""
-    @Published var acceptAnyCertificate = true
+    /// The dev path's "accept any certificate" (the Status page, Debug
+    /// builds only); never true in a release build.
+    @Published var acceptAnyCertificate = DevSettings.allowsAnyCertificate
     /// The server certificate pinned at enrolment (SPEC §4.8); nil on the
     /// dev path, where the toggle above decides.
     @Published var certSHA256: String?
@@ -35,6 +37,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var enrolled = false
     @Published private(set) var enrolling = false
     @Published var enrolmentError: String?
+    /// Enrolment stopped because Local Network access is refused: the
+    /// onboarding screen offers Settings instead of a plain error.
+    @Published private(set) var localNetworkDenied = false
 
     // Status
     @Published private(set) var status = "disconnected"
@@ -208,7 +213,7 @@ final class AppModel: ObservableObject {
         callWaiting = UserDefaults.standard.object(forKey: "callWaiting") as? Bool ?? true
         Breadcrumb.drop("AppModel: creating the SIP engine")
         #if canImport(DiallerEngine)
-        let baresip = BaresipCallEngine(acceptAnyCertificate: true)
+        let baresip = BaresipCallEngine(acceptAnyCertificate: DevSettings.allowsAnyCertificate)
         engine = baresip
         engineState = Self.engineText(.idle)
         #else
@@ -515,6 +520,7 @@ final class AppModel: ObservableObject {
 
     func enrol(url: URL) async {
         guard let link = EnrolmentLink(url: url) else {
+            localNetworkDenied = false
             enrolmentError = "This QR code isn’t an enrolment code."
             return
         }
@@ -533,6 +539,20 @@ final class AppModel: ObservableObject {
         enrolmentError = nil
         defer { enrolling = false }
         append("enrolling at \(link.host):\(link.port) (\(link.certSHA256 == nil ? "trust on first use" : "pinned from the QR"))")
+        // Raise the Local Network prompt, and wait for the answer, before the
+        // enrolment request: on a first run that request used to fail while
+        // the prompt appeared behind the error (appstore.md, must-fix 8).
+        localNetworkDenied = false
+        let access = await LocalNetworkAccess.probe(host: link.host, port: link.port,
+                                                    log: { [weak self] line in Task { @MainActor in self?.append(line) } }) {
+            await MainActor.run { UIApplication.shared.applicationState == .active }
+        }
+        append("local network: \(access)")
+        if access == .denied {
+            localNetworkDenied = true
+            enrolmentError = "\(AppName.display) needs Local Network access to reach your server."
+            return
+        }
         do {
             let result = try await EnrolmentClient().claim(link)
             let cfg = result.config(host: link.host, appVersion: currentConfig.appVersion)
@@ -576,6 +596,7 @@ final class AppModel: ObservableObject {
         line = ""
         UserDefaults.standard.removeObject(forKey: "line")
         enrolmentError = nil
+        localNetworkDenied = false
         enrolled = false
         append("logged out: credential cleared, Local Push removed")
     }
@@ -677,6 +698,12 @@ final class AppModel: ObservableObject {
         enrolled = true // the dev path: fields entered directly on the Status page
         // The same enrolment credential authenticates the SIP leg (Digest).
         engine.setCredentials(username: cfg.deviceID, password: cfg.token)
+        // Asked here, once the phone is set up, not at first launch before
+        // setup (appstore.md, must-fix 8); a no-op once answered.
+        callKit.requestMicrophonePermission()
+        // The SIP leg trusts the certificate the gateway connection trusts:
+        // the one pinned at enrolment (SPEC §4.8), self-signed or not.
+        engine.setServerTrust(pin: cfg.gateway.certSHA256, acceptAnyCertificate: cfg.gateway.acceptAnyCertificate)
 
         disconnect()
         let s = GatewaySession(endpoint: cfg.gateway)

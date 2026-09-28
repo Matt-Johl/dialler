@@ -17,7 +17,7 @@ fmt:
 	cd server && gofmt -l -w .
 
 server:
-	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-server ./cmd/dialler-server
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-server ./cmd/dialler-server
 
 # Dev run: self-signed TLS, data in ./data, admin token printed in the log.
 run: server
@@ -26,7 +26,7 @@ run: server
 # dialler-admin, the operator's web UI (SPEC §6 item 9c): a second binary
 # that talks only to the call server's admin API on 8081.
 admin:
-	cd server && go build -ldflags "-X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
 
 # Dev run beside `make dev-server` (token "harness") or `make run` (token
 # "dev": ADMIN_TOKEN=dev make dev-admin). Sign in as "admin"; the password lives in

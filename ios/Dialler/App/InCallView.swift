@@ -22,7 +22,13 @@ struct InCallView: View {
     private func content(for call: AppModel.ActiveCall) -> some View {
         VStack(spacing: 0) {
             Spacer(minLength: 16)
-            Rings(size: 196, inner: 0.52) {
+            // The caller in an ink circle, with rings growing out from it
+            // as on the landing page.
+            ZStack {
+                PulseRings(from: 0.45)
+                Circle()
+                    .strokeBorder(Palette.ink, lineWidth: 1.25)
+                    .frame(width: 104, height: 104)
                 if let initials = CallText.initials(call.title) {
                     Text(initials)
                         .font(.system(size: 32, weight: .light))
@@ -32,6 +38,8 @@ struct InCallView: View {
                     Image(systemName: "phone").font(.system(size: 30, weight: .light)).foregroundStyle(Palette.ink)
                 }
             }
+            .frame(width: 232, height: 232)
+            .accessibilityHidden(true)
             Text(call.title)
                 .font(.system(size: 34, weight: .regular))
                 .tracking(-1.2)

@@ -266,7 +266,7 @@ struct ContactEditor: View {
             }
         }
         .tint(Palette.ink)
-        .toggleStyle(.ink)
+        .toggleStyle(.greenSwitch)
         .interactiveDismissDisabled(saving)
     }
 

@@ -22,10 +22,8 @@ enum Palette {
     static let fill = Color(light: 0xEEF0F3, dark: 0x16181E)
     /// A raised surface on a fill: the selected segment.
     static let raised = Color(light: 0xFFFFFF, dark: 0x2A2D36)
-    /// Switches: green on, red off (2026-09-28), iOS's own green and red so
-    /// both adjust for dark mode. The knob is white either way.
+    /// A switch that is on (2026-09-28). Off stays the system's grey.
     static let switchOn = Color(uiColor: .systemGreen)
-    static let switchOff = Color(uiColor: .systemRed)
     /// Ending a call. The one colour that is not ink.
     static let end = Color(light: 0xE5484D, dark: 0xE5484D)
 }
@@ -141,23 +139,52 @@ struct Monogram: View {
     }
 }
 
-/// The canvas's concentric hairline rings around a centre: the status
-/// glyph on Settings, the caller on the in-call screen, the onboarding mark.
-struct Rings<Centre: View>: View {
-    var size: CGFloat = 168
-    var inner: CGFloat = 0.43
-    var innerStroke: Color = Palette.ink
-    @ViewBuilder var centre: Centre
+/// Rings that grow out from behind a centre and fade as they go, one after
+/// another: behind the mark on the landing page, behind the caller on the
+/// in-call screen. With Reduce Motion on they stand still, evenly spaced.
+struct PulseRings: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var count = 3
+    /// Where a ring starts, as a fraction of the full size: just outside
+    /// whatever sits in the middle.
+    var from: CGFloat = 0.34
+    /// Seconds for one ring to travel from the mark to the edge.
+    var period: Double = 4.2
 
     var body: some View {
-        ZStack {
-            Circle().strokeBorder(Palette.hairline, lineWidth: 1)
-            Circle().strokeBorder(Palette.ring, lineWidth: 1).padding(size * 0.14)
-            Circle().strokeBorder(innerStroke, lineWidth: 1.25).frame(width: size * inner, height: size * inner)
-            centre
+        TimelineView(.animation(paused: reduceMotion)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            GeometryReader { geo in
+                let full = min(geo.size.width, geo.size.height)
+                ZStack {
+                    ForEach(0..<count, id: \.self) { i in
+                        let p = progress(of: i, at: t)
+                        Circle()
+                            .stroke(Palette.ink, lineWidth: 1)
+                            .frame(width: full * (from + (1 - from) * p), height: full * (from + (1 - from) * p))
+                            .opacity(opacity(at: p))
+                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
+            }
         }
-        .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    /// 0 at the mark, 1 at the edge; the rings are staggered evenly.
+    private func progress(of ring: Int, at t: TimeInterval) -> Double {
+        if reduceMotion { return Double(ring + 1) / Double(count + 1) }
+        let phase = t / period + Double(ring) / Double(count)
+        return phase - phase.rounded(.down)
+    }
+
+    /// Fades in just off the mark and out towards the edge, easing so the
+    /// outermost ring dissolves rather than vanishes.
+    private func opacity(at p: Double) -> Double {
+        if reduceMotion { return 0.16 * (1 - p) + 0.04 }
+        let fadeIn = min(p / 0.12, 1)
+        let fadeOut = pow(1 - p, 1.6)
+        return 0.28 * fadeIn * fadeOut
     }
 }
 
@@ -211,37 +238,18 @@ struct CircleButtonStyle: ButtonStyle {
     }
 }
 
-/// A switch that is green with the knob right when on, red with the knob
-/// left when off. Drawn here because the system switch's off track is
-/// always grey. VoiceOver still meets a standard switch.
-struct InkSwitchStyle: ToggleStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
+/// The system switch, green when on. The app's tint is the ink, which as a
+/// switch colour was a grey in dark mode beside the grey "off" track; this
+/// keeps every other control on the ink and gives switches their own on
+/// colour.
+struct GreenSwitchStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 12) {
-            configuration.label
-            Spacer(minLength: 0)
-            Capsule()
-                .fill(configuration.isOn ? Palette.switchOn : Palette.switchOff)
-                .frame(width: 51, height: 31)
-                .overlay(alignment: configuration.isOn ? .trailing : .leading) {
-                    Circle()
-                        .fill(Color.white)
-                        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
-                        .padding(2)
-                }
-                .opacity(isEnabled ? 1 : 0.4)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.snappy(duration: 0.2)) { configuration.isOn.toggle() }
-        }
-        .accessibilityRepresentation {
-            Toggle(isOn: configuration.$isOn) { configuration.label }
-        }
+        Toggle(configuration)
+            .toggleStyle(.switch)
+            .tint(Palette.switchOn)
     }
 }
 
-extension ToggleStyle where Self == InkSwitchStyle {
-    static var ink: InkSwitchStyle { InkSwitchStyle() }
+extension ToggleStyle where Self == GreenSwitchStyle {
+    static var greenSwitch: GreenSwitchStyle { GreenSwitchStyle() }
 }

@@ -59,7 +59,7 @@ struct OnboardingView: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showStatus = false } } }
             }
             .tint(Palette.ink)
-            .toggleStyle(.ink)
+            .toggleStyle(.greenSwitch)
         }
     }
 
@@ -134,52 +134,6 @@ struct OnboardingView: View {
             }
         }
         .tint(Palette.ink)
-    }
-}
-
-/// Rings that grow out from behind the mark and fade as they go, one after
-/// another: the landing page's only motion. With Reduce Motion on they
-/// stand still, evenly spaced.
-private struct PulseRings: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var count = 3
-    /// Seconds for one ring to travel from the mark to the edge.
-    var period: Double = 4.2
-
-    var body: some View {
-        TimelineView(.animation(paused: reduceMotion)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            GeometryReader { geo in
-                let full = min(geo.size.width, geo.size.height)
-                ZStack {
-                    ForEach(0..<count, id: \.self) { i in
-                        let p = progress(of: i, at: t)
-                        Circle()
-                            .stroke(Palette.ink, lineWidth: 1)
-                            .frame(width: full * (0.34 + 0.66 * p), height: full * (0.34 + 0.66 * p))
-                            .opacity(opacity(at: p))
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    /// 0 at the mark, 1 at the edge; the rings are staggered evenly.
-    private func progress(of ring: Int, at t: TimeInterval) -> Double {
-        if reduceMotion { return Double(ring + 1) / Double(count + 1) }
-        let phase = t / period + Double(ring) / Double(count)
-        return phase - phase.rounded(.down)
-    }
-
-    /// Fades in just off the mark and out towards the edge, easing so the
-    /// outermost ring dissolves rather than vanishes.
-    private func opacity(at p: Double) -> Double {
-        if reduceMotion { return 0.16 * (1 - p) + 0.04 }
-        let fadeIn = min(p / 0.12, 1)
-        let fadeOut = pow(1 - p, 1.6)
-        return 0.28 * fadeIn * fadeOut
     }
 }
 

@@ -543,7 +543,8 @@ final class AppModel: ObservableObject {
         // enrolment request: on a first run that request used to fail while
         // the prompt appeared behind the error (appstore.md, must-fix 8).
         localNetworkDenied = false
-        let access = await LocalNetworkAccess.probe(host: link.host, port: link.port) {
+        let access = await LocalNetworkAccess.probe(host: link.host, port: link.port,
+                                                    log: { [weak self] line in Task { @MainActor in self?.append(line) } }) {
             await MainActor.run { UIApplication.shared.applicationState == .active }
         }
         append("local network: \(access)")

@@ -3,34 +3,49 @@ import XCTest
 @testable import DiallerCore
 
 final class LocalNetworkAccessTests: XCTestCase {
-    private let denied = NWConnection.State.waiting(.dns(LocalNetworkAccess.policyDenied))
+    /// How a TCP connection waits while Local Network privacy holds it: a
+    /// POSIX error, with the reason on the path (device, 2026-09-28).
+    private let tcpWaiting = NWConnection.State.waiting(.posix(.ENETDOWN))
+    /// How a Bonjour-style refusal shows: the reason is in the error.
+    private let dnsDenied = NWConnection.State.waiting(.dns(LocalNetworkAccess.policyDenied))
+
+    private func decide(_ s: NWConnection.State?, pathDenied: Bool = false, answered: Bool = true,
+                        deniedFor: TimeInterval = 0, waitingFor: TimeInterval = 5) -> LocalNetworkAccess.Outcome? {
+        LocalNetworkAccess.decide(s, pathDenied: pathDenied, answered: answered, deniedFor: deniedFor, settle: 1.5, waitingFor: waitingFor)
+    }
 
     func testReadyMeansAllowed() {
-        XCTAssertEqual(LocalNetworkAccess.decide(.ready, answered: true, deniedFor: 0, settle: 1.5), .allowed)
+        XCTAssertEqual(decide(.ready), .allowed)
     }
 
-    /// The prompt is on screen: denial is not final while the user decides,
-    /// however long they take.
-    func testPolicyDeniedWaitsWhileTheUserDecides() {
-        XCTAssertNil(LocalNetworkAccess.decide(denied, answered: false, deniedFor: 30, settle: 1.5))
+    /// The bug: a TCP wait whose path says Local Network denied was taken
+    /// for "not reached", and enrolment ran ahead of the prompt.
+    func testTCPWaitBlockedByThePathWaitsForTheAnswer() {
+        XCTAssertNil(decide(tcpWaiting, pathDenied: true, answered: false, deniedFor: 30), "the prompt is on screen")
+        XCTAssertNil(decide(tcpWaiting, pathDenied: true, deniedFor: 0.5), "answered, not settled yet")
+        XCTAssertEqual(decide(tcpWaiting, pathDenied: true, deniedFor: 1.5), .denied)
     }
 
-    /// Answered (Don't Allow, or refused on an earlier run): final once it
-    /// has stayed denied for the settle time, not before.
-    func testPolicyDeniedIsFinalOnceSettled() {
-        XCTAssertNil(LocalNetworkAccess.decide(denied, answered: true, deniedFor: 0.5, settle: 1.5))
-        XCTAssertEqual(LocalNetworkAccess.decide(denied, answered: true, deniedFor: 1.5, settle: 1.5), .denied)
+    func testDNSPolicyDeniedIsTheSame() {
+        XCTAssertNil(decide(dnsDenied, answered: false, deniedFor: 30))
+        XCTAssertEqual(decide(dnsDenied, deniedFor: 1.5), .denied)
     }
 
-    /// Any other trouble is the enrolment request's to report.
+    /// Any other trouble is the enrolment request's to report, after the
+    /// one-second backstop.
     func testOtherFailuresAreNotReached() {
-        XCTAssertEqual(LocalNetworkAccess.decide(.waiting(.posix(.ECONNREFUSED)), answered: true, deniedFor: 0, settle: 1.5), .notReached)
-        XCTAssertEqual(LocalNetworkAccess.decide(.failed(.posix(.ETIMEDOUT)), answered: true, deniedFor: 0, settle: 1.5), .notReached)
-        XCTAssertEqual(LocalNetworkAccess.decide(.waiting(.dns(-65554)), answered: true, deniedFor: 9, settle: 1.5), .notReached, "another DNS error")
+        XCTAssertEqual(decide(.waiting(.posix(.ECONNREFUSED))), .notReached)
+        XCTAssertEqual(decide(.failed(.posix(.ETIMEDOUT))), .notReached)
+        XCTAssertEqual(decide(.waiting(.dns(-65554))), .notReached, "another DNS error")
+    }
+
+    func testAWaitWithNoReasonYetGetsTheBackstop() {
+        XCTAssertNil(decide(tcpWaiting, waitingFor: 0.3))
+        XCTAssertEqual(decide(tcpWaiting, waitingFor: 1.0), .notReached)
     }
 
     func testStillStartingKeepsWaiting() {
-        XCTAssertNil(LocalNetworkAccess.decide(nil, answered: true, deniedFor: 0, settle: 1.5))
-        XCTAssertNil(LocalNetworkAccess.decide(.preparing, answered: true, deniedFor: 0, settle: 1.5))
+        XCTAssertNil(decide(nil))
+        XCTAssertNil(decide(.preparing))
     }
 }

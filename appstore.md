@@ -26,7 +26,7 @@ On `feature/app-store-readiness` (2026-09-28), awaiting approval:
 | 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
 | 6. Version and encryption key | **Done.** 1.0.0 (build 1), then bumped and tagged at every merge to main (see [Versions](#versions)). `ITSAppUsesNonExemptEncryption` = YES (2026-09-28). |
 | 7. Demo mode | **Next**, after 1–6 and 8 are tested; ask App Review first. |
-| 8. Permission prompts | **Built.** Needs Matt's fresh-install check on a phone: the simulator does not enforce Local Network privacy. |
+| 8. Permission prompts | **Fixed after Matt's first device test** (the first enrolment still failed ahead of the prompt: the probe took a TCP connection's privacy wait, a POSIX error with the reason on the path, for an ordinary failure). The probe now logs each state it sees ("local network probe: …"). Needs Matt's fresh-install check again: the simulator does not enforce Local Network privacy. |
 | Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
 
 ## Review access

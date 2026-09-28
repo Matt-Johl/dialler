@@ -12,6 +12,7 @@ struct OnboardingView: View {
     @State private var manual = false
     /// The hidden Status page before enrolment: the dev path in (SPEC §6
     /// item 8), behind the same five-second press as the Settings title.
+    /// Debug builds only, like the page itself.
     @State private var showStatus = false
     @State private var host = ""
     @State private var port = "8080"
@@ -28,8 +29,10 @@ struct OnboardingView: View {
                     .frame(width: 76, height: 76)
             }
             .frame(width: 280, height: 280)
+            #if DEBUG
             .contentShape(Circle())
             .onLongPressGesture(minimumDuration: 5) { showStatus = true }
+            #endif
             .accessibilityElement()
             .accessibilityLabel(AppName.display)
             .accessibilityAddTraits(.isImage)
@@ -53,6 +56,7 @@ struct OnboardingView: View {
             .ignoresSafeArea()
         }
         .sheet(isPresented: $manual) { manualForm }
+        #if DEBUG
         .sheet(isPresented: $showStatus) {
             NavigationStack {
                 StatusView()
@@ -61,6 +65,7 @@ struct OnboardingView: View {
             .tint(Palette.ink)
             .toggleStyle(.greenSwitch)
         }
+        #endif
     }
 
     @ViewBuilder

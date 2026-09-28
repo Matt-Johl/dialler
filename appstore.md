@@ -9,8 +9,8 @@ from a review of the project as it stood on `main` at 58bb0c7.
 | # | Question | Decision |
 |---|----------|----------|
 | 1 | Distribution route | **Public App Store** (2026-09-28). |
-| 2 | How App Review uses the app | **Open.** A public demo server, or a demo mode in the app. Compared under [Review access](#review-access); recommendation: demo mode. |
-| 3 | The hidden Status page | **Open.** It is a hidden feature (guideline 2.3.1). Release builds must at least drop its developer fields; keep a documented diagnostics page, or remove the page from release builds. |
+| 2 | How App Review uses the app | **Demo mode** (2026-09-28), built after the other must-fixes are done and tested. Compared under [Review access](#review-access). |
+| 3 | The hidden Status page | **Debug builds only** (2026-09-28). Release builds (every archive: TestFlight and the App Store) contain no page and no gesture. The manual "Send Diagnostics" goes with it; the automatic upload at launch stays. |
 | 4 | Store name | **Done.** "Dialler" is reserved; the app record exists in App Store Connect (pre-submission). |
 
 ## Progress
@@ -22,10 +22,10 @@ On `feature/app-store-readiness` (2026-09-28), awaiting approval:
 | 1. Icon without transparency | **Done.** Every pixel was already opaque, so dropping the channel changed nothing visible. |
 | 2. Privacy manifests | **Done**, for the app and the PushProvider extension. |
 | 3. SIP certificate pinning | **Done and tested** against the native server from the iOS simulator: the right pin registers and the call carries audio; a wrong SIP-leg pin, with the gateway pinned right, is refused by the new check. |
-| 4. Release builds without developer settings | **Done.** Decision 3 (the hidden page itself) is still open. |
+| 4. Release builds without developer settings | **Done.** The Status page itself is Debug-only (decision 3); a release binary has no trace of it. Debug builds say so on Settings › Version ("· Debug"). |
 | 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
 | 6. Version and encryption key | Version **1.0 done.** Build numbers: let Xcode raise them at upload ("Manage Version and Build Number" when distributing). `ITSAppUsesNonExemptEncryption` **waits** for the export-compliance answer. |
-| 7. Demo mode | **Waits** for decision 2 (and Apple's approval). |
+| 7. Demo mode | **Next**, after 1–6 and 8 are tested; ask App Review first. |
 | 8. Permission prompts | **Built.** Needs Matt's fresh-install check on a phone: the simulator does not enforce Local Network privacy. |
 | Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
 
@@ -194,6 +194,63 @@ On a branch `feature/app-store-readiness`, merged on approval.
 9. **`audio` background mode.** `UIBackgroundModes` has `audio` as well as
    `voip`; reviewers sometimes question it. Test whether CallKit calls work
    without it and drop it if they do.
+
+## Building for the App Store
+
+- **Which build is which.** The shared `Dialler` scheme runs **Debug** (Run,
+  ⌘R) and archives **Release** (Product › Archive). Only Debug builds
+  define `DEBUG`, which is what keeps the Status page, Accept Any
+  Certificate and the manual connection. Settings › Version on the phone
+  ends in "· Debug" on a Debug build and has no suffix on an archive.
+  Check once in Product › Scheme › Edit Scheme › Archive that Build
+  Configuration is Release (it is in the shared scheme file).
+- **Version and build.** Target › General › Identity: Version is
+  `MARKETING_VERSION` (1.0), Build is `CURRENT_PROJECT_VERSION`. The app
+  and the PushProvider extension must carry the same values (App Store
+  Connect rejects a mismatch); both are set in the project for both
+  targets. Each upload needs a higher Build than the last; tick "Manage
+  Version and Build Number" when distributing and Xcode raises it for both.
+- **Archiving.** Choose "Any iOS Device (arm64)" as the destination
+  (Archive is greyed out for a simulator), Product › Archive, then in the
+  Organizer: Distribute App › App Store Connect › Upload. Xcode signs with
+  the distribution certificate and validates the build before uploading.
+- **Trying a release build on your own phone before uploading:** install
+  it through TestFlight, or temporarily set Edit Scheme › Run › Build
+  Configuration to Release. A release build trusts only a pinned server,
+  so it has to be enrolled by QR or code, not through the Debug-only
+  manual connection.
+
+## Export compliance
+
+What the app encrypts, and with what:
+
+- **Apple's encryption:** the gateway connection (Network.framework TLS) and
+  every HTTPS call (URLSession).
+- **Its own, bundled OpenSSL:** the SIP connection (TLS) and call audio
+  (SRTP, AES). Standard, published algorithms, used for confidentiality.
+
+So in App Store Connect's questions: the app **uses encryption**, and the type
+is **"standard encryption algorithms instead of, or in addition to, using or
+accessing the encryption within Apple's operating system"**. It is not
+proprietary encryption, and it is not exempt (it is not only authentication,
+and not only Apple's).
+
+What that asks of us:
+
+- **France.** App Store Connect asks whether the app will be available in
+  France; for this category that needs a French encryption declaration
+  (ANSSI) uploaded to App Store Connect. The alternative is to leave France
+  out of the territories until one exists.
+- **United States.** Standard encryption in a consumer-available app is
+  treated as mass-market (category 5D992.c). Whether a BIS year-end
+  self-classification report is needed has changed with the regulations
+  (the 2021 rule removed it for many mass-market products); confirm against
+  Apple's "Complying with encryption export regulations" page, or with an
+  export adviser, before the first submission. This is not legal advice.
+- **Info.plist.** Once the answers are settled, add
+  `ITSAppUsesNonExemptEncryption` = YES, so each upload stops asking. If
+  Apple issues an export compliance code after reviewing documents (the
+  French declaration), it goes in as `ITSEncryptionExportComplianceCode`.
 
 ## Tests before submitting
 

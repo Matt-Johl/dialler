@@ -4,9 +4,10 @@ import SwiftUI
 /// The hidden Status page (SPEC §6 item 8): pushed onto the Settings tab by
 /// a five-second press on its title, popped by Back or any tab-bar tap.
 /// An engineering surface: raw states, the manual connection, Local Push
-/// by hand and the log — in the same look and wording as Settings. Release
-/// builds show the states, diagnostics and the log only; the controls that
-/// change the connection are for Debug builds (appstore.md, must-fix 4).
+/// by hand and the log — in the same look and wording as Settings. Debug
+/// builds only: a release build has no page and no way to reach one
+/// (appstore.md, decision 3; App Review guideline 2.3.1).
+#if DEBUG
 struct StatusView: View {
     @EnvironmentObject private var model: AppModel
     /// Comma-separated, as typed; parsed by `SSIDList` on save.
@@ -16,9 +17,7 @@ struct StatusView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 gateway
-                #if DEBUG
                 connection
-                #endif
                 backgroundCalls
                 diagnostics
                 log
@@ -42,7 +41,6 @@ struct StatusView: View {
             SettingsRow("Status", value: Self.sentence(model.status))
             if !model.sessionID.isEmpty { SettingsRow("Session", value: model.sessionID) }
             SettingsRow("SIP Engine", value: Self.sentence(model.engineState))
-            #if DEBUG
             HStack(spacing: 10) {
                 Button("Connect") { model.connect() }
                     .buttonStyle(WideButtonStyle(kind: .outline))
@@ -50,7 +48,6 @@ struct StatusView: View {
                     .buttonStyle(WideButtonStyle(kind: .destructive))
             }
             .padding(.top, 16)
-            #endif
         }
     }
 
@@ -84,7 +81,6 @@ struct StatusView: View {
             SettingsSection("Background Calls")
             SettingsRow("State", value: model.localPushStatus)
             SettingsRow("Provider", value: model.backgroundCalls)
-            #if DEBUG
             FieldRow("Networks", text: $ssids, prompt: "Network names")
             SettingsFooter("The office Wi-Fi networks, separated by commas, for a server that doesn’t send them.")
             VStack(spacing: 10) {
@@ -95,7 +91,6 @@ struct StatusView: View {
                     .buttonStyle(WideButtonStyle(kind: .destructive))
             }
             .padding(.top, 16)
-            #endif
         }
     }
 
@@ -176,3 +171,4 @@ private struct FieldRow: View {
         .overlay(alignment: .bottom) { Palette.hairline.frame(height: 1) }
     }
 }
+#endif

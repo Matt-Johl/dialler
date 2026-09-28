@@ -138,13 +138,28 @@ On a branch `feature/app-store-readiness`, merged on approval.
    (it is 0.1.0) and a build number that rises with every upload
    (`CURRENT_PROJECT_VERSION` is 1).
 7. **Demo mode** (if decision 2 is B), as described above.
+8. **Permission prompts at the right moment, and no failure on first run.**
+   - *Local network (found by Matt on device, 2026-09-28):* after a fresh
+     install the first enrolment fails, then iOS asks for Local Network
+     access; once allowed, the second attempt works. iOS has no call that
+     asks for the permission; the prompt appears on the first local-network
+     connection, and that connection (the enrolment request) fails at once
+     rather than waiting for the answer. Fix: once the server's address is
+     known (after the QR scan, or on Continue in Enter Code), open a plain
+     test connection to it first (`NWConnection`, the approach in Apple's
+     Local Network Privacy FAQ) and wait. It becomes ready when access is
+     allowed, and enrolment then goes ahead, so the user never sees a
+     failure. It waits with a policy-denied error when access is refused,
+     and the app says so plainly, with a button to open Settings, instead
+     of an enrolment error. For a public server there is no prompt and the
+     test connection costs milliseconds. Device-only to verify: the
+     simulator does not enforce Local Network privacy.
+   - *Microphone:* the prompt appears at first launch, before setup
+     (`CallKitBridge.requestMicrophonePermission` at provider
+     registration); ask once enrolment succeeds instead.
 
 ### Should do
 
-8. **Ask for the microphone in context.** The prompt appears at first
-   launch, before setup (`CallKitBridge.requestMicrophonePermission` at
-   provider registration); ask once enrolment succeeds, or at the first
-   call.
 9. **`audio` background mode.** `UIBackgroundModes` has `audio` as well as
    `voip`; reviewers sometimes question it. Test whether CallKit calls work
    without it and drop it if they do.
@@ -156,15 +171,17 @@ On a branch `feature/app-store-readiness`, merged on approval.
   submission for option A. For option B it does not block review, but real
   customers deserve it before long.
 - **An Archive build from the current release Xcode** (not a beta), uploaded
-  and installed through **TestFlight**: enrolment by QR and by code,
+  and installed through **TestFlight**: on a fresh install, the Local
+  Network prompt before the first enrolment and no failed attempt;
+  enrolment by QR and by code,
   incoming and outgoing calls, background calls on office Wi-Fi, sign out,
   and the demo mode end to end if there is one.
 
 ## Order
 
 1. Settle decisions 2 and 3; for demo mode, ask App Review.
-2. Must-fixes 1–6 (and 7) on `feature/app-store-readiness`, typechecked and
-   screenshotted.
+2. Must-fixes 1–6 and 8 (and 7) on `feature/app-store-readiness`,
+   typechecked and screenshotted; 8 confirmed on a freshly installed phone.
 3. The IPv6 test (and fix, for option A).
 4. Option A only: the demo server and review codes.
 5. TestFlight.

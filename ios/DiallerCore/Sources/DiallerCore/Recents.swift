@@ -145,12 +145,12 @@ public extension CallRecord.Outcome {
         case .missed: return "Missed"
         case .declined: return "Declined"
         case .cancelled: return "Cancelled"
-        case .answeredElsewhere: return "Answered elsewhere"
+        case .answeredElsewhere: return "Answered Elsewhere"
         case .busy: return "Busy"
-        case .noAnswer: return "No answer"
-        case .unknownNumber: return "Unknown number"
+        case .noAnswer: return "No Answer"
+        case .unknownNumber: return "Unknown Number"
         case .unavailable: return "Unavailable"
-        case .failed: return "Call failed"
+        case .failed: return "Call Failed"
         }
     }
 }

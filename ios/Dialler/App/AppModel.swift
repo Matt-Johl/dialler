@@ -38,6 +38,13 @@ final class AppModel: ObservableObject {
 
     // Status
     @Published private(set) var status = "disconnected"
+    /// The same, reduced to what Settings tells the user.
+    enum Link: Equatable { case offline, connecting, waiting, connected, refused }
+    @Published private(set) var link: Link = .offline
+    /// This phone's line (the SIP user the welcome names, e.g. "204"),
+    /// remembered so Settings and the keypad can show it before the first
+    /// welcome of a launch. Empty until one has arrived.
+    @Published private(set) var line = UserDefaults.standard.string(forKey: "line") ?? ""
     @Published private(set) var sessionID = ""
     @Published private(set) var contacts: [DirectoryContact] = []
     /// The Recents list (SPEC §6 item 6), newest first. Written by the
@@ -46,7 +53,7 @@ final class AppModel: ObservableObject {
     /// Missed calls the user has not looked at yet: the Recents tab's badge.
     @Published private(set) var unseenMissed = 0
     @Published private(set) var log: [String] = []
-    @Published private(set) var localPushStatus = "not configured"
+    @Published private(set) var localPushStatus = "Not configured"
     /// Whether iOS is actually running the provider extension right now.
     /// This is the one that decides whether a call can reach the phone
     /// while the app is not open: with it false the server's wake has
@@ -54,6 +61,10 @@ final class AppModel: ObservableObject {
     /// undeliverable". It had been visible only as a log line, which cost
     /// a morning's debugging to work out (2026-09-16).
     @Published private(set) var backgroundCalls = "unknown"
+    /// The same state for Settings: whether a call can reach the phone
+    /// while the app is closed, in the user's terms.
+    enum BackgroundCalls: Equatable { case off, on, waitingForNetwork }
+    @Published private(set) var backgroundCallsMode: BackgroundCalls = .off
     /// The SSIDs of the saved Local Push configuration, as loaded from
     /// the framework's preferences (the source of truth; the app persists
     /// nothing of its own).
@@ -80,7 +91,7 @@ final class AppModel: ObservableObject {
             if connectedAt == nil {
                 return outgoing ? progress.label : "Connecting…"
             }
-            return held ? "On hold" : "Connected"
+            return held ? "On Hold" : "Connected"
         }
     }
     /// Every call the in-call screen shows (answered, or outgoing and
@@ -147,7 +158,7 @@ final class AppModel: ObservableObject {
     /// Call-progress tones into the call's audio session (plan Phase J).
     private lazy var tones = TonePlayer(log: { [weak self] m in Task { @MainActor in self?.append(m) } })
     private let engine: CallEngine
-    @Published private(set) var engineState = "no engine"
+    @Published private(set) var engineState = "None"
     private lazy var controller = CallController(ui: callKit, engine: engine, log: { [weak self] m in
         Task { @MainActor in self?.append(m) }
     })
@@ -199,7 +210,7 @@ final class AppModel: ObservableObject {
         #if canImport(DiallerEngine)
         let baresip = BaresipCallEngine(acceptAnyCertificate: true)
         engine = baresip
-        engineState = "baresip idle"
+        engineState = Self.engineText(.idle)
         #else
         let logging = LoggingCallEngine()
         engine = logging
@@ -303,7 +314,7 @@ final class AppModel: ObservableObject {
                 // On screen, not only in the log: the call carries on, so
                 // without this the user taps Transfer and nothing visible
                 // happens at all.
-                self.show(notice: progress.map { "Transfer failed — \($0.label)" } ?? "Transfer failed")
+                self.show(notice: progress.map { "Transfer Failed — \($0.label)" } ?? "Transfer Failed")
             }
         }
         // Show the directory's friendly name for a known incoming caller
@@ -346,7 +357,7 @@ final class AppModel: ObservableObject {
         }
         #if canImport(DiallerEngine)
         baresip.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
-        baresip.onStateChange = { [weak self] s in Task { @MainActor in self?.engineState = "baresip \(s)" } }
+        baresip.onStateChange = { [weak self] s in Task { @MainActor in self?.engineState = Self.engineText(s) } }
         #else
         logging.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
         #endif
@@ -358,13 +369,18 @@ final class AppModel: ObservableObject {
     /// ("sip:202@dialler"), a user ("202") or digits from the keypad; the
     /// engine completes bare targets with the account's domain and the
     /// server routes local users to apps and everything else to the trunk.
-    func dial(_ target: String) {
+    /// Place a call; the controller's id for it, or nil when it could not
+    /// start. The id is also the call's Recents record id when it ends.
+    @discardableResult
+    func dial(_ target: String) -> String? {
         let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
+        guard !t.isEmpty else { return nil }
         let name = contacts.first { $0.uri == t || CallController.userPart(of: $0.uri) == t }?.displayName
-        if controller.startCall(to: t, displayName: name) == nil {
+        let id = controller.startCall(to: t, displayName: name)
+        if id == nil {
             append("call to \(t) not started (see log above)")
         }
+        return id
     }
 
     func hangUp() {
@@ -499,7 +515,7 @@ final class AppModel: ObservableObject {
 
     func enrol(url: URL) async {
         guard let link = EnrolmentLink(url: url) else {
-            enrolmentError = "That QR code is not an enrolment code."
+            enrolmentError = "This QR code isn’t an enrolment code."
             return
         }
         await enrol(link)
@@ -557,6 +573,8 @@ final class AppModel: ObservableObject {
         deviceID = ""
         token = ""
         certSHA256 = nil
+        line = ""
+        UserDefaults.standard.removeObject(forKey: "line")
         enrolmentError = nil
         enrolled = false
         append("logged out: credential cleared, Local Push removed")
@@ -594,15 +612,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    #if canImport(DiallerEngine)
+    /// The SIP engine's state as the Status page shows it.
+    static func engineText(_ state: BaresipCallEngine.State) -> String {
+        switch state {
+        case .idle: return "Idle"
+        case .starting: return "Starting"
+        case .registering: return "Registering"
+        case .registered: return "Registered"
+        case .ringing: return "Ringing"
+        case .dialing: return "Dialling"
+        case .inCall: return "In a Call"
+        case .failed(let reason): return "Failed: \(reason)"
+        }
+    }
+    #endif
+
     /// What the Local Push section says about whether calls can arrive
     /// while the app is closed. `isActive` is only true when iOS is running
     /// the extension, which it does on a matching SSID — so "waiting for a
     /// listed Wi-Fi network" is the ordinary off-site answer, not a fault.
     static func backgroundCallState(enabled: Bool, active: Bool) -> String {
         switch (enabled, active) {
-        case (false, _): return "off — calls arrive only while the app is open"
-        case (true, true): return "yes — the provider is running"
-        case (true, false): return "NO — waiting for a listed Wi-Fi network, or the provider needs re-enabling below"
+        case (false, _): return "Off — calls arrive only while the app is open"
+        case (true, true): return "Running"
+        case (true, false): return "Not running — waiting for a listed Wi-Fi network, or needs turning on again below"
         }
     }
 
@@ -629,14 +663,16 @@ final class AppModel: ObservableObject {
     private func refreshBackgroundCalls() {
         guard let m = pushManager else {
             backgroundCalls = Self.backgroundCallState(enabled: false, active: false)
+            backgroundCallsMode = .off
             return
         }
         backgroundCalls = Self.backgroundCallState(enabled: m.isEnabled, active: m.isActive)
+        backgroundCallsMode = !m.isEnabled ? .off : m.isActive ? .on : .waitingForNetwork
     }
 
     func connect() {
         let cfg = currentConfig
-        guard cfg.isComplete else { status = "incomplete settings"; return }
+        guard cfg.isComplete else { status = "incomplete settings"; link = .offline; return }
         do { try store.save(cfg) } catch { append("config save failed: \(error)") }
         enrolled = true // the dev path: fields entered directly on the Status page
         // The same enrolment credential authenticates the SIP leg (Digest).
@@ -648,6 +684,7 @@ final class AppModel: ObservableObject {
         sessionDropped = false
         controller.attach(transport: s)
         status = "connecting to \(cfg.gateway.host):\(cfg.gateway.port)"
+        link = .connecting
         eventTask = Task { [weak self] in
             for await ev in s.events {
                 guard let self else { return }
@@ -663,6 +700,7 @@ final class AppModel: ObservableObject {
         session?.disconnect()
         session = nil
         status = "disconnected"
+        link = .offline
         sessionID = ""
     }
 
@@ -704,13 +742,16 @@ final class AppModel: ObservableObject {
         case .waiting(let reason):
             if reason.hasPrefix("reconnecting") {
                 status = reason
+                link = .connecting
                 append("gateway: \(reason)")
             } else {
                 status = "waiting for network (\(reason))"
+                link = .waiting
                 append("waiting: \(reason) — allow Local Network access if prompted")
             }
         case .connected(let w):
             status = "connected"
+            link = .connected
             sessionID = w.sessionID
             append("welcome: session \(w.sessionID), heartbeat \(w.heartbeatSeconds)s, directory v\(w.directoryVersion)")
             if sessionDropped {
@@ -723,6 +764,10 @@ final class AppModel: ObservableObject {
                 // Foreground path (SPEC §2): stay registered while running so
                 // calls reach us directly; wakes are for the background.
                 sipDomain = sip.domain
+                if line != sip.user {
+                    line = sip.user
+                    UserDefaults.standard.set(sip.user, forKey: "line")
+                }
                 controller.setAccount(user: "\(sip.user)@\(sip.domain)",
                                       sip: SIPTarget(host: sip.host, port: sip.port, transport: sip.transport))
             }
@@ -738,7 +783,7 @@ final class AppModel: ObservableObject {
             apply(deviceConfig: cfg)
         case .protocolError(let e):
             append("gateway error \(e.code.rawValue): \(e.message ?? "")")
-            if e.fatal { status = "rejected: \(e.code.rawValue)" }
+            if e.fatal { status = "rejected: \(e.code.rawValue)"; link = .refused }
         case .disconnected(let reason):
             // Logged, not just shown: a session that goes down mid-call left
             // no trace in the diagnostics at all, so an incident could only
@@ -746,6 +791,7 @@ final class AppModel: ObservableObject {
             // says whether the drop happened while calls were up.
             append("gateway: session down (\(reason)); \(controller.activeCalls.count) call(s) tracked, app \(UIApplication.shared.applicationState == .active ? "active" : "background")")
             status = "disconnected (\(reason))"
+            if link != .refused { link = .offline } // keep saying why
             sessionID = ""
             sessionDropped = true
         }
@@ -843,7 +889,7 @@ final class AppModel: ObservableObject {
             return true
         } catch {
             append("directory \(what) failed: \(error.localizedDescription)")
-            directoryError = "Could not \(what): \(error.localizedDescription)"
+            directoryError = "Couldn’t \(what). \(error.localizedDescription)"
             return false
         }
     }
@@ -912,13 +958,13 @@ final class AppModel: ObservableObject {
     /// `SSIDList`): iOS runs the extension whenever the phone is joined to
     /// any one of them.
     func configureLocalPush(ssids: [String]) {
-        guard !ssids.isEmpty else { localPushStatus = "no SSID given"; return }
+        guard !ssids.isEmpty else { localPushStatus = "No networks entered"; return }
         NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
             Task { @MainActor in
                 guard let self else { return }
-                if let error { self.localPushStatus = "load failed: \(error.localizedDescription)"; return }
+                if let error { self.localPushStatus = "Couldn’t load: \(error.localizedDescription)"; return }
                 let manager = managers?.first ?? NEAppPushManager()
-                manager.localizedDescription = "Dialler on-prem calls"
+                manager.localizedDescription = "\(AppName.display) Background Calls"
                 manager.providerBundleIdentifier = DiallerIDs.pushProviderBundleID
                 manager.matchSSIDs = ssids
                 manager.providerConfiguration = ["gateway": "\(self.host):\(self.port)"]
@@ -928,10 +974,10 @@ final class AppModel: ObservableObject {
                         if let err {
                             let ns = err as NSError
                             let detail = ns.userInfo.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-                            self.localPushStatus = "save failed: \(ns.domain) \(ns.code) \(detail)"
+                            self.localPushStatus = "Couldn’t save: \(ns.domain) \(ns.code) \(detail)"
                             self.append("NEAppPushManager save failed: \(ns.domain) \(ns.code) \(detail); provider=\(DiallerIDs.pushProviderBundleID)")
                         } else {
-                            self.localPushStatus = "enabled for SSIDs \(SSIDList.format(ssids))"
+                            self.localPushStatus = "On for \(SSIDList.format(ssids))"
                             self.append("NEAppPushManager saved for SSIDs \(SSIDList.format(ssids))")
                             // Not adopt(manager): deliveries go to the delegate
                             // of the instance the framework loads, so reload.
@@ -949,14 +995,14 @@ final class AppModel: ObservableObject {
         NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
             Task { @MainActor in
                 guard let self else { return }
-                if let error { self.localPushStatus = "load failed: \(error.localizedDescription)"; return }
+                if let error { self.localPushStatus = "Couldn’t load: \(error.localizedDescription)"; return }
                 let existing = managers ?? []
                 self.append("Local Push: \(existing.count) saved configuration(s)")
-                guard !existing.isEmpty else { self.localPushStatus = "nothing to remove"; return }
+                guard !existing.isEmpty else { self.localPushStatus = "Nothing to remove"; return }
                 for m in existing {
                     m.removeFromPreferences { err in
                         Task { @MainActor in
-                            self.localPushStatus = err.map { "remove failed: \($0.localizedDescription)" } ?? "removed; re-enable to save afresh"
+                            self.localPushStatus = err.map { "Couldn’t remove: \($0.localizedDescription)" } ?? "Removed. Turn on again to save a new configuration."
                             if err == nil {
                                 // Nothing is saved any more: say so now, not at
                                 // the next launch (it read "running" until then).
@@ -990,7 +1036,7 @@ final class AppModel: ObservableObject {
     /// "Send diagnostics" button; failures leave the queue for next time.
     func sendDiagnostics(reason: String) async {
         guard let cfg = store.load(), cfg.isComplete else {
-            diagnosticsStatus = "not configured"
+            diagnosticsStatus = "Not configured"
             return
         }
         if let data = fileLog?.drain() { DiagnosticsClient.enqueue(kind: "app-log", name: reason, data: data) }
@@ -1000,7 +1046,7 @@ final class AppModel: ObservableObject {
         let client = DiagnosticsClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
                                        acceptAnyCertificate: cfg.gateway.acceptAnyCertificate, certSHA256: cfg.gateway.certSHA256)
         let result = await client.flush()
-        diagnosticsStatus = result.failed == 0 ? "sent \(result.sent) item(s)" : "sent \(result.sent), \(result.failed) queued (server unreachable)"
+        diagnosticsStatus = result.failed == 0 ? "Sent \(result.sent) \(result.sent == 1 ? "item" : "items")" : "Sent \(result.sent); \(result.failed) queued (server unreachable)"
         append("diagnostics (\(reason)): \(diagnosticsStatus)")
     }
 }

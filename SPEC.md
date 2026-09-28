@@ -967,6 +967,21 @@ on by config — see §7.4.
      onboarding screens and the hidden Status page (item 8); the tab bar
      it designs for is **Recents / Directory / Keypad / Settings**, with
      Status gone from it.
+     *Built 2026-09-27 (branch `feature/ui-beautification`, awaiting
+     approval):* the design canvas's "Hairline" look (near-white ground,
+     near-black ink, hairline rules, outlined circles; a dark counterpart
+     for every colour) in SF Pro with Dynamic Type, across onboarding,
+     Recents, Keypad, Directory and its editor, Settings and the in-call
+     screen. Decided in the building: the tab order is the canvas's,
+     **Recents / Keypad / Directory / Settings**; the canvas's Status tab
+     is not built — its connection summary (line, Connected / Not
+     Connected, background calls) heads Settings, and the hidden Status
+     page stays behind the five-second press. Nothing the app does not
+     have is drawn (the canvas's presence, teams, Do Not Disturb,
+     forwarding, voicemail and ringtone). Wording follows Apple's: Title
+     Case for buttons, rows and titles, sentence case with contractions
+     for explanations, "Sign Out" for Log out; the app names itself from
+     `CFBundleDisplayName` (Dialler), permission prompts included.
   5. Mouth-to-ear latency measurement on the echo path and jitter-buffer
      tuning (parked 2026-09-07). *2026-09-10:* the "received audio 0–2 s
      late, varying per call" symptom was the media relay, not the app: the

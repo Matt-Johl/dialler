@@ -18,64 +18,81 @@ struct OnboardingView: View {
     @State private var code = ""
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 28) {
-                Spacer()
-                Image(systemName: "phone.badge.checkmark")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.tint)
-                    .contentShape(Rectangle())
-                    .onLongPressGesture(minimumDuration: 5) { showStatus = true }
-                Text("Set up this phone")
-                    .font(.largeTitle.weight(.semibold))
-                Text("Your administrator has an enrolment code for this phone, shown as a QR code or as eight characters.")
+        VStack(spacing: 0) {
+            Spacer(minLength: 24)
+            // The mark itself, with rings growing out from behind it.
+            ZStack {
+                PulseRings()
+                DiallerMark()
+                    .fill(Palette.ink)
+                    .frame(width: 76, height: 76)
+            }
+            .frame(width: 280, height: 280)
+            .contentShape(Circle())
+            .onLongPressGesture(minimumDuration: 5) { showStatus = true }
+            .accessibilityElement()
+            .accessibilityLabel(AppName.display)
+            .accessibilityAddTraits(.isImage)
+            Text(AppName.display)
+                .font(.system(size: 30, weight: .regular))
+                .tracking(-0.9)
+                .foregroundStyle(Palette.ink)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 24)
+            actions
+        }
+        .padding(.horizontal, 28)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Palette.ground)
+        .sheet(isPresented: $showScanner) {
+            QRScannerView { url in
+                showScanner = false
+                Task { await model.enrol(url: url) }
+            }
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: $manual) { manualForm }
+        .sheet(isPresented: $showStatus) {
+            NavigationStack {
+                StatusView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showStatus = false } } }
+            }
+            .tint(Palette.ink)
+            .toggleStyle(.greenSwitch)
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        VStack(spacing: 6) {
+            if let err = model.enrolmentError {
+                Label(err, systemImage: "exclamationmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(Palette.end)
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
-                if model.enrolling {
-                    ProgressView("Enrolling…")
-                } else {
-                    VStack(spacing: 12) {
-                        Button {
-                            showScanner = true
-                        } label: {
-                            Label("Scan QR code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .disabled(!QRScannerView.isAvailable)
-                        Button {
-                            manual = true
-                        } label: {
-                            Label("Enter details manually", systemImage: "keyboard").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                    }
-                    .padding(.horizontal, 32)
-                    if !QRScannerView.isAvailable {
-                        Text("No camera here: enter the details instead.").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                if let err = model.enrolmentError {
-                    Text(err).font(.callout).foregroundStyle(.red).multilineTextAlignment(.center).padding(.horizontal)
-                }
-                Spacer()
-                Spacer()
+                    .padding(.bottom, 8)
             }
-            .padding()
-            .sheet(isPresented: $showScanner) {
-                QRScannerView { url in
-                    showScanner = false
-                    Task { await model.enrol(url: url) }
+            if model.enrolling {
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Setting Up…").foregroundStyle(Palette.secondary)
                 }
-            }
-            .sheet(isPresented: $manual) { manualForm }
-            .sheet(isPresented: $showStatus) {
-                NavigationStack {
-                    StatusView()
-                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showStatus = false } } }
+                .frame(maxWidth: .infinity, minHeight: 54 + 44 + 6)
+            } else if QRScannerView.isAvailable {
+                Button { showScanner = true } label: {
+                    Label("Scan QR Code", systemImage: "qrcode.viewfinder")
                 }
+                .buttonStyle(WideButtonStyle(kind: .primary))
+                Button("Enter Code Manually") { manual = true }
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(Palette.ink)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            } else {
+                // No camera (the simulator, some iPads): typing is the way in.
+                Button("Enter Enrolment Code") { manual = true }
+                    .buttonStyle(WideButtonStyle(kind: .primary))
+                Color.clear.frame(height: 44)
             }
         }
     }
@@ -83,28 +100,40 @@ struct OnboardingView: View {
     private var manualForm: some View {
         NavigationStack {
             Form {
-                Section("Server") {
-                    TextField("Address (name or IP)", text: $host)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
-                    TextField("Port", text: $port).keyboardType(.numberPad)
-                }
-                Section("Enrolment code") {
-                    TextField("8 characters", text: $code)
-                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
-                        .font(.body.monospaced())
-                }
                 Section {
-                    Button("Enrol") {
+                    LabeledContent("Server") {
+                        TextField("Server", text: $host, prompt: Text("Name or IP address"))
+                            .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.URL)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Port") {
+                        TextField("Port", text: $port).keyboardType(.numberPad).multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Code") {
+                        TextField("Code", text: $code, prompt: Text("8 characters"))
+                            .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                            .font(code.isEmpty ? .body : .body.monospaced())
+                            .multilineTextAlignment(.trailing)
+                    }
+                } footer: {
+                    Text("Your administrator can give you the server address and the code.")
+                }
+            }
+            .navigationTitle("Enter Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { manual = false } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Continue") {
                         manual = false
                         Task { await model.enrol(host: host, port: UInt16(port) ?? 8080, code: code) }
                     }
+                    .fontWeight(.semibold)
                     .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || EnrolmentLink.normalise(code).count < 8)
                 }
             }
-            .navigationTitle("Enter details")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { manual = false } } }
         }
+        .tint(Palette.ink)
     }
 }
 

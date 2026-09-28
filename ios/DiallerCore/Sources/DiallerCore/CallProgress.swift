@@ -38,10 +38,10 @@ public enum CallProgress: Equatable, Sendable {
         case .ringing: return "Ringing…"
         case .busy: return "Busy"
         case .declined: return "Declined"
-        case .noAnswer: return "No answer"
+        case .noAnswer: return "No Answer"
         case .unavailable: return "Unavailable"
-        case .unknownNumber: return "Unknown number"
-        case .failed: return "Call failed"
+        case .unknownNumber: return "Unknown Number"
+        case .failed: return "Call Failed"
         }
     }
 

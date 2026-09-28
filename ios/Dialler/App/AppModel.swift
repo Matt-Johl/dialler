@@ -53,7 +53,7 @@ final class AppModel: ObservableObject {
     /// Missed calls the user has not looked at yet: the Recents tab's badge.
     @Published private(set) var unseenMissed = 0
     @Published private(set) var log: [String] = []
-    @Published private(set) var localPushStatus = "not configured"
+    @Published private(set) var localPushStatus = "Not configured"
     /// Whether iOS is actually running the provider extension right now.
     /// This is the one that decides whether a call can reach the phone
     /// while the app is not open: with it false the server's wake has
@@ -158,7 +158,7 @@ final class AppModel: ObservableObject {
     /// Call-progress tones into the call's audio session (plan Phase J).
     private lazy var tones = TonePlayer(log: { [weak self] m in Task { @MainActor in self?.append(m) } })
     private let engine: CallEngine
-    @Published private(set) var engineState = "no engine"
+    @Published private(set) var engineState = "None"
     private lazy var controller = CallController(ui: callKit, engine: engine, log: { [weak self] m in
         Task { @MainActor in self?.append(m) }
     })
@@ -210,7 +210,7 @@ final class AppModel: ObservableObject {
         #if canImport(DiallerEngine)
         let baresip = BaresipCallEngine(acceptAnyCertificate: true)
         engine = baresip
-        engineState = "baresip idle"
+        engineState = Self.engineText(.idle)
         #else
         let logging = LoggingCallEngine()
         engine = logging
@@ -357,7 +357,7 @@ final class AppModel: ObservableObject {
         }
         #if canImport(DiallerEngine)
         baresip.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
-        baresip.onStateChange = { [weak self] s in Task { @MainActor in self?.engineState = "baresip \(s)" } }
+        baresip.onStateChange = { [weak self] s in Task { @MainActor in self?.engineState = Self.engineText(s) } }
         #else
         logging.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
         #endif
@@ -612,15 +612,31 @@ final class AppModel: ObservableObject {
         }
     }
 
+    #if canImport(DiallerEngine)
+    /// The SIP engine's state as the Status page shows it.
+    static func engineText(_ state: BaresipCallEngine.State) -> String {
+        switch state {
+        case .idle: return "Idle"
+        case .starting: return "Starting"
+        case .registering: return "Registering"
+        case .registered: return "Registered"
+        case .ringing: return "Ringing"
+        case .dialing: return "Dialling"
+        case .inCall: return "In a Call"
+        case .failed(let reason): return "Failed: \(reason)"
+        }
+    }
+    #endif
+
     /// What the Local Push section says about whether calls can arrive
     /// while the app is closed. `isActive` is only true when iOS is running
     /// the extension, which it does on a matching SSID — so "waiting for a
     /// listed Wi-Fi network" is the ordinary off-site answer, not a fault.
     static func backgroundCallState(enabled: Bool, active: Bool) -> String {
         switch (enabled, active) {
-        case (false, _): return "off — calls arrive only while the app is open"
-        case (true, true): return "yes — the provider is running"
-        case (true, false): return "NO — waiting for a listed Wi-Fi network, or the provider needs re-enabling below"
+        case (false, _): return "Off — calls arrive only while the app is open"
+        case (true, true): return "Running"
+        case (true, false): return "Not running — waiting for a listed Wi-Fi network, or needs turning on again below"
         }
     }
 
@@ -942,11 +958,11 @@ final class AppModel: ObservableObject {
     /// `SSIDList`): iOS runs the extension whenever the phone is joined to
     /// any one of them.
     func configureLocalPush(ssids: [String]) {
-        guard !ssids.isEmpty else { localPushStatus = "no SSID given"; return }
+        guard !ssids.isEmpty else { localPushStatus = "No networks entered"; return }
         NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
             Task { @MainActor in
                 guard let self else { return }
-                if let error { self.localPushStatus = "load failed: \(error.localizedDescription)"; return }
+                if let error { self.localPushStatus = "Couldn’t load: \(error.localizedDescription)"; return }
                 let manager = managers?.first ?? NEAppPushManager()
                 manager.localizedDescription = "\(AppName.display) Background Calls"
                 manager.providerBundleIdentifier = DiallerIDs.pushProviderBundleID
@@ -958,10 +974,10 @@ final class AppModel: ObservableObject {
                         if let err {
                             let ns = err as NSError
                             let detail = ns.userInfo.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-                            self.localPushStatus = "save failed: \(ns.domain) \(ns.code) \(detail)"
+                            self.localPushStatus = "Couldn’t save: \(ns.domain) \(ns.code) \(detail)"
                             self.append("NEAppPushManager save failed: \(ns.domain) \(ns.code) \(detail); provider=\(DiallerIDs.pushProviderBundleID)")
                         } else {
-                            self.localPushStatus = "enabled for SSIDs \(SSIDList.format(ssids))"
+                            self.localPushStatus = "On for \(SSIDList.format(ssids))"
                             self.append("NEAppPushManager saved for SSIDs \(SSIDList.format(ssids))")
                             // Not adopt(manager): deliveries go to the delegate
                             // of the instance the framework loads, so reload.
@@ -979,14 +995,14 @@ final class AppModel: ObservableObject {
         NEAppPushManager.loadAllFromPreferences { [weak self] managers, error in
             Task { @MainActor in
                 guard let self else { return }
-                if let error { self.localPushStatus = "load failed: \(error.localizedDescription)"; return }
+                if let error { self.localPushStatus = "Couldn’t load: \(error.localizedDescription)"; return }
                 let existing = managers ?? []
                 self.append("Local Push: \(existing.count) saved configuration(s)")
-                guard !existing.isEmpty else { self.localPushStatus = "nothing to remove"; return }
+                guard !existing.isEmpty else { self.localPushStatus = "Nothing to remove"; return }
                 for m in existing {
                     m.removeFromPreferences { err in
                         Task { @MainActor in
-                            self.localPushStatus = err.map { "remove failed: \($0.localizedDescription)" } ?? "removed; re-enable to save afresh"
+                            self.localPushStatus = err.map { "Couldn’t remove: \($0.localizedDescription)" } ?? "Removed. Turn on again to save a new configuration."
                             if err == nil {
                                 // Nothing is saved any more: say so now, not at
                                 // the next launch (it read "running" until then).
@@ -1020,7 +1036,7 @@ final class AppModel: ObservableObject {
     /// "Send diagnostics" button; failures leave the queue for next time.
     func sendDiagnostics(reason: String) async {
         guard let cfg = store.load(), cfg.isComplete else {
-            diagnosticsStatus = "not configured"
+            diagnosticsStatus = "Not configured"
             return
         }
         if let data = fileLog?.drain() { DiagnosticsClient.enqueue(kind: "app-log", name: reason, data: data) }
@@ -1030,7 +1046,7 @@ final class AppModel: ObservableObject {
         let client = DiagnosticsClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
                                        acceptAnyCertificate: cfg.gateway.acceptAnyCertificate, certSHA256: cfg.gateway.certSHA256)
         let result = await client.flush()
-        diagnosticsStatus = result.failed == 0 ? "sent \(result.sent) item(s)" : "sent \(result.sent), \(result.failed) queued (server unreachable)"
+        diagnosticsStatus = result.failed == 0 ? "Sent \(result.sent) \(result.sent == 1 ? "item" : "items")" : "Sent \(result.sent); \(result.failed) queued (server unreachable)"
         append("diagnostics (\(reason)): \(diagnosticsStatus)")
     }
 }

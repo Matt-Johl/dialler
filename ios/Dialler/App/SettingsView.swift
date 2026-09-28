@@ -202,7 +202,7 @@ struct SettingsRow: View {
                 .font(.subheadline)
                 .foregroundStyle(Palette.secondary)
                 .multilineTextAlignment(.trailing)
-                .lineLimit(2)
+                .lineLimit(4)
         }
         .padding(.vertical, 15)
         .frame(minHeight: 52)

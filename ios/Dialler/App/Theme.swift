@@ -193,7 +193,7 @@ struct PulseRings: View {
 /// Full-width buttons from the onboarding canvas: ink-filled for the main
 /// action, a quiet fill for the other.
 struct WideButtonStyle: ButtonStyle {
-    enum Kind { case primary, secondary, outline }
+    enum Kind { case primary, secondary, outline, destructive }
     var kind: Kind = .primary
     @Environment(\.isEnabled) private var isEnabled
 
@@ -201,13 +201,13 @@ struct WideButtonStyle: ButtonStyle {
         configuration.label
             .font(.body.weight(.medium))
             .frame(maxWidth: .infinity, minHeight: 54)
-            .foregroundStyle(kind == .primary ? Palette.ground : Palette.ink)
+            .foregroundStyle(kind == .primary ? Palette.ground : kind == .destructive ? Palette.end : Palette.ink)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(kind == .primary ? Palette.ink : kind == .secondary ? Palette.fill : Color.clear)
             }
             .overlay {
-                if kind == .outline {
+                if kind == .outline || kind == .destructive {
                     RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.ring, lineWidth: 1)
                 }
             }

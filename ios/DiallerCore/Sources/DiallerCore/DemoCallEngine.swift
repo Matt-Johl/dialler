@@ -152,6 +152,9 @@ public final class DemoCallEngine: CallEngine, @unchecked Sendable {
             echoOn = want
             return want
         }
-        if let change { echoing(change) }
+        if let change {
+            log("demo: echo \(change ? "on (call live, audio session active)" : "off")")
+            echoing(change)
+        }
     }
 }

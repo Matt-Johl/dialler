@@ -24,7 +24,7 @@ On `feature/app-store-readiness` (2026-09-28), awaiting approval:
 | 3. SIP certificate pinning | **Done and tested** against the native server from the iOS simulator: the right pin registers and the call carries audio; a wrong SIP-leg pin, with the gateway pinned right, is refused by the new check. |
 | 4. Release builds without developer settings | **Done.** The Status page itself is Debug-only (decision 3); a release binary has no trace of it. Debug builds say so on Settings › Version ("· Debug"). |
 | 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
-| 6. Version and encryption key | Version **1.0 done.** Build numbers: let Xcode raise them at upload ("Manage Version and Build Number" when distributing). `ITSAppUsesNonExemptEncryption` **waits** for the export-compliance answer. |
+| 6. Version and encryption key | **Done.** 1.0.0 (build 1), then bumped and tagged at every merge to main (see [Versions](#versions)). `ITSAppUsesNonExemptEncryption` = YES (2026-09-28). |
 | 7. Demo mode | **Next**, after 1–6 and 8 are tested; ask App Review first. |
 | 8. Permission prompts | **Built.** Needs Matt's fresh-install check on a phone: the simulator does not enforce Local Network privacy. |
 | Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
@@ -204,12 +204,10 @@ On a branch `feature/app-store-readiness`, merged on approval.
   ends in "· Debug" on a Debug build and has no suffix on an archive.
   Check once in Product › Scheme › Edit Scheme › Archive that Build
   Configuration is Release (it is in the shared scheme file).
-- **Version and build.** Target › General › Identity: Version is
-  `MARKETING_VERSION` (1.0), Build is `CURRENT_PROJECT_VERSION`. The app
-  and the PushProvider extension must carry the same values (App Store
-  Connect rejects a mismatch); both are set in the project for both
-  targets. Each upload needs a higher Build than the last; tick "Manage
-  Version and Build Number" when distributing and Xcode raises it for both.
+- **Version and build** are managed in the repository, not by hand and
+  not by Xcode: see [Versions](#versions). When distributing, **untick**
+  "Manage Version and Build Number", or Xcode renumbers the upload and it no
+  longer matches its tag.
 - **Archiving.** Choose "Any iOS Device (arm64)" as the destination
   (Archive is greyed out for a simulator), Product › Archive, then in the
   Organizer: Distribute App › App Store Connect › Upload. Xcode signs with
@@ -219,6 +217,27 @@ On a branch `feature/app-store-readiness`, merged on approval.
   Configuration to Release. A release build trusts only a pinned server,
   so it has to be enrolled by QR or code, not through the Debug-only
   manual connection.
+
+## Versions
+
+Every merge to main is a release candidate with its own numbers and a tag
+(Matt, 2026-09-28):
+
+- **Version** (`MARKETING_VERSION`, what the App Store shows): X.Y.Z. A
+  merge raises Z unless the approval asks for a minor or major bump.
+- **Build** (`CURRENT_PROJECT_VERSION`): one more on every merge. App Store
+  Connect needs it to rise with every upload.
+- **Where:** in the merge commit itself (`git merge --no-ff --no-commit`,
+  `tools/bump-version.sh patch|minor|major`, commit), so the commit holds
+  exactly the numbers it is tagged with. The app and the extension get the
+  same values; the script refuses to run if they disagree.
+- **Tag:** `vX.Y.Z` on that merge commit, annotated "Dialler X.Y.Z
+  (build N)", pushed with it. The server binaries take their version from
+  the same tags (`git describe --tags --match 'v[0-9]*'` in the Makefile).
+- **Upload only tagged commits of main.** A build from a feature branch
+  carries main's numbers and would collide with the next real one.
+- The first tagged release is the merge of `feature/app-store-readiness`:
+  v1.0.0, build 1.
 
 ## Export compliance
 
@@ -247,10 +266,10 @@ What that asks of us:
   (the 2021 rule removed it for many mass-market products); confirm against
   Apple's "Complying with encryption export regulations" page, or with an
   export adviser, before the first submission. This is not legal advice.
-- **Info.plist.** Once the answers are settled, add
-  `ITSAppUsesNonExemptEncryption` = YES, so each upload stops asking. If
-  Apple issues an export compliance code after reviewing documents (the
-  French declaration), it goes in as `ITSEncryptionExportComplianceCode`.
+- **Info.plist.** `ITSAppUsesNonExemptEncryption` = YES (added 2026-09-28),
+  so each upload stops asking. If Apple issues an export compliance code
+  after reviewing documents (the French declaration), it goes in as
+  `ITSEncryptionExportComplianceCode`.
 
 ## Tests before submitting
 

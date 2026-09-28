@@ -17,27 +17,33 @@ struct OnboardingView: View {
     @State private var port = "8080"
     @State private var code = ""
 
-    private var device: String { UIDevice.current.model }
-
     var body: some View {
-        GeometryReader { geo in
-            ScrollView {
-                // A short screen (iPhone SE) gets a smaller mark and tighter
-                // spacing, so the welcome fits above the buttons unscrolled.
-                welcome(compact: geo.size.height < 560)
-                    .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .center)
+        VStack(spacing: 0) {
+            Spacer(minLength: 24)
+            // The mark itself, with rings growing out from behind it.
+            ZStack {
+                PulseRings()
+                DiallerMark()
+                    .fill(Palette.ink)
+                    .frame(width: 76, height: 76)
             }
-            .scrollBounceBehavior(.basedOnSize)
-        }
-        // The buttons stay at the bottom, over the content if it has to
-        // scroll (a small phone, the largest text sizes).
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+            .frame(width: 280, height: 280)
+            .contentShape(Circle())
+            .onLongPressGesture(minimumDuration: 5) { showStatus = true }
+            .accessibilityElement()
+            .accessibilityLabel(AppName.display)
+            .accessibilityAddTraits(.isImage)
+            Text(AppName.display)
+                .font(.system(size: 30, weight: .regular))
+                .tracking(-0.9)
+                .foregroundStyle(Palette.ink)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 24)
             actions
-                .padding(.horizontal, 28)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-                .background(Palette.ground)
         }
+        .padding(.horizontal, 28)
+        .padding(.bottom, 8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.ground)
         .sheet(isPresented: $showScanner) {
             QRScannerView { url in
@@ -54,59 +60,6 @@ struct OnboardingView: View {
             }
             .tint(Palette.ink)
         }
-    }
-
-    private func welcome(compact: Bool) -> some View {
-        VStack(spacing: 0) {
-            logo(compact: compact)
-                .contentShape(Circle())
-                .onLongPressGesture(minimumDuration: 5) { showStatus = true }
-            VStack(spacing: 10) {
-                Text("Welcome to \(AppName.display)")
-                    .font(.system(size: 34, weight: .regular))
-                    .tracking(-1.2)
-                    .foregroundStyle(Palette.ink)
-                    .multilineTextAlignment(.center)
-                    .accessibilityAddTraits(.isHeader)
-                Text("Your office phone line, on your \(device).")
-                    .font(.body)
-                    .foregroundStyle(Palette.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.top, compact ? 16 : 28)
-            VStack(alignment: .leading, spacing: compact ? 14 : 22) {
-                Feature(glyph: "phone", title: "Your Extension",
-                        detail: "Make and answer calls on your office number.")
-                Feature(glyph: "person.2", title: "The Company Directory",
-                        detail: "Everyone you work with, a tap away.")
-                Feature(glyph: "wifi", title: "Reachable at Work",
-                        detail: "On office Wi-Fi, calls ring even when \(AppName.display) is closed.")
-            }
-            .padding(.top, compact ? 22 : 40)
-        }
-        .padding(.horizontal, 32)
-        .padding(.vertical, compact ? 8 : 24)
-    }
-
-    /// The Dialler mark on an ink tile, as on the Home Screen, inside the
-    /// canvas's hairline rings.
-    private func logo(compact: Bool) -> some View {
-        let k: CGFloat = compact ? 0.72 : 1
-        return ZStack {
-            Circle().strokeBorder(Palette.hairline, lineWidth: 1)
-            Circle().strokeBorder(Palette.ring, lineWidth: 1).padding(26 * k)
-            RoundedRectangle(cornerRadius: 19 * k, style: .continuous)
-                .fill(Palette.ink)
-                .frame(width: 84 * k, height: 84 * k)
-                .shadow(color: .black.opacity(0.14), radius: 16 * k, y: 8 * k)
-            DiallerMark()
-                .fill(Palette.ground)
-                .frame(width: 58 * k, height: 58 * k)
-        }
-        .frame(width: 172 * k, height: 172 * k)
-        .accessibilityElement()
-        .accessibilityLabel(AppName.display)
-        .accessibilityAddTraits(.isImage)
     }
 
     @ViewBuilder
@@ -140,10 +93,6 @@ struct OnboardingView: View {
                     .buttonStyle(WideButtonStyle(kind: .primary))
                 Color.clear.frame(height: 44)
             }
-            Text("Your administrator gives you the enrolment code.")
-                .font(.footnote)
-                .foregroundStyle(Palette.tertiary)
-                .multilineTextAlignment(.center)
         }
     }
 
@@ -187,33 +136,49 @@ struct OnboardingView: View {
     }
 }
 
-/// One line of the welcome: a glyph in an outlined circle, a title and a
-/// sentence.
-private struct Feature: View {
-    let glyph: String
-    let title: String
-    let detail: String
+/// Rings that grow out from behind the mark and fade as they go, one after
+/// another: the landing page's only motion. With Reduce Motion on they
+/// stand still, evenly spaced.
+private struct PulseRings: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var count = 3
+    /// Seconds for one ring to travel from the mark to the edge.
+    var period: Double = 4.2
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Image(systemName: glyph)
-                .font(.system(size: 17, weight: .regular))
-                .foregroundStyle(Palette.ink)
-                .frame(width: 44, height: 44)
-                .overlay { Circle().strokeBorder(Palette.ring, lineWidth: 1) }
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(Palette.ink)
-                Text(detail)
-                    .font(.subheadline)
-                    .foregroundStyle(Palette.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        TimelineView(.animation(paused: reduceMotion)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            GeometryReader { geo in
+                let full = min(geo.size.width, geo.size.height)
+                ZStack {
+                    ForEach(0..<count, id: \.self) { i in
+                        let p = progress(of: i, at: t)
+                        Circle()
+                            .stroke(Palette.ink, lineWidth: 1)
+                            .frame(width: full * (0.34 + 0.66 * p), height: full * (0.34 + 0.66 * p))
+                            .opacity(opacity(at: p))
+                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
             }
-            .padding(.top, 2)
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityHidden(true)
+    }
+
+    /// 0 at the mark, 1 at the edge; the rings are staggered evenly.
+    private func progress(of ring: Int, at t: TimeInterval) -> Double {
+        if reduceMotion { return Double(ring + 1) / Double(count + 1) }
+        let phase = t / period + Double(ring) / Double(count)
+        return phase - phase.rounded(.down)
+    }
+
+    /// Fades in just off the mark and out towards the edge, easing so the
+    /// outermost ring dissolves rather than vanishes.
+    private func opacity(at p: Double) -> Double {
+        if reduceMotion { return 0.16 * (1 - p) + 0.04 }
+        let fadeIn = min(p / 0.12, 1)
+        let fadeOut = pow(1 - p, 1.6)
+        return 0.28 * fadeIn * fadeOut
     }
 }
 

@@ -32,15 +32,17 @@ struct RecentsView: View {
                         .contentShape(Rectangle())
                 }
                 .accessibilityLabel("More")
+                // On the button it came from: iOS 26 points the dialog's
+                // popover at the view it hangs from.
+                .confirmationDialog("Clear all recent calls?", isPresented: $confirmClear, titleVisibility: .visible) {
+                    Button("Clear All Recents", role: .destructive) { model.clearRecents() }
+                } message: {
+                    Text("Calls in the Phone app’s Recents aren’t affected.")
+                }
             }
             list
         }
         .background(Palette.ground)
-        .confirmationDialog("Clear all recent calls?", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("Clear All Recents", role: .destructive) { model.clearRecents() }
-        } message: {
-            Text("Calls in the Phone app’s Recents aren’t affected.")
-        }
         .onAppear { model.markRecentsSeen() }
         .onChange(of: model.recents) { _, _ in model.markRecentsSeen() }
     }

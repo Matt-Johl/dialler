@@ -47,11 +47,6 @@ struct SettingsView: View {
                 case .status: StatusView()
                 }
             }
-            .confirmationDialog("Sign out of \(AppName.display)?", isPresented: $confirmSignOut, titleVisibility: .visible) {
-                Button("Sign Out", role: .destructive) { model.logout() }
-            } message: {
-                Text("Calls won’t reach this \(device) until it’s set up again with a new enrolment code from your administrator.")
-            }
         }
     }
 
@@ -117,6 +112,13 @@ struct SettingsView: View {
     private var signOut: some View {
         Button("Sign Out") { confirmSignOut = true }
             .buttonStyle(WideButtonStyle(kind: .outline))
+            // On the button, not the screen: iOS 26 shows the dialog as a
+            // popover pointing at the view it hangs from.
+            .confirmationDialog("Sign out of \(AppName.display)?", isPresented: $confirmSignOut, titleVisibility: .visible) {
+                Button("Sign Out", role: .destructive) { model.logout() }
+            } message: {
+                Text("Calls won’t reach this \(device) until it’s set up again with a new enrolment code from your administrator.")
+            }
             .padding(.top, 32)
     }
 

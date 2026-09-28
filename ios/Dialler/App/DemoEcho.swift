@@ -9,13 +9,25 @@ import AVFoundation
 /// Voice processing is on, as for real calls: its echo cancellation removes
 /// what the speaker plays from what the microphone hears, so the caller
 /// hears themselves once, not over and over.
+///
+/// Rebuilt on a configuration change. On the device (2026-09-28) the engine
+/// started on the output format iOS reported before voice processing took
+/// over (44.1 kHz stereo against the call's 48 kHz mono), iOS then
+/// reconfigured the hardware, and AVAudioEngine stopped itself, as it does
+/// on every configuration change, having heard nothing. Apple's answer is
+/// to rebuild the graph when the change is posted; by then the hardware is
+/// in its call format.
 @MainActor
 final class DemoEcho {
     private var engine: AVAudioEngine?
+    private var configChange: NSObjectProtocol?
+    /// Whether the demo engine wants the echo on: a rebuild happens only
+    /// while it does.
+    private var wanted = false
+    private var rebuilds = 0
+    private static let maxRebuilds = 3
     private var muted = false
-    /// Microphone frames seen since the echo started, and their peak: the
-    /// log says whether audio reached the echo at all (2026-09-28: the
-    /// echo was silent on the device, with nothing yet to say why).
+    /// Microphone frames and peak level since the echo started, for the log.
     private let meter = Meter()
     var log: (String) -> Void = { _ in }
 
@@ -23,7 +35,13 @@ final class DemoEcho {
     private static let delay: TimeInterval = 0.4
 
     func set(running: Bool) {
-        running ? start() : stop()
+        wanted = running
+        if running {
+            rebuilds = 0
+            start()
+        } else {
+            stop()
+        }
     }
 
     func set(muted: Bool) {
@@ -33,8 +51,6 @@ final class DemoEcho {
 
     private func start() {
         guard engine == nil else { return }
-        let session = AVAudioSession.sharedInstance()
-        log("demo echo: starting (session \(session.category.rawValue)/\(session.mode.rawValue), \(Int(session.sampleRate)) Hz, in \(session.currentRoute.inputs.first?.portName ?? "none"), out \(session.currentRoute.outputs.first?.portName ?? "none"))")
         let e = AVAudioEngine()
         let input = e.inputNode
         do {
@@ -43,7 +59,6 @@ final class DemoEcho {
             log("demo echo: no voice processing (\(error.localizedDescription)); echoing without it")
         }
         let format = input.outputFormat(forBus: 0)
-        log("demo echo: microphone format \(format)")
         guard format.sampleRate > 0, format.channelCount > 0 else {
             log("demo echo: no microphone input")
             return
@@ -58,26 +73,52 @@ final class DemoEcho {
         e.mainMixerNode.outputVolume = muted ? 0 : 1
         meter.reset()
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: meter.tap)
+
+        configChange = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.rebuild(e, because: "the audio configuration changed") }
+        }
         do {
             try e.start()
             engine = e
-            log("demo echo: on (running \(e.isRunning), output \(e.outputNode.inputFormat(forBus: 0)))")
+            log("demo echo: on (microphone \(format), output \(e.outputNode.inputFormat(forBus: 0)))")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 guard let self, self.engine === e else { return }
                 self.log("demo echo: after 2 s running \(e.isRunning), \(self.meter.summary)")
+                // A backstop: a stop with no configuration change posted.
+                if !e.isRunning { self.rebuild(e, because: "it stopped") }
             }
         } catch {
-            input.removeTap(onBus: 0)
+            tearDown(e)
             log("demo echo: could not start (\(error.localizedDescription))")
         }
     }
 
+    /// Replace a stopped or reconfigured engine with a fresh one, while the
+    /// echo is still wanted, a few times at most.
+    private func rebuild(_ e: AVAudioEngine, because reason: String) {
+        guard wanted, engine === e else { return }
+        tearDown(e)
+        guard rebuilds < Self.maxRebuilds else {
+            log("demo echo: \(reason); given up after \(rebuilds) rebuilds")
+            return
+        }
+        rebuilds += 1
+        log("demo echo: \(reason); rebuilding (\(rebuilds))")
+        start()
+    }
+
     private func stop() {
         guard let e = engine else { return }
+        log("demo echo: off (\(meter.summary))")
+        tearDown(e)
+    }
+
+    private func tearDown(_ e: AVAudioEngine) {
+        if let configChange { NotificationCenter.default.removeObserver(configChange) }
+        configChange = nil
         e.inputNode.removeTap(onBus: 0)
         e.stop()
-        engine = nil
-        log("demo echo: off (\(meter.summary))")
+        if engine === e { engine = nil }
     }
 
     /// Frames and peak level of the microphone, from the audio thread. Not

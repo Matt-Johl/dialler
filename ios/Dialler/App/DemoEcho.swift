@@ -10,22 +10,29 @@ import AVFoundation
 /// what the speaker plays from what the microphone hears, so the caller
 /// hears themselves once, not over and over.
 ///
-/// Rebuilt on a configuration change. On the device (2026-09-28) the engine
+/// Started again once the audio settles. On the device the first engine
 /// started on the output format iOS reported before voice processing took
-/// over (44.1 kHz stereo against the call's 48 kHz mono), iOS then
-/// reconfigured the hardware, and AVAudioEngine stopped itself, as it does
-/// on every configuration change, having heard nothing. Apple's answer is
-/// to rebuild the graph when the change is posted; by then the hardware is
-/// in its call format.
+/// over (44.1 kHz stereo against the call's 48 kHz mono); iOS then
+/// reconfigured the hardware, in several steps, and AVAudioEngine stopped
+/// itself, as it does on every configuration change, having heard nothing
+/// (2026-09-28). Rebuilding at the first change was too soon: the next
+/// engine found no microphone format while the hardware was still changing
+/// (2026-09-29). So every change, a missing microphone or a stopped engine
+/// starts it again half a second after the last of them.
 @MainActor
 final class DemoEcho {
     private var engine: AVAudioEngine?
     private var configChange: NSObjectProtocol?
-    /// Whether the demo engine wants the echo on: a rebuild happens only
+    /// Whether the demo engine wants the echo on: a restart happens only
     /// while it does.
     private var wanted = false
-    private var rebuilds = 0
-    private static let maxRebuilds = 3
+    private var attempts = 0
+    private var pendingStart: DispatchWorkItem?
+    private static let maxAttempts = 6
+    private static let settle: TimeInterval = 0.5
+    /// After this many attempts with voice processing, try without: an echo
+    /// that may repeat faintly on the speaker beats silence. A fallback.
+    private static let attemptsWithVoiceProcessing = 3
     private var muted = false
     /// Microphone frames and peak level since the echo started, for the log.
     private let meter = Meter()
@@ -37,7 +44,7 @@ final class DemoEcho {
     func set(running: Bool) {
         wanted = running
         if running {
-            rebuilds = 0
+            attempts = 0
             start()
         } else {
             stop()
@@ -53,14 +60,19 @@ final class DemoEcho {
         guard engine == nil else { return }
         let e = AVAudioEngine()
         let input = e.inputNode
-        do {
-            try input.setVoiceProcessingEnabled(true)
-        } catch {
-            log("demo echo: no voice processing (\(error.localizedDescription)); echoing without it")
+        if attempts < Self.attemptsWithVoiceProcessing {
+            do {
+                try input.setVoiceProcessingEnabled(true)
+            } catch {
+                log("demo echo: no voice processing (\(error.localizedDescription)); echoing without it")
+            }
+        } else {
+            log("demo echo: trying without voice processing")
         }
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
-            log("demo echo: no microphone input")
+            e.stop()
+            startAgain(because: "no microphone format yet")
             return
         }
         let delay = AVAudioUnitDelay()
@@ -75,7 +87,7 @@ final class DemoEcho {
         input.installTap(onBus: 0, bufferSize: 1024, format: format, block: meter.tap)
 
         configChange = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.rebuild(e, because: "the audio configuration changed") }
+            MainActor.assumeIsolated { self?.restart(e, because: "the audio configuration changed") }
         }
         do {
             try e.start()
@@ -85,7 +97,7 @@ final class DemoEcho {
                 guard let self, self.engine === e else { return }
                 self.log("demo echo: after 2 s running \(e.isRunning), \(self.meter.summary)")
                 // A backstop: a stop with no configuration change posted.
-                if !e.isRunning { self.rebuild(e, because: "it stopped") }
+                if !e.isRunning { self.restart(e, because: "it stopped") }
             }
         } catch {
             tearDown(e)
@@ -93,21 +105,34 @@ final class DemoEcho {
         }
     }
 
-    /// Replace a stopped or reconfigured engine with a fresh one, while the
-    /// echo is still wanted, a few times at most.
-    private func rebuild(_ e: AVAudioEngine, because reason: String) {
-        guard wanted, engine === e else { return }
+    /// Drop a stopped or reconfigured engine and start a fresh one.
+    private func restart(_ e: AVAudioEngine, because reason: String) {
+        guard engine === e else { return }
         tearDown(e)
-        guard rebuilds < Self.maxRebuilds else {
-            log("demo echo: \(reason); given up after \(rebuilds) rebuilds")
+        startAgain(because: reason)
+    }
+
+    /// Start again once the audio has been quiet for `settle`: a further
+    /// change meanwhile pushes the start back. A few times at most.
+    private func startAgain(because reason: String) {
+        guard wanted else { return }
+        pendingStart?.cancel()
+        guard attempts < Self.maxAttempts else {
+            log("demo echo: \(reason); given up after \(attempts) attempts")
             return
         }
-        rebuilds += 1
-        log("demo echo: \(reason); rebuilding (\(rebuilds))")
-        start()
+        attempts += 1
+        log("demo echo: \(reason); starting again in \(Self.settle) s (attempt \(attempts))")
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.start() }
+        }
+        pendingStart = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settle, execute: work)
     }
 
     private func stop() {
+        pendingStart?.cancel()
+        pendingStart = nil
         guard let e = engine else { return }
         log("demo echo: off (\(meter.summary))")
         tearDown(e)

@@ -12,6 +12,7 @@ architecture and phases; this file is the map of the repo.
 | [`ios/DiallerCore/`](ios/DiallerCore/) | Swift package: TLS signal transport, session machine, call controller, config store, directory client, all behind fakes | Phase 1 ✔ (12 tests) |
 | [`ios/Dialler/`](ios/Dialler/) | Xcode project: SwiftUI app + CallKit + PushKit, and the `NEAppPushProvider` extension | rings on device, Local Push saves |
 | [`ios/DiallerEngine/`](ios/DiallerEngine/) | baresip-backed `CallEngine` over XCFrameworks built by [`ios/vendor/build-baresip.sh`](ios/vendor/build-baresip.sh) | builds for device + simulator; first real call pending |
+| [`website/`](website/) | Product site: one static page (`index.html`) in the app's Hairline palette, light and dark; no build step | draft |
 | [`harness/`](harness/) | Docker: Asterisk peer, SIPp conformance, headless baresip phones, end-to-end call test | passing |
 | [`spike/`](spike/) | Standalone diago B2BUA from the Phase 0 engine spike | superseded by `server/internal/b2bua`; delete once the repo is committed |
 

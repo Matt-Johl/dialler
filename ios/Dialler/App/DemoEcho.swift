@@ -2,7 +2,7 @@ import AudioToolbox
 import AVFoundation
 
 /// The demo's far end (see `Demo` in DiallerCore): the microphone played
-/// back 0.4 s late, the way a SIP echo test sounds. `DemoCallEngine` says
+/// back as a real echo test to the server plays it. `DemoCallEngine` says
 /// when: while a call is live and CallKit has activated the call's audio
 /// session. CallKit owns the session: the unit is created only after it is
 /// handed over and disposed of when it is taken back (at hold, too).
@@ -28,7 +28,14 @@ final class DemoEcho {
     private var muted = false
     var log: (String) -> Void = { _ in }
 
-    private static let delay: TimeInterval = 0.4
+    /// The server echo path's own delay, as measured (SPEC §6 item 5,
+    /// `make harness-echo`: 120 ms in docker, bounded at 150 ms): network,
+    /// server and jitter buffer, between two SIP phones. The phone's own
+    /// microphone and speaker latency comes on top in the demo exactly as
+    /// in a real call, so this is all the delay line adds. (It was 0.4 s,
+    /// a number picked to sound like "an echo", and noticeably slower than
+    /// the PBX's echo extension; 2026-09-29.)
+    private static let delay: TimeInterval = 0.12
     /// The most frames the unit may ask for at once; the scratch buffer is
     /// sized for it, so the audio thread never allocates.
     private static let maxFrames: UInt32 = 4096

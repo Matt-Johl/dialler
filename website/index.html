@@ -91,7 +91,7 @@ nav a:hover { color: var(--ink); }
   color: var(--secondary); margin: 0 0 20px;
 }
 h1 {
-  font-size: clamp(30px, 4.2vw, 44px); line-height: 1.12; font-weight: 400;
+  font-size: clamp(38px, 5.4vw, 60px); line-height: 1.06; font-weight: 400;
   letter-spacing: -.035em; margin: 0 0 22px;
 }
 h2 {
@@ -100,6 +100,9 @@ h2 {
 }
 h3 { font-size: 17px; font-weight: 500; letter-spacing: -.01em; margin: 0 0 4px; }
 p { margin: 0 0 12px; }
+h1, h2 { text-wrap: balance; }
+h1 span { display: block; color: var(--tertiary); }
+.meta { font-size: 14px; color: var(--tertiary); margin-top: 22px; }
 .lede { font-size: 19px; color: var(--secondary); max-width: 34em; }
 .muted { color: var(--secondary); }
 code, pre { font: 13.5px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
@@ -260,8 +263,9 @@ footer .right { margin-left: auto; }
 <section class="hero">
   <div class="wrap">
     <div>
-      <h1>A SIP softphone for iPhone that receives calls when the app is closed.</h1>
-      <p class="lede">Most SIP softphones on iOS only receive calls while they are open. Dialler also receives them in the background and after the app has been closed. It works with your existing PBX through a small server on your network.</p>
+      <h1>Your office extension, on iPhone. <span>Ringing even when the app is closed.</span></h1>
+      <p class="lede">Most SIP softphones stop receiving calls once iOS moves them to the background. Dialler doesn't. A server on your network wakes the app through Apple's Local Push Connectivity whenever a call comes in.</p>
+      <p class="meta">For Asterisk, Cisco CUCM and other SIP PBXs.</p>
     </div>
     <div class="phone" aria-hidden="true">
       <div class="rings"><i></i><i></i><i></i><div class="monogram">RE</div></div>
@@ -282,6 +286,7 @@ footer .right { margin-left: auto; }
   <div class="wrap">
     <div class="intro">
       <p class="label">Features</p>
+      <h2>At a glance</h2>
     </div>
     <table class="spec">
       <tr><td>Incoming calls</td><td>Open, in the background, or closed</td></tr>
@@ -300,6 +305,7 @@ footer .right { margin-left: auto; }
   <div class="wrap">
     <div class="intro">
       <p class="label">How it works</p>
+      <h2>The PBX calls the server. The server wakes the phone.</h2>
       <p class="muted">The Dialler server sits between your PBX and the phones. It sends the wake-up when a call comes in, and provides the web console for enrolment, directories and status.</p>
     </div>
 
@@ -334,6 +340,7 @@ footer .right { margin-left: auto; }
   <div class="wrap split">
     <div>
       <p class="label">Set-up</p>
+      <h2>Two binaries, one machine</h2>
       <p class="muted"><code>dialler-server</code> handles calls and wake-ups. <code>dialler-admin</code> is the web console. Both are single binaries, usually run on the same machine.</p>
       <table>
         <tr><td><code>7443</code> TCP</td><td>Wake-ups and signalling</td></tr>
@@ -364,7 +371,7 @@ dialler-admin \
   <div class="wrap">
     <div class="intro">
       <p class="label">Management</p>
-      <p class="muted">Phones are managed in the web console.</p>
+      <h2>One console for every phone</h2>
     </div>
     <table class="spec">
       <tr><td>Add a phone</td><td>Enter an extension and a label; the console shows a QR code</td></tr>

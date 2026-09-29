@@ -41,6 +41,14 @@ final class AppModel: ObservableObject {
     /// onboarding screen offers Settings instead of a plain error.
     @Published private(set) var localNetworkDenied = false
 
+    /// Demo mode (appstore.md, decision 2; `Demo` in DiallerCore): no
+    /// server, calls simulated on this phone. Entered with the enrolment
+    /// code `Demo.code`, left with Sign Out. Kept in the app's own
+    /// defaults, never in the App Group config the extension reads.
+    @Published private(set) var isDemo = UserDefaults.standard.bool(forKey: "demo")
+    private var demoGateway: DemoGateway?
+    private var demoDirectory = DemoDirectory()
+
     // Status
     @Published private(set) var status = "disconnected"
     /// The same, reduced to what Settings tells the user.
@@ -162,7 +170,15 @@ final class AppModel: ObservableObject {
     private let callKit = CallKitBridge()
     /// Call-progress tones into the call's audio session (plan Phase J).
     private lazy var tones = TonePlayer(log: { [weak self] m in Task { @MainActor in self?.append(m) } })
-    private let engine: CallEngine
+    /// The controller's engine: the SIP engine, or the demo's in demo mode.
+    private let engine: CallEngineSwitch
+    private let demoEngine: DemoCallEngine
+    /// The demo's far end, played while `demoEngine` says so.
+    private lazy var demoEcho: DemoEcho = {
+        let echo = DemoEcho()
+        echo.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
+        return echo
+    }()
     @Published private(set) var engineState = "None"
     private lazy var controller = CallController(ui: callKit, engine: engine, log: { [weak self] m in
         Task { @MainActor in self?.append(m) }
@@ -212,13 +228,15 @@ final class AppModel: ObservableObject {
     init() {
         callWaiting = UserDefaults.standard.object(forKey: "callWaiting") as? Bool ?? true
         Breadcrumb.drop("AppModel: creating the SIP engine")
+        let demo = DemoCallEngine()
+        demoEngine = demo
         #if canImport(DiallerEngine)
         let baresip = BaresipCallEngine(acceptAnyCertificate: DevSettings.allowsAnyCertificate)
-        engine = baresip
+        engine = CallEngineSwitch(primary: baresip, alternate: demo)
         engineState = Self.engineText(.idle)
         #else
         let logging = LoggingCallEngine()
-        engine = logging
+        engine = CallEngineSwitch(primary: logging, alternate: demo)
         #endif
         if let cfg = store.load() {
             host = cfg.gateway.host
@@ -228,6 +246,11 @@ final class AppModel: ObservableObject {
             acceptAnyCertificate = cfg.gateway.acceptAnyCertificate
             certSHA256 = cfg.gateway.certSHA256
             enrolled = cfg.isComplete
+        }
+        if isDemo {
+            enrolled = true
+            engine.use(alternate: true)
+            engineState = "Demo"
         }
         fileLog?.write("---- launch \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] ?? "?") ----")
         if let saved = bookStore?.load() {
@@ -366,6 +389,9 @@ final class AppModel: ObservableObject {
         #else
         logging.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
         #endif
+        demoEngine.log = { [weak self] m in Task { @MainActor in self?.append(m) } }
+        demoEngine.echoing = { [weak self] on in Task { @MainActor in self?.demoEcho.set(running: on) } }
+        demoEngine.echoMuted = { [weak self] muted in Task { @MainActor in self?.demoEcho.set(muted: muted) } }
     }
 
     // MARK: Calls
@@ -538,6 +564,10 @@ final class AppModel: ObservableObject {
         enrolling = true
         enrolmentError = nil
         defer { enrolling = false }
+        if Demo.isCode(link.code) {
+            startDemo()
+            return
+        }
         append("enrolling at \(link.host):\(link.port) (\(link.certSHA256 == nil ? "trust on first use" : "pinned from the QR"))")
         // Raise the Local Network prompt, and wait for the answer, before the
         // enrolment request: on a first run that request used to fail while
@@ -584,6 +614,7 @@ final class AppModel: ObservableObject {
     /// is what makes iOS stop it.
     func logout() {
         disconnect()
+        if isDemo { leaveDemo() }
         removeLocalPush()
         store.clear()
         bookStore?.clear()
@@ -605,7 +636,7 @@ final class AppModel: ObservableObject {
 
     func autoConnectIfConfigured() {
         attachLocalPushDelegate()
-        if currentConfig.isComplete { connect() }
+        if isDemo || currentConfig.isComplete { connect() }
     }
 
     /// Loads the saved Local Push configuration(s) and attaches our delegate
@@ -692,6 +723,7 @@ final class AppModel: ObservableObject {
     }
 
     func connect() {
+        if isDemo { return connectDemo() }
         let cfg = currentConfig
         guard cfg.isComplete else { status = "incomplete settings"; link = .offline; return }
         do { try store.save(cfg) } catch { append("config save failed: \(error)") }
@@ -709,16 +741,66 @@ final class AppModel: ObservableObject {
         let s = GatewaySession(endpoint: cfg.gateway)
         session = s
         sessionDropped = false
-        controller.attach(transport: s)
-        status = "connecting to \(cfg.gateway.host):\(cfg.gateway.port)"
+        start(s, hello: cfg.hello(kind: .app), status: "connecting to \(cfg.gateway.host):\(cfg.gateway.port)")
+    }
+
+    /// Hand the controller a transport and follow its events: the server's
+    /// gateway session, or the demo's.
+    private func start(_ transport: SignalTransport, hello: Hello, status label: String) {
+        controller.attach(transport: transport)
+        status = label
         link = .connecting
         eventTask = Task { [weak self] in
-            for await ev in s.events {
+            for await ev in transport.events {
                 guard let self else { return }
                 await self.handle(ev)
             }
         }
-        s.connect(hello: cfg.hello(kind: .app))
+        transport.connect(hello: hello)
+    }
+
+    // MARK: Demo mode
+
+    /// Enter demo mode: nothing is saved to the App Group and nothing leaves
+    /// the phone; the controller talks to the demo engine and gateway.
+    private func startDemo() {
+        append("demo: starting (no server; calls are simulated on this phone)")
+        UserDefaults.standard.set(true, forKey: "demo")
+        isDemo = true
+        engine.use(alternate: true)
+        engineState = "Demo"
+        demoDirectory = DemoDirectory()
+        enrolled = true
+        connect()
+    }
+
+    private func connectDemo() {
+        callKit.requestMicrophonePermission()
+        disconnect()
+        let gateway = DemoGateway()
+        demoGateway = gateway
+        start(gateway, hello: Demo.hello, status: "demo")
+    }
+
+    /// Sign Out from the demo. Its calls leave Recents with it: they were
+    /// never this phone's.
+    private func leaveDemo() {
+        UserDefaults.standard.removeObject(forKey: "demo")
+        isDemo = false
+        engine.use(alternate: false)
+        #if canImport(DiallerEngine)
+        engineState = Self.engineText(.idle)
+        #else
+        engineState = "None"
+        #endif
+        clearRecents()
+        append("demo: ended")
+    }
+
+    /// Settings › Receive a Demo Call: the demo's caller rings in a moment.
+    func receiveDemoCall() {
+        guard isDemo else { return }
+        demoEngine.ringIncoming()
     }
 
     func disconnect() {
@@ -726,6 +808,8 @@ final class AppModel: ObservableObject {
         eventTask = nil
         session?.disconnect()
         session = nil
+        demoGateway?.disconnect()
+        demoGateway = nil
         status = "disconnected"
         link = .offline
         sessionID = ""
@@ -863,7 +947,9 @@ final class AppModel: ObservableObject {
 
     // MARK: Directory
 
-    private var directoryClient: DirectoryClient {
+    /// The server's directory, or the demo's.
+    private var directory: any DirectoryService {
+        if isDemo { return demoDirectory }
         let cfg = currentConfig
         return DirectoryClient(base: cfg.httpBase(), deviceID: cfg.deviceID, token: cfg.token,
                                session: DirectoryClient.session(for: cfg.gateway))
@@ -884,7 +970,7 @@ final class AppModel: ObservableObject {
             // A local copy: an actor-isolated property cannot be passed
             // inout across an await.
             var synced = book
-            let reset = try await directoryClient.sync(&synced)
+            let reset = try await directory.sync(&synced)
             book = synced
             publishBook()
             append(reset
@@ -909,9 +995,9 @@ final class AppModel: ObservableObject {
     /// list follows by the sync the server's own directory_changed triggers
     /// (and one requested here, so the change shows even if that push is
     /// slow). A failure is shown and nothing local changes.
-    private func write(_ what: String, _ op: @escaping (DirectoryClient) async throws -> Void) async -> Bool {
+    private func write(_ what: String, _ op: @escaping (any DirectoryService) async throws -> Void) async -> Bool {
         do {
-            try await op(directoryClient)
+            try await op(directory)
             await syncDirectory()
             return true
         } catch {

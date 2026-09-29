@@ -25,7 +25,7 @@ from a review of the project as it stood on `main` at 58bb0c7.
 | 4. Release builds without developer settings | **Done.** The Status page itself is Debug-only (decision 3); a release binary has no trace of it. Debug builds say so on Settings › Version ("· Debug"). |
 | 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
 | 6. Version and encryption key | **Done.** 1.0.0 (build 1), then bumped and tagged at every merge to main (see [Versions](#versions)). `ITSAppUsesNonExemptEncryption` = YES (2026-09-28). |
-| 7. Demo mode | **Next**, after 1–6 and 8 are tested; ask App Review first. |
+| 7. Demo mode | **Done, confirmed on Matt's phone** (2026-09-29), merged as v1.0.1 (build 2). The echo is one VoiceProcessingIO unit created at CallKit's activation (AVAudioEngine stopped itself at the voice-processing switch; only a quiet fallback ever played), delayed by the measured 120 ms of the server echo path. |
 | 8. Permission prompts | **Done, confirmed on Matt's phone** (fresh install, 2026-09-28): the Local Network prompt comes up during "Setting Up…" and enrolment then succeeds. The first attempt had failed ahead of the prompt: the probe took a TCP connection's privacy wait (a POSIX error with the reason on the path) for an ordinary failure. |
 | Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
 
@@ -100,6 +100,56 @@ risk is approval, so ask App Review first, through App Store Connect
 (Contact Us → App Review), describing the product and the demo mode. If
 Apple insists on a live system, option A is still open, and the demo
 engine is not wasted.
+
+## Demo mode
+
+Built 2026-09-28, merged 2026-09-29 (v1.0.1). The whole app with no server:
+calls are simulated on the phone and nothing leaves it.
+
+- **Way in:** the enrolment code `DEMODEMO` in Enter Code Manually (the
+  server field can stay empty), or a QR carrying that code. Sign Out
+  leaves the demo and clears its calls from Recents.
+- **What it does:**
+  - The line is Ext 200, with a ten-contact directory; adding, editing,
+    deleting and favourites all work.
+  - An outgoing call to anyone rings, connects and plays the caller's
+    voice back 120 ms late, as the server's echo path does (an echo test);
+    calls to Sales Line (299) are always busy.
+  - Settings › Receive a Demo Call rings from Reception through CallKit a
+    few seconds later.
+- **How it is built:** stand-ins behind the protocols the app already uses,
+  so the real call path is untouched: `DemoCallEngine` (a `CallEngine`,
+  behind `CallEngineSwitch`), `DemoGateway` (a `SignalTransport`),
+  `DemoDirectory` (a `DirectoryService`, the protocol `DirectoryClient` now
+  also conforms to) in DiallerCore, and `DemoEcho` in the app: one
+  VoiceProcessingIO unit, created only once CallKit has activated the audio
+  session and disposed of when it is deactivated, as the real engine's
+  driver does. The demo flag lives in the app's own defaults, never in the
+  App Group config the extension reads.
+- **Not in the demo:** background calls (Local Push on office Wi-Fi), which
+  need the organisation's server and network.
+
+### App Review notes (draft)
+
+> Dialler is a business phone app. It connects to an organisation's own
+> call server, installed on the organisation's premises by its
+> administrator, so it cannot be used without one. To review it, please use
+> the built-in demo mode:
+>
+> 1. Launch the app and tap **Enter Code Manually**.
+> 2. Leave Server empty, enter the code **DEMODEMO**, and tap **Continue**.
+>
+> The app then runs with a simulated line (Ext 200) and company directory.
+> Calls are simulated on the device: call any contact or number from the
+> Keypad, Directory or Recents and the call rings, connects and plays your
+> voice back (an echo test). Calls to "Sales Line" are always busy. For an
+> incoming call, open **Settings** and tap **Receive a Demo Call**:
+> Reception rings through CallKit a few seconds later. **Sign Out** in
+> Settings leaves the demo.
+>
+> Background calls, which reach the phone over the office Wi-Fi through
+> Local Push Connectivity while the app is closed, need the organisation's
+> server and network and cannot be shown in the demo.
 
 ## Apple accounts and App Store Connect (Matt)
 

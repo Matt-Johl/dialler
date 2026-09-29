@@ -24,7 +24,7 @@ from a review of the project as it stood on `main` at 58bb0c7.
 | 3. SIP certificate pinning | **Done and tested** against the native server from the iOS simulator: the right pin registers and the call carries audio; a wrong SIP-leg pin, with the gateway pinned right, is refused by the new check. |
 | 4. Release builds without developer settings | **Done.** The Status page itself is Debug-only (decision 3); a release binary has no trace of it. Debug builds say so on Settings › Version ("· Debug"). |
 | 5. Open-source notices | **Done**: Settings › About › Acknowledgements. |
-| 6. Version and encryption key | **Done.** 1.0.0 (build 1), then bumped and tagged at every merge to main (see [Versions](#versions)). `ITSAppUsesNonExemptEncryption` = YES (2026-09-28). |
+| 6. Version and encryption key | **Done.** 1.0.0 (build 1), then bumped and tagged at every merge to main (see [Versions](#versions)). No encryption key in Info.plist (see [Export compliance](#export-compliance)): YES without a documentation code fails upload validation. |
 | 7. Demo mode | **Done, confirmed on Matt's phone** (2026-09-29), merged as v1.0.1 (build 2). The echo is one VoiceProcessingIO unit created at CallKit's activation (AVAudioEngine stopped itself at the voice-processing switch; only a quiet fallback ever played), delayed by the measured 120 ms of the server echo path. |
 | 8. Permission prompts | **Done, confirmed on Matt's phone** (fresh install, 2026-09-28): the Local Network prompt comes up during "Setting Up…" and enrolment then succeeds. The first attempt had failed ahead of the prompt: the probe took a TCP connection's privacy wait (a POSIX error with the reason on the path) for an ordinary failure. |
 | Found on the way: device token in the log | **Fixed.** The SIP account line carried `auth_pass=<device token>` into the app log (Status page, diagnostics upload); every engine log line is now redacted. |
@@ -316,10 +316,19 @@ What that asks of us:
   (the 2021 rule removed it for many mass-market products); confirm against
   Apple's "Complying with encryption export regulations" page, or with an
   export adviser, before the first submission. This is not legal advice.
-- **Info.plist.** `ITSAppUsesNonExemptEncryption` = YES (added 2026-09-28),
-  so each upload stops asking. If Apple issues an export compliance code
-  after reviewing documents (the French declaration), it goes in as
-  `ITSEncryptionExportComplianceCode`.
+- **Info.plist: no key, for now.** `ITSAppUsesNonExemptEncryption` = YES is
+  valid only together with `ITSEncryptionExportComplianceCode`, the key App
+  Store Connect issues once it approves export documentation; with YES and
+  no code, upload validation fails ("Invalid Export Compliance Code", the
+  v1.0.1 upload, 2026-09-29). The app has no documentation, so the key stays
+  out and App Store Connect asks the encryption questions for each build
+  (TestFlight: "Missing Compliance" › Manage): uses encryption, yes; standard
+  algorithms in addition to Apple's; France as decided for the territories
+  (no: no documentation needed). If documentation is ever filed and
+  approved (the French declaration), add YES and the issued code together.
+  Matt ran App Store Connect's encryption questionnaire for the app on
+  2026-09-29 (standard encryption, not France): no documentation to upload,
+  so no key; the per-build answers stay.
 
 ## Tests before submitting
 

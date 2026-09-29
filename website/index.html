@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dialler</title>
-<meta name="description" content="An iPhone softphone and a small call server on your own network. Calls wake the phone over office Wi-Fi, with no Apple push service and no internet connection.">
+<meta name="description" content="A SIP softphone for iPhone that receives calls in the background and after the app is closed. Works with your existing PBX, entirely on your own network.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <style>
 /* The app's "Hairline" palette (ios/Dialler/App/Theme.swift): near-white
@@ -162,6 +162,14 @@ section.hero { border-top: 0; padding: 72px 0 96px; }
 .end { width: 62px; height: 62px; border-radius: 50%; background: var(--end); color: #fff; display: grid; place-items: center; margin-top: 30px; }
 .end svg { width: 26px; height: 26px; fill: currentColor; stroke: none; }
 
+/* ---- why: a typical softphone beside Dialler ---- */
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
+.compare > div { padding-top: 22px; border-top: 1px solid var(--ring); }
+.compare .ours { border-top: 1.25px solid var(--ink); }
+.compare p:last-child { font-size: 19px; letter-spacing: -.01em; color: var(--secondary); margin: 0; }
+.compare .ours p:last-child { color: var(--ink); }
+@media (max-width: 760px) { .compare { grid-template-columns: 1fr; gap: 36px; } }
+
 /* ---- features: the app's hairline rows ---- */
 .rows { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; column-gap: 56px; }
 .rows li { padding: 22px 0; border-top: 1px solid var(--hairline); }
@@ -184,13 +192,11 @@ section.hero { border-top: 0; padding: 72px 0 96px; }
 .node p { font-size: 13px; color: var(--secondary); margin: 0; }
 .link { position: relative; height: 84px; padding-top: 8px; text-align: center; font-size: 12px; line-height: 1.4; color: var(--secondary); }
 .link::after { content: ""; position: absolute; left: 4px; right: 4px; top: 42px; border-top: 1px solid var(--ink); }
-.link.optional::after { border-top: 1px dashed var(--tertiary); }
 .link b { display: block; font-weight: 500; color: var(--ink); font-size: 12px; }
 @media (max-width: 760px) {
   .diagram { grid-template-columns: 1fr; gap: 0; max-width: 320px; margin-left: auto; margin-right: auto; }
   .link { height: auto; min-height: 72px; padding: 18px 0 18px 58%; margin: 8px 0; text-align: left; }
   .link::after { left: 50%; right: auto; top: 0; bottom: 0; border-top: 0; border-left: 1px solid var(--ink); }
-  .link.optional::after { border-top: 0; border-left: 1px dashed var(--tertiary); }
 }
 
 .steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; counter-reset: step; }
@@ -263,6 +269,7 @@ footer .right { margin-left: auto; }
   <div class="wrap">
     <a class="brand" href="#"><svg class="mark" aria-hidden="true"><use href="#mark"/></svg>Dialler</a>
     <nav aria-label="Sections">
+      <a href="#why">Why Dialler</a>
       <a href="#features">Features</a>
       <a href="#how">How it works</a>
       <a href="#setup">Set-up</a>
@@ -280,13 +287,13 @@ footer .right { margin-left: auto; }
 <section class="hero">
   <div class="wrap">
     <div>
-      <p class="label">iPhone softphone · on-site server</p>
-      <h1>Office calls on iPhone, even when the app is closed.</h1>
-      <p class="lede">Dialler is an iPhone app and a small call server that runs on your own network. Incoming calls wake the phone over your office Wi-Fi, with no Apple push service, no internet connection and no cloud account.</p>
+      <p class="label">SIP softphone for iPhone</p>
+      <h1>Calls get through, even when the app is closed.</h1>
+      <p class="lede">Dialler turns iPhones into PBX extensions that ring in the background, on the lock screen and after the app has been closed.</p>
       <ul class="facts">
-        <li>Works with or without a PBX</li>
-        <li>Encrypted on the phone's leg</li>
-        <li>QR enrolment</li>
+        <li>Works with your existing PBX</li>
+        <li>Stays on your network</li>
+        <li>QR-code enrolment</li>
       </ul>
     </div>
     <div class="phone" aria-hidden="true">
@@ -304,23 +311,40 @@ footer .right { margin-left: auto; }
   </div>
 </section>
 
+<section id="why">
+  <div class="wrap">
+    <div class="intro">
+      <p class="label">Why Dialler</p>
+      <h2>iOS suspends apps. Most softphones stop ringing.</h2>
+    </div>
+    <div class="compare">
+      <div>
+        <p class="label">A typical SIP softphone</p>
+        <p>Receives calls only while it is open. Once iOS moves it to the background or closes it, its connection to the PBX lapses and calls no longer reach it.</p>
+      </div>
+      <div class="ours">
+        <p class="label">Dialler</p>
+        <p>Rings in every state. When a call arrives, the Dialler server wakes the phone through Apple's Local Push Connectivity, and iOS presents the call like any other.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="features">
   <div class="wrap">
     <div class="intro">
       <p class="label">Features</p>
-      <h2>What it does</h2>
+      <h2>Built for the office phone system</h2>
     </div>
     <ul class="rows">
-      <li><h3>Rings when the app is closed</h3><p>While the phone is on your office Wi-Fi, its Local Push extension keeps a connection open to your server. An incoming call wakes it and rings through CallKit, like any other call.</p></li>
-      <li><h3>Needs no internet</h3><p>Wake-ups, signalling and audio all stay on your network. If the internet connection drops, internal calls carry on.</p></li>
-      <li><h3>Its own exchange</h3><p>The server routes calls between phones by itself, so a PBX is optional.</p></li>
-      <li><h3>Or alongside your PBX</h3><p>Asterisk, Cisco CUCM or any SIP exchange, connected as a trunk or as one registered line per phone. PBX credentials stay on the server; the phone never holds them.</p></li>
-      <li><h3>Encrypted where it counts</h3><p>TLS signalling and SRTP audio between phone and server, and the server's certificate is pinned when the phone enrols.</p></li>
-      <li><h3>A directory for each phone</h3><p>Set it from the console or upload a CSV. Users can add contacts and favourites on the phone; both sides edit the same list.</p></li>
-      <li><h3>No call records on the server</h3><p>Call history stays on the phone. The app talks to your server and nothing else.</p></li>
-      <li><h3>Audio without transcoding</h3><p>Opus between phones, G.722 or G.711 to the PBX, one codec end to end. Media and signalling carry QoS markings.</p></li>
+      <li><h3>Background wake-ups</h3><p>Incoming calls wake the app through Local Push Connectivity over your office Wi-Fi. CallKit rings the phone, locked or not.</p></li>
+      <li><h3>Your PBX, unchanged</h3><p>Asterisk, Cisco CUCM or any standard SIP exchange, connected as a trunk or as one registered line per phone. PBX credentials never reach the phone.</p></li>
+      <li><h3>On-site by design</h3><p>Wake-ups, signalling and audio stay on your network. No cloud service, and no reliance on your internet connection. Call history stays on the phone.</p></li>
+      <li><h3>Encrypted</h3><p>TLS signalling and SRTP audio between phone and server. Each phone pins the server's certificate when it enrols.</p></li>
+      <li><h3>Managed directory</h3><p>A contact list for each phone, maintained centrally or imported from CSV. Users can add their own contacts and favourites.</p></li>
+      <li><h3>Clear audio</h3><p>G.722 wideband, with G.711 as a fallback, passed through without transcoding. Voice and signalling traffic carry QoS markings.</p></li>
     </ul>
-    <p class="also"><strong>And the usual:</strong> hold, transfer, mute, speaker, keypad and recents.</p>
+    <p class="also"><strong>Also included:</strong> hold, transfer, mute, speaker, keypad and recents.</p>
   </div>
 </section>
 
@@ -328,39 +352,39 @@ footer .right { margin-left: auto; }
   <div class="wrap">
     <div class="intro">
       <p class="label">How it works</p>
-      <h2>One server between your phones and your PBX</h2>
-      <p class="muted">A closed app can't keep a SIP registration, so the Dialler server is what your PBX and other phones call. It wakes the right phone, then bridges the call.</p>
+      <h2>A small server beside your PBX</h2>
+      <p class="muted">The Dialler server runs on your network. It wakes phones when calls arrive, and it is where you set up, manage and monitor them.</p>
     </div>
 
-    <div class="diagram" role="img" aria-label="iPhone connects over office Wi-Fi to the Dialler server, which optionally connects to your PBX over SIP.">
-      <div class="node">
-        <div class="circle"><svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></div>
-        <h3>iPhone</h3>
-        <p>Dialler app and its<br>Local Push extension</p>
-      </div>
-      <div class="link"><b>Office Wi-Fi</b>TLS · SRTP</div>
-      <div class="node core">
-        <div class="circle"><svg class="mark" aria-hidden="true"><use href="#mark"/></svg></div>
-        <h3>Dialler server</h3>
-        <p>On your network</p>
-      </div>
-      <div class="link optional"><b>SIP</b>optional</div>
+    <div class="diagram" role="img" aria-label="Your PBX connects over SIP to the Dialler server, which reaches each iPhone over office Wi-Fi.">
       <div class="node">
         <div class="circle"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="6" rx="1.5"/><rect x="3.5" y="14" width="17" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg></div>
         <h3>Your PBX</h3>
         <p>Asterisk, CUCM<br>or any SIP exchange</p>
       </div>
+      <div class="link"><b>SIP</b>trunk or lines</div>
+      <div class="node core">
+        <div class="circle"><svg class="mark" aria-hidden="true"><use href="#mark"/></svg></div>
+        <h3>Dialler server</h3>
+        <p>Wake-ups, enrolment,<br>directory, monitoring</p>
+      </div>
+      <div class="link"><b>Office Wi-Fi</b>TLS · SRTP</div>
+      <div class="node">
+        <div class="circle"><svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></div>
+        <h3>iPhone</h3>
+        <p>Dialler app</p>
+      </div>
     </div>
 
     <ol class="steps">
-      <li><h3>A call arrives</h3><p>From another Dialler phone or from your PBX, at the server.</p></li>
-      <li><h3>The server wakes the phone</h3><p>Over the connection the phone's extension already holds. iOS shows the call on the lock screen.</p></li>
-      <li><h3>Answer and talk</h3><p>The app connects, and the server bridges the call and relays its audio.</p></li>
+      <li><h3>A call arrives</h3><p>Your PBX routes it to the Dialler server, as it would to any extension.</p></li>
+      <li><h3>The phone wakes</h3><p>The server signals the phone through Local Push Connectivity. iOS rings it, whatever state the app is in.</p></li>
+      <li><h3>The call connects</h3><p>On answer, the app connects to the server, which bridges it to the PBX.</p></li>
     </ol>
 
     <div class="limit">
-      <p class="label">The one limit</p>
-      <p>Phones ring on the Wi-Fi networks you list for them. Away from those networks a phone does not receive Dialler calls. That's by design: it's what lets the whole system run without the internet.</p>
+      <p class="label">Coverage</p>
+      <p>Wake-ups work on the Wi-Fi networks you assign to each phone. Away from those networks, the phone does not receive calls. This keeps the entire service on your own infrastructure.</p>
     </div>
   </div>
 </section>
@@ -369,8 +393,8 @@ footer .right { margin-left: auto; }
   <div class="wrap split">
     <div>
       <p class="label">Set-up</p>
-      <h2>Two programs on one machine</h2>
-      <p class="muted"><code>dialler-server</code> handles calls. <code>dialler-admin</code> is the web console. Each is a single binary with no runtime dependencies, configured with a few flags.</p>
+      <h2>Two services, one machine</h2>
+      <p class="muted"><code>dialler-server</code> connects to your PBX and wakes phones. <code>dialler-admin</code> provides the web console. Each is a single binary with no runtime dependencies.</p>
       <table>
         <tr><td><code>7443</code> TCP</td><td>Wake-ups and signalling</td></tr>
         <tr><td><code>5061</code> TCP</td><td>SIP over TLS</td></tr>
@@ -381,24 +405,19 @@ footer .right { margin-left: auto; }
     <div>
 <pre><code><span class="c"># the call server</span>
 dialler-server \
+  -trunk "sip:pbx.office:5060;transport=tcp" \
   -public-host 10.0.0.10 \
   -local-domain office \
   -tls-cert server.pem \
   -tls-key server.key \
   -admin-token-file admin-token
 
-<span class="c"># the console, beside it</span>
+<span class="c"># the web console</span>
 dialler-admin \
   -server-ca server.pem \
   -admin-token-file admin-token \
   -password-file password</code></pre>
-      <p class="caption">Phones calling each other need nothing more.</p>
-<pre><code><span class="c"># add a PBX as a trunk…</span>
--trunk "sip:pbx.office:5060;transport=tcp"
-
-<span class="c"># plus this, for one line per phone</span>
--pbx-mode lines</code></pre>
-      <p class="caption">Reaching a PBX takes one flag, or two for per-phone lines.</p>
+      <p class="caption">Connects to the PBX as a SIP trunk. Add <code>-pbx-mode lines</code> to register one line per phone instead.</p>
     </div>
   </div>
 </section>
@@ -407,16 +426,16 @@ dialler-admin \
   <div class="wrap">
     <div class="intro">
       <p class="label">Management</p>
-      <h2>Everything from one web console</h2>
+      <h2>Every phone, from one console</h2>
     </div>
     <ul class="manage">
-      <li><h3>Add a phone</h3><p>Give it an extension and a label. The console shows a QR code.</p></li>
-      <li><h3>Scan it</h3><p>The iPhone Camera opens Dialler, which enrols itself. The code works once, for fifteen minutes; it can also be typed in.</p></li>
-      <li><h3>Wi-Fi and contacts</h3><p>Set the office networks and the directory for each phone. They reach the phone as you save.</p></li>
-      <li><h3>Replace or revoke</h3><p>Revoke a lost phone, or issue a new code for its replacement. The old credential stops working.</p></li>
-      <li><h3>See what's happening</h3><p>Which phones are online and registered, the state of each PBX line, and calls in progress with packet loss and jitter.</p></li>
+      <li><h3>Add a phone</h3><p>Assign an extension and a label. The console generates a QR code.</p></li>
+      <li><h3>Enrol</h3><p>Scan the code with the iPhone camera and Dialler configures itself. Codes are single-use and expire after fifteen minutes.</p></li>
+      <li><h3>Configure</h3><p>Set each phone's Wi-Fi networks and directory. Changes reach the phone as soon as they are saved.</p></li>
+      <li><h3>Replace or revoke</h3><p>Revoke a lost phone, or issue a new code for its replacement. The previous credential stops working.</p></li>
+      <li><h3>Monitor</h3><p>See which phones are online, the registration state of each PBX line, and live call quality.</p></li>
     </ul>
-    <p class="promise">Each change affects only the phone it names, and never interrupts a call.</p>
+    <p class="promise">Every change applies only to the phone it names, and never interrupts a call in progress.</p>
   </div>
 </section>
 

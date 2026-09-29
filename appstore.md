@@ -164,7 +164,13 @@ calls are simulated on the phone and nothing leaves it.
   (required), category (Business), age rating, copyright, review contact
   and notes.
 - **Screenshots:** the 6.9-inch iPhone size only; the app is iPhone-only
-  (`TARGETED_DEVICE_FAMILY = 1`).
+  (`TARGETED_DEVICE_FAMILY = 1`). **Done** (2026-09-29):
+  `appstore/screenshots/6.9-inch/`, six screens in upload order (call,
+  directory, recents, keypad, settings, welcome), 1320 × 2868, opaque RGB
+  (App Store Connect refuses an alpha channel). The app's own views on the
+  iPhone 17 Pro Max simulator (iOS 26) in UK English, release build (no
+  "Debug"), status bar 9:41 with full signal and battery, sample data that
+  is fictitious (Ofcom drama numbers for outside lines).
 - **App Privacy label:** diagnostics and logs go to the customer's own
   server, not to us, so "Data Not Collected" is defensible; the privacy
   policy still says what the app sends and where.

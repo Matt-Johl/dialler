@@ -250,10 +250,10 @@ footer a:hover { color: var(--ink); }
 @media (max-width: 600px) { footer .wrap { flex-wrap: wrap; } footer .right { margin-left: 0; width: 100%; justify-content: flex-start; } }
 
 /* ---- privacy policy ---- */
-.policy { max-width: 720px; padding-top: 72px; padding-bottom: 96px; }
+.policy { padding-top: 72px; padding-bottom: 96px; }
 .policy h1 { font-size: clamp(34px, 4.6vw, 48px); margin-bottom: 10px; }
 .policy .updated { color: var(--tertiary); font-size: 14px; margin-bottom: 44px; }
-.policy h2 { font-size: 22px; letter-spacing: -.02em; margin: 52px 0 14px; }
+.policy h2 { font-size: 22px; letter-spacing: -.02em; margin: 52px 0 14px; scroll-margin-top: 76px; }
 .policy h3 { font-size: 16px; margin: 28px 0 8px; }
 .policy p, .policy li { color: var(--secondary); }
 .policy strong { color: var(--ink); font-weight: 500; }

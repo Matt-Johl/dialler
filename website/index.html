@@ -62,7 +62,14 @@ a { color: inherit; }
 @media (max-width: 600px) { .wrap { padding: 0 16px; } }
 
 /* ---- top bar ---- */
-header { border-bottom: 1px solid var(--hairline); }
+header {
+  position: sticky; top: 0; z-index: 10;
+  background: color-mix(in srgb, var(--ground) 82%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--hairline);
+}
+@supports not (background: color-mix(in srgb, red 50%, transparent)) { header { background: var(--ground); } }
+section[id] { scroll-margin-top: 60px; }
 header .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 500; letter-spacing: -.01em; text-decoration: none; }
 .mark { width: 26px; height: 26px; fill: currentColor; display: block; }
@@ -183,12 +190,14 @@ section.hero { border-top: 0; padding: 72px 0 96px; }
 
 /* ---- spec lists ---- */
 table.spec td:first-child { width: 200px; color: var(--ink); }
+table.spec tr:last-child td { border-bottom: 1px solid var(--hairline); }
 @media (max-width: 600px) {
   table.spec tr { display: block; padding: 12px 0; border-top: 1px solid var(--hairline); }
   table.spec td { display: block; width: auto; padding: 0; border: 0; }
   table.spec td:first-child { width: auto; font-weight: 500; }
+  table.spec tr:last-child { border-bottom: 1px solid var(--hairline); }
+  table.spec tr:last-child td { border-bottom: 0; }
 }
-table.spec tr:last-child td { border-bottom: 1px solid var(--hairline); }
 .note { margin-top: 44px; color: var(--secondary); }
 
 /* ---- how it works ---- */
@@ -237,6 +246,8 @@ td { padding: 11px 0; border-top: 1px solid var(--hairline); vertical-align: top
 td:first-child { width: 42%; font-variant-numeric: tabular-nums; }
 td code { font-size: 14px; }
 td + td { color: var(--secondary); }
+td a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--ring); text-underline-offset: 3px; }
+td a:hover { text-decoration-color: var(--ink); }
 
 
 footer { border-top: 1px solid var(--hairline); padding: 28px 0 40px; font-size: 13px; color: var(--secondary); }
@@ -271,6 +282,7 @@ footer .right { margin-left: auto; }
       <a href="#how">How it works</a>
       <a href="#setup">Set-up</a>
       <a href="#manage">Management</a>
+      <a href="#contact">Contact</a>
     </nav>
     <button class="theme" type="button" aria-label="Switch between light and dark">
       <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
@@ -413,6 +425,19 @@ dialler-admin \
       <tr><td>Configure</td><td>Wi-Fi networks and directory, per phone</td></tr>
       <tr><td>Replace or revoke</td><td>Revoke a phone, or issue a new code for a replacement</td></tr>
       <tr><td>Status</td><td>Phones online, PBX line registration, calls in progress</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="contact">
+  <div class="wrap">
+    <div class="intro">
+      <p class="label">Contact</p>
+      <h2>Get in touch</h2>
+    </div>
+    <table class="spec">
+      <tr><td>Sales</td><td><a href="mailto:sale@eccentricbadger.com">sale@eccentricbadger.com</a></td></tr>
+      <tr><td>Support</td><td><a href="mailto:support@eccentricbadger.com">support@eccentricbadger.com</a></td></tr>
     </table>
   </div>
 </section>

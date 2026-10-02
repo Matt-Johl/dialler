@@ -1659,6 +1659,39 @@ on by config — see §7.4.
      so the PBX never transcodes for a narrowband phone while wideband peers
      keep G.722. Needs a codec field on the directory entry (admin contract
      addition, 9a) and a harness scenario with a G.711-only phone leg.
+   11. **The server owns its number range; trunk mode never loops a call
+     (scheduled; next, decided 2026-10-02).** Today `routing.Resolve`
+     sends any number that is not a local user to the trunk when one is
+     configured, including a call that arrived *from* the trunk. So if the
+     PBX routes a range to this server (CUCM: route pattern `3XX` on the
+     trunk) and only 300–350 are provisioned, a call to 355 goes PBX →
+     server → PBX → server, each pass a new B2BUA call with a fresh
+     `Max-Forwards`, until the PBX runs out of call capacity or the caller
+     hangs up; a Dialler user dialling 355 starts the same loop from the
+     other end. Found by reading the code; not reproduced. The interim is
+     deployment advice: the PBX routes only the provisioned extensions,
+     not a range. The item:
+     - **An owned range.** A server flag (`-local-range 3XX`, or
+       `300-399`) names the numbers this server owns. A number inside it
+       that is not provisioned resolves to a new `routing.NotFound` and is
+       answered 404, from either direction, and never reaches the trunk;
+       a number outside it routes as today. The PBX and the server then
+       agree on one range: CUCM needs a single route pattern, and adding
+       user 351 needs no PBX change. Shown on the admin UI's Server page
+       (and the status contract, 9a).
+     - **A backstop.** A call that arrived from the trunk is never routed
+       back to it: a trunk caller whose destination resolves to `Trunk`
+       gets 404. Nothing legitimate needs it in trunk mode, and it keeps a
+       missing or mismatched range from bringing the loop back. Transfers
+       place their trunk leg on a separate path; confirm it is untouched.
+     - **Lines mode.** An unprovisioned number inside the range is 404
+       there too. The backstop needs checking against lines mode, where a
+       PBX call arrives at a registered line rather than from a trunk peer.
+     - **Tests.** Routing table tests for the range (inside provisioned,
+       inside unprovisioned, outside, no range set) and for the backstop;
+       a harness scenario dialling an unprovisioned number in the range
+       from each side against Asterisk, asserting 404 and exactly one
+       INVITE on the trunk; and `make harness-regression` green.
 
 ### Much later (not scheduled)
 

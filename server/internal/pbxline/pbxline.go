@@ -152,7 +152,21 @@ type Config struct {
 	StartSpread time.Duration
 	// UnregisterTimeout bounds the best-effort Expires:0 at shutdown.
 	UnregisterTimeout time.Duration
-	Log               *slog.Logger
+	// Tick is how often the manager compares the time of day with each
+	// line's refresh deadline (default 10 s). The refresh itself waits on a
+	// timer, and a Go timer counts only time the machine is awake: on macOS
+	// it runs on mach_absolute_time, on Linux on CLOCK_MONOTONIC, and both
+	// stand still through a system sleep. The PBX's lease does not. After a
+	// sleep longer than the quarter of the lease kept in hand, the contact
+	// has lapsed before the timer fires, and every call to the line fails
+	// at the PBX with no trace here (2026-10-02 15:21–15:24: an 18-minute
+	// clamshell sleep, a three-minute hole, two calls refused). The tick is
+	// what notices the clock has moved on; it costs one comparison per line
+	// and acts only when a deadline has passed, so it is idle on a machine
+	// that never sleeps. It bounds how long after a wake the fleet is
+	// re-registered.
+	Tick time.Duration
+	Log  *slog.Logger
 	// Now and Rand are seams for tests. Rand returns a value in [0,1).
 	Now  func() time.Time
 	Rand func() float64
@@ -179,6 +193,9 @@ func (c *Config) applyDefaults() {
 	if c.UnregisterTimeout <= 0 {
 		c.UnregisterTimeout = 2 * time.Second
 	}
+	if c.Tick <= 0 {
+		c.Tick = 10 * time.Second
+	}
 	if c.Log == nil {
 		c.Log = slog.Default()
 	}
@@ -196,11 +213,12 @@ func (c *Config) applyDefaults() {
 type Manager struct {
 	cfg Config
 
-	mu      sync.Mutex
-	lines   map[string]*line // by Line.User
-	ctx     context.Context  // non-nil once started
-	started bool
-	wg      sync.WaitGroup
+	mu        sync.Mutex
+	lines     map[string]*line // by Line.User
+	ctx       context.Context  // non-nil once started
+	started   bool
+	wg        sync.WaitGroup
+	stopSweep context.CancelFunc // ends the clock watcher; non-nil once started
 }
 
 // line is one registration's goroutine and the state it publishes.
@@ -211,7 +229,15 @@ type line struct {
 
 	// wake carries "the credential changed, register again now"; buffered
 	// so a write never blocks on a loop that is mid-REGISTER.
-	wake   chan struct{}
+	wake chan struct{}
+	// until is the time of day the loop's current wait is due to end; zero
+	// while it is not waiting. late carries "that moment has passed on the
+	// wall clock though your timer has not fired" from the manager's sweep
+	// (Config.Tick). It is a channel of its own, not wake: a late token that
+	// outlived a wait the timer had already ended would otherwise be read
+	// as a credential change and send a REGISTER for nothing.
+	until  time.Time
+	late   chan struct{}
 	cancel context.CancelFunc
 }
 
@@ -233,6 +259,10 @@ func (m *Manager) Start(ctx context.Context) {
 	for _, l := range m.lines {
 		m.startLocked(l)
 	}
+	sctx, stop := context.WithCancel(ctx)
+	m.stopSweep = stop
+	m.wg.Add(1)
+	go m.sweep(sctx)
 	m.cfg.Log.Info("pbx lines: registering", "lines", len(m.lines), "expiry", m.cfg.Expiry)
 }
 
@@ -247,6 +277,9 @@ func (m *Manager) Stop() {
 			l.cancel()
 		}
 		lines = append(lines, l.snapshot())
+	}
+	if m.stopSweep != nil {
+		m.stopSweep()
 	}
 	m.started = false
 	m.mu.Unlock()
@@ -313,7 +346,7 @@ func (m *Manager) Put(in Line) {
 		}
 		return
 	}
-	n := &line{cur: l, wake: make(chan struct{}, 1)}
+	n := &line{cur: l, wake: make(chan struct{}, 1), late: make(chan struct{}, 1)}
 	n.status = Status{User: l.User, DN: l.DN, DigestUser: l.DigestUser, State: StatePending, Since: m.cfg.Now()}
 	m.lines[l.User] = n
 	if m.started {
@@ -429,14 +462,36 @@ func (m *Manager) run(ctx context.Context, l *line) {
 	// Scatter the fleet's first REGISTER: fifty lines coming up together
 	// would otherwise arrive at one PBX node in the same millisecond.
 	if d := time.Duration(m.cfg.Rand() * float64(m.cfg.StartSpread)); d > 0 {
-		if !m.wait(ctx, l, d) {
+		if ok, _ := m.wait(ctx, l, d); !ok {
 			return
 		}
 	}
 
 	attempt := 0
+	late := false // the last wait ended because the sweep found it overdue
 	for {
 		cur := l.snapshot()
+		if late {
+			// The time of day jumped past the refresh: the machine slept.
+			// If it slept past the lease too, the PBX has had no contact
+			// for this line since then and every call to it has failed;
+			// say so, since nothing else here can see it (the state stayed
+			// "registered" throughout — the last REGISTER had succeeded).
+			if st := l.state(); st.State == StateRegistered && !st.ExpiresAt.IsZero() {
+				if now := m.cfg.Now(); now.After(st.ExpiresAt) {
+					log.Warn("pbx line: lease ran out before the refresh was sent; the clock jumped past it (system sleep?); re-registering now",
+						"dn", cur.DN, "lapsed", now.Sub(st.ExpiresAt).Round(time.Second))
+				}
+			}
+			// A fleet waking from one sleep is due all at once; spread the
+			// catch-up as a start is spread. Zero by default: a lapsed line
+			// has already waited long enough.
+			if d := time.Duration(m.cfg.Rand() * float64(m.cfg.StartSpread)); d > 0 {
+				if ok, _ := m.wait(ctx, l, d); !ok {
+					return
+				}
+			}
+		}
 		reg, err := m.cfg.Registrar.Register(ctx, cur, m.cfg.Expiry)
 		if ctx.Err() != nil {
 			return
@@ -446,6 +501,11 @@ func (m *Manager) run(ctx context.Context, l *line) {
 		// its refusal in context, and a refusal that went unrecognised
 		// would be retried for ever against an exchange that has already
 		// said no.
+		// One reading of the clock for the outcome and for the wait that
+		// follows it: the refresh is due a fixed time after the moment the
+		// lease began, so its deadline is taken from that moment, not from
+		// a later look at a clock that may already have moved on.
+		now := m.cfg.Now()
 		var refused *Refused
 		var wait time.Duration
 		switch {
@@ -455,7 +515,7 @@ func (m *Manager) run(ctx context.Context, l *line) {
 				granted = m.cfg.Expiry
 			}
 			was := l.state().State
-			l.registered(m.cfg.Now(), granted, reg.Realm)
+			l.registered(now, granted, reg.Realm)
 			m.stateChanged(l)
 			if was != StateRegistered {
 				log.Info("pbx line: registered", "dn", cur.DN, "expiry", granted, "realm", reg.Realm)
@@ -464,7 +524,7 @@ func (m *Manager) run(ctx context.Context, l *line) {
 			wait = refreshAfter(granted, m.cfg.MinRefresh)
 
 		case errors.As(err, &refused):
-			l.refused(m.cfg.Now(), refused)
+			l.refused(now, refused)
 			m.stateChanged(l)
 			log.Warn("pbx line: refused; not retrying until the credential changes",
 				"dn", cur.DN, "digest_user", cur.DigestUser, "status", refused.Status, "reason", refused.Reason)
@@ -481,33 +541,80 @@ func (m *Manager) run(ctx context.Context, l *line) {
 			if l.state().State != StateRetrying {
 				log.Warn("pbx line: registration failed; retrying", "dn", cur.DN, "err", err)
 			}
-			l.retrying(m.cfg.Now(), err, attempt)
+			l.retrying(now, err, attempt)
 			m.stateChanged(l)
 			wait = m.jittered(backoff(attempt, m.cfg.BackoffBase, m.cfg.BackoffCap))
 		}
 
-		if !m.wait(ctx, l, wait) {
+		var ok bool
+		if ok, late = m.waitUntil(ctx, l, now.Add(wait)); !ok {
 			return
 		}
 	}
 }
 
-// wait sleeps for d, returning false if the server stopped. A credential
-// change cuts the wait short: a corrected password should take effect now,
-// not at the next refresh.
-func (m *Manager) wait(ctx context.Context, l *line, d time.Duration) bool {
+// wait sleeps for d from now; see waitUntil.
+func (m *Manager) wait(ctx context.Context, l *line, d time.Duration) (ok, late bool) {
 	if d <= 0 {
-		return ctx.Err() == nil
+		return ctx.Err() == nil, false
 	}
+	return m.waitUntil(ctx, l, m.cfg.Now().Add(d))
+}
+
+// waitUntil sleeps until the time of day `until`, returning ok=false if the
+// server stopped. A credential change cuts the wait short: a corrected
+// password should take effect now, not at the next refresh. So does the
+// sweep finding `until` already behind the time of day (late=true): the
+// timer slept on counts only time the machine is awake, so after a system
+// sleep it would fire as much later as the machine slept, while the PBX's
+// lease ran on. A deadline already past on entry is late at once.
+func (m *Manager) waitUntil(ctx context.Context, l *line, until time.Time) (ok, late bool) {
+	d := until.Sub(m.cfg.Now())
+	if d <= 0 {
+		return ctx.Err() == nil, true
+	}
+	l.armDeadline(until)
+	defer l.disarmDeadline()
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
-		return false
+		return false, false
 	case <-l.wake:
-		return true
+		return true, false
+	case <-l.late:
+		return true, true
 	case <-t.C:
-		return true
+		return true, false
+	}
+}
+
+// sweep is the manager's one clock watcher: every Tick it compares the time
+// of day with each waiting line's deadline and wakes the lines whose moment
+// has passed (see Config.Tick). One ticker for the fleet, one comparison per
+// line per tick, and nothing to do unless the clock has jumped.
+func (m *Manager) sweep(ctx context.Context) {
+	defer m.wg.Done()
+	t := time.NewTicker(m.cfg.Tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		now := m.cfg.Now()
+		overdue := 0
+		m.mu.Lock()
+		for _, l := range m.lines {
+			if l.flagIfOverdue(now) {
+				overdue++
+			}
+		}
+		m.mu.Unlock()
+		if overdue > 0 {
+			m.cfg.Log.Info("pbx lines: refresh overdue on the wall clock; the clock jumped past it (system sleep?); re-registering now", "lines", overdue, "tick", m.cfg.Tick)
+		}
 	}
 }
 
@@ -586,6 +693,41 @@ func (l *line) signal() {
 	case l.wake <- struct{}{}:
 	default:
 	}
+}
+
+// armDeadline records the time of day the current wait is due to end.
+func (l *line) armDeadline(t time.Time) {
+	l.mu.Lock()
+	l.until = t
+	l.mu.Unlock()
+}
+
+// disarmDeadline clears it and discards any late token, under the same lock
+// the sweep checks and sends under, so a token can never outlive its wait.
+func (l *line) disarmDeadline() {
+	l.mu.Lock()
+	l.until = time.Time{}
+	select {
+	case <-l.late:
+	default:
+	}
+	l.mu.Unlock()
+}
+
+// flagIfOverdue wakes the loop if its wait is due by the time of day, once
+// per wait: the deadline is cleared as the token is sent.
+func (l *line) flagIfOverdue(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.until.IsZero() || now.Before(l.until) {
+		return false
+	}
+	l.until = time.Time{}
+	select {
+	case l.late <- struct{}{}:
+	default:
+	}
+	return true
 }
 
 func (l *line) registered(now time.Time, granted time.Duration, realm string) {

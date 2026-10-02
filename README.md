@@ -147,7 +147,11 @@ what that does and does not protect). Other flags: `-pbx-registrar` if
 REGISTERs go somewhere other than the trunk peer, `-pbx-domain` for the host
 part of each line's address of record, `-pbx-peers` for the other nodes of a
 cluster (a call from an unnamed node is challenged like an app's and fails),
-`-pbx-default-line` and `-pbx-register-expiry`.
+`-pbx-default-line` and `-pbx-register-expiry`. Each line is refreshed at
+three quarters of the lifetime the exchange granted, against the time of
+day: a server that sleeps (a laptop lid, a suspended VM) re-registers every
+overdue line within ten seconds of waking, and logs a lease that had already
+run out while it slept.
 
 `make harness-pbx-lines` runs the bench: registration, a call each way, and
 a wrong credential that must latch refused. Asterisk stands in for CUCM —

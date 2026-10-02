@@ -185,7 +185,22 @@
       "Bash(HARNESS_NOPORTS=1 KEEP=1 sh harness/ringing_callee_dies_test.sh)",
       "Bash(grep -n 'IMPAIR\\\\|netem\\\\|MODE=\\\\|DECLINE\\\\|args\\\\[13\\\\]\\\\|$MODE' harness/sim_call.sh)",
       "Bash(awk '$1 >= \"2026-09-19T11:08:00\" && $1 <= \"2026-09-19T11:09:50\"' data/diag/dev-a/20260919T110950.389Z-app-log-launch.log)",
-      "Bash(grep -n \"ipv4_address\\\\|subnet\\\\|asterisk:$\\\\|172.30\" harness/docker-compose.yml)"
+      "Bash(grep -n \"ipv4_address\\\\|subnet\\\\|asterisk:$\\\\|172.30\" harness/docker-compose.yml)",
+      "Bash(gh api *)",
+      "Bash(gh issue *)",
+      "Bash(git push *)",
+      "Bash(git ls-remote *)",
+      "Bash(gh project *)",
+      "Bash(echo \"=== exit: $? ===\")",
+      "Bash(grep -n \"^#\\\\{1,3\\\\} \" SPEC.md)",
+      "WebFetch(domain:cafe.github.com)",
+      "Bash(SWIFTPM_MODULECACHE_OVERRIDE=__TRACKED_VAR__/spm-modcache CLANG_MODULE_CACHE_PATH=__TRACKED_VAR__/clang-modcache swift test --disable-sandbox)",
+      "Bash(SWIFTPM_MODULECACHE_OVERRIDE=__TRACKED_VAR__/spm-modcache CLANG_MODULE_CACHE_PATH=__TRACKED_VAR__/clang-modcache swift test --disable-sandbox --filter DirectoryStoreTests)",
+      "Bash(make ios-typecheck *)",
+      "WebFetch(domain:issues-archive.asterisk.org)",
+      "WebFetch(domain:sourceforge.net)",
+      "WebFetch(domain:forums5.grandstream.com)",
+      "WebFetch(domain:community.freepbx.org)"
     ],
     "additionalDirectories": [
       "/private/tmp/claude-501/-Users-matt-Code-Cursor-Dialler/a0dcea92-cec8-4661-83c4-a2deaca5d36a/tasks"

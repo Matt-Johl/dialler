@@ -358,6 +358,186 @@ func TestAWrappedRefusalStillLatches(t *testing.T) {
 	}
 }
 
+// ---- system sleep -------------------------------------------------------------
+//
+// A Go timer counts only time the machine is awake; the PBX's lease counts
+// the time of day. These tests move the manager's time of day by hand while
+// its timers run on the real clock, which is exactly what a sleeping machine
+// does to it: the 45-minute timer stands still, the hour on the PBX does not.
+
+// fakeClock is a time of day the test advances by hand.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// logBuffer captures the manager's log so a test can assert what it said.
+type logBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// sleepManager is a manager on a hand-driven clock with a one-hour lease, so
+// no timer of its own can fire inside a test, and a fast tick.
+func sleepManager(t *testing.T, r Registrar, clock *fakeClock, logs *logBuffer, spread time.Duration, rnd float64) *Manager {
+	t.Helper()
+	return New(Config{
+		Registrar:   r,
+		Expiry:      time.Hour,
+		MinRefresh:  time.Millisecond,
+		BackoffBase: time.Millisecond,
+		BackoffCap:  5 * time.Millisecond,
+		StartSpread: spread,
+		Tick:        2 * time.Millisecond,
+		Log:         slog.New(slog.NewTextHandler(logs, nil)),
+		Now:         clock.now,
+		Rand:        func() float64 { return rnd },
+	})
+}
+
+func TestARefreshMissedDuringASleepIsSentOnWake(t *testing.T) {
+	f := newFakeRegistrar(nil) // grants what is asked: one hour
+	clock := &fakeClock{t: time.Date(2026, 10, 2, 14, 21, 31, 0, time.UTC)}
+	logs := &logBuffer{}
+	m := sleepManager(t, f, clock, logs, 0, 0)
+	m.Put(Line{User: "201", DigestUser: "matt", Secret: "s"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+	defer m.Stop()
+
+	waitFor(t, "the line to register", func() bool { return stateOf(t, m, "201") == StateRegistered })
+	s, _ := m.Status("201")
+	if want := clock.now().Add(time.Hour); !s.ExpiresAt.Equal(want) {
+		t.Fatalf("lease recorded as %s, want %s", s.ExpiresAt, want)
+	}
+
+	// The machine sleeps for an hour: the refresh timer has not moved, the
+	// time of day has, and the PBX dropped the contact at the hour. The line
+	// must re-register as soon as it notices, not 45 minutes from now.
+	clock.advance(61 * time.Minute)
+	waitFor(t, "the overdue refresh to be sent", func() bool { return f.count() >= 2 })
+	if !strings.Contains(logs.String(), "lease ran out") {
+		t.Errorf("a lapsed lease must be said in the log; got:\n%s", logs.String())
+	}
+
+	// One REGISTER, not a storm: the new deadline is 45 minutes from the
+	// new time of day and nothing has passed it.
+	time.Sleep(30 * time.Millisecond)
+	if n := f.count(); n != 2 {
+		t.Fatalf("expected exactly 2 REGISTERs after the wake, saw %d", n)
+	}
+	s, _ = m.Status("201")
+	if want := clock.now().Add(time.Hour); !s.ExpiresAt.Equal(want) {
+		t.Errorf("lease after the wake recorded as %s, want %s", s.ExpiresAt, want)
+	}
+}
+
+// A sleep shorter than the quarter kept in hand lapses nothing: the refresh
+// is late but the lease is still good, so it goes out at once and the log
+// does not cry lapse.
+func TestARefreshOverdueWithinTheLeaseIsSentWithoutALapseWarning(t *testing.T) {
+	f := newFakeRegistrar(nil)
+	clock := &fakeClock{t: time.Date(2026, 10, 2, 14, 21, 31, 0, time.UTC)}
+	logs := &logBuffer{}
+	m := sleepManager(t, f, clock, logs, 0, 0)
+	m.Put(Line{User: "201", DigestUser: "matt", Secret: "s"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+	defer m.Stop()
+
+	waitFor(t, "the line to register", func() bool { return f.count() == 1 })
+	clock.advance(50 * time.Minute) // past the 45-minute refresh, inside the hour
+	waitFor(t, "the overdue refresh to be sent", func() bool { return f.count() >= 2 })
+	if strings.Contains(logs.String(), "lease ran out") {
+		t.Errorf("the lease had not run out; log said it had:\n%s", logs.String())
+	}
+	time.Sleep(30 * time.Millisecond)
+	if n := f.count(); n != 2 {
+		t.Fatalf("expected exactly 2 REGISTERs, saw %d", n)
+	}
+}
+
+// Without a jump in the time of day the tick must never add a REGISTER: a
+// line whose timer fires on schedule re-registers once per refresh.
+func TestTheTickDoesNotDoubleARefreshThatFiredOnTime(t *testing.T) {
+	f := newFakeRegistrar(nil)
+	m := New(Config{
+		Registrar:   f,
+		Expiry:      40 * time.Millisecond, // refresh every 30 ms, on the real clock
+		MinRefresh:  time.Millisecond,
+		BackoffBase: time.Millisecond,
+		BackoffCap:  5 * time.Millisecond,
+		Tick:        time.Millisecond,
+		Log:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Rand:        func() float64 { return 0 },
+	})
+	m.Put(Line{User: "201", DigestUser: "matt", Secret: "s"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+	defer m.Stop()
+
+	waitFor(t, "the line to register", func() bool { return f.count() == 1 })
+	time.Sleep(200 * time.Millisecond)
+	// Six or so refreshes are due in 200 ms. A tick that re-fired a refresh
+	// the timer had already sent would roughly double that.
+	if n := f.count(); n > 9 {
+		t.Fatalf("saw %d REGISTERs in 200 ms with a 30 ms refresh; the tick is duplicating refreshes", n)
+	}
+}
+
+// A fleet waking from one sleep is due all at once. The scatter used for the
+// fleet's first REGISTER spreads the catch-up the same way.
+func TestAnOverdueRefreshIsScatteredLikeAStart(t *testing.T) {
+	f := newFakeRegistrar(nil)
+	clock := &fakeClock{t: time.Date(2026, 10, 2, 14, 21, 31, 0, time.UTC)}
+	logs := &logBuffer{}
+	m := sleepManager(t, f, clock, logs, 40*time.Millisecond, 1) // full spread, every time
+	m.Put(Line{User: "201", DigestUser: "matt", Secret: "s"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.Start(ctx)
+	defer m.Stop()
+
+	waitFor(t, "the line to register", func() bool { return f.count() == 1 })
+	woke := time.Now()
+	clock.advance(61 * time.Minute)
+	waitFor(t, "the overdue refresh to be sent", func() bool { return f.count() >= 2 })
+	if took := time.Since(woke); took < 35*time.Millisecond {
+		t.Fatalf("the catch-up REGISTER went out after %s; it should have waited out the %s scatter", took, 40*time.Millisecond)
+	}
+}
+
 func TestRefreshAfter(t *testing.T) {
 	for _, tc := range []struct {
 		granted, floor, want time.Duration

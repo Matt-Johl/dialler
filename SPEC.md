@@ -846,7 +846,15 @@ on by config — see §7.4.
      expiry → jittered backoff on a transient failure → **latch "refused"
      after a 401/403 retry**, so a wrong password logs once instead of
      hammering the exchange, and start-up is jittered so fifty lines do
-     not stampede one node. The SIP send is an injected seam, as
+     not stampede one node. The refresh deadline is a time of day, watched
+     by one 10 s sweep for the fleet, because the timer it sleeps on counts
+     only time the machine is awake while the exchange's lease counts the
+     clock: an 18-minute clamshell sleep on the dev Mac left line 201 with
+     no contact on the PBX for three minutes and two calls refused there
+     with nothing in our log (2026-10-02 15:21). After a wake the overdue
+     lines re-register within one tick, a lease found already lapsed is
+     logged as such, and the catch-up is scattered as a start is. The SIP
+     send is an injected seam, as
      `trunkQualifier`'s probe is, so the whole machine unit-tests with no
      SIP stack. The REGISTER client is ours (sipgo's client plus the
      vendored `icholy/digest`) rather than diago's `RegisterTransaction`,

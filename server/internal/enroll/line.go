@@ -140,7 +140,10 @@ func (s *Store) PBXCredentials() ([]PBXCredential, error) {
 	s.mu.RLock()
 	list := make([]pending, 0, len(s.devices))
 	for id, r := range s.devices {
-		if r.PBXLine == nil || r.Revoked {
+		// A holder beyond the seats is left out like a revoked device:
+		// its line must not be registered for the exchange to ring a
+		// phone that is refused everywhere else (SPEC §4.9).
+		if r.PBXLine == nil || r.Revoked || s.unlicensed[id] {
 			continue
 		}
 		list = append(list, pending{id, r.User, *r.PBXLine})

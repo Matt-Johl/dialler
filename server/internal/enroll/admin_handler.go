@@ -111,6 +111,14 @@ func NewAdminHandler(store *Store, adminToken string, link Link, hooks Hooks) ht
 			admin.WriteFieldError(w, http.StatusConflict, admin.CodeDeviceExists, id+" already exists; mint it a code or purge it first", "device_id")
 			return
 		}
+		// A fixture token takes a seat as a claim would; check before the
+		// record exists so a refusal leaves nothing behind (SPEC §4.9).
+		if in.Token != "" && !exists {
+			if used, total := store.Seats(); total != NoSeatLimit && used >= total {
+				admin.WriteFieldError(w, http.StatusConflict, admin.CodeNoSeats, "no free licence seats; create the device without a token and it can claim a code once a seat is free", "token")
+				return
+			}
+		}
 		description := in.Description
 		if !exists {
 			var err error
@@ -482,6 +490,8 @@ func storeError(w http.ResponseWriter, err error) {
 		admin.WriteFieldError(w, http.StatusConflict, admin.CodeUserTaken, err.Error(), "user")
 	case errors.Is(err, ErrImmutable):
 		admin.WriteFieldError(w, http.StatusConflict, admin.CodeImmutable, err.Error(), "user")
+	case errors.Is(err, ErrNoSeats):
+		admin.WriteFieldError(w, http.StatusConflict, admin.CodeNoSeats, err.Error(), "token")
 	default:
 		admin.StoreError(w, err)
 	}

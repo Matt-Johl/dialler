@@ -8,9 +8,9 @@ import "encoding/base64"
 // strands every licence issued under the old one, so it is a decision, not
 // a routine.
 //
-// Empty until the key is generated: a build with no key verifies nothing,
-// which is the safe direction (0 seats), never the other.
-const vendorPublicKeyBase64 = ""
+// Generated 2026-10-03. An empty literal would verify nothing, which is the
+// safe direction (0 seats), never the other.
+const vendorPublicKeyBase64 = "i/rXva6yT8+f+Yku+odVRoQTkEw1w2rTAriuI8yWfos="
 
 func init() {
 	PublicKey = mustKey(vendorPublicKeyBase64)

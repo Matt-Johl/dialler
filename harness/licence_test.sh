@@ -35,7 +35,7 @@ expect() { # expect "label" "text" "needle" [needle…]
 }
 refuse() { case "$2" in *"$3"*) echo "FAIL: $1: did not expect \"$3\" in: $(printf '%s' "$2" | head -c 500)"; exit 1 ;; esac; }
 # licensed DEVICE — "true"/"false" from the status view
-licensed() { api https://dialler:8081/v1/admin/status | tr '}' '\n' | grep "\"device_id\":\"$1\"" | sed -n 's/.*"licensed":\(true\|false\).*/\1/p' | head -n1; }
+licensed() { api https://dialler:8081/v1/admin/status | tr '}' '\n' | grep "\"device_id\":\"$1\"" | grep -o '"licensed":[a-z]*' | head -n1 | cut -d: -f2; }
 # fakeapp DEVICE TOKEN — runs the headless app for a few seconds, prints its log
 fakeapp() {
   docker rm -f licence-app >/dev/null 2>&1 || true

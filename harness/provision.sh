@@ -50,6 +50,29 @@ post() {
   fi
 }
 
+# The product licence (SPEC §4.9) comes first: with none installed the
+# server has no seats and every fixture token below would be refused. The
+# dev licence is issued by the vendor for the fixed install id the harness
+# ships (harness/dialler/install.id, baked into the image's /data and seeded
+# into ./data by make dev-server). A data directory that predates licensing
+# holds its own, different install id and refuses this licence; the fix is
+# `make harness-down` (down -v) for the harness, or copying
+# harness/dialler/install.id into the data directory for a native server.
+echo "# licence"
+LICENCE_FILE="${DIALLER_LICENCE_FILE:-harness/dialler/licence}"
+if [ ! -s "$LICENCE_FILE" ]; then
+  echo "no dev licence at $LICENCE_FILE: the vendor issues one for install id $(cat harness/dialler/install.id 2>/dev/null) with" >&2
+  echo "  bin/dialler-licence issue -key <vendor.key> -customer 'Dialler harness' -install-id $(cat harness/dialler/install.id 2>/dev/null) -seats 25 -valid-until 2036-12-31 > $LICENCE_FILE" >&2
+  exit 1
+fi
+if ! post /v1/admin/licence "{\"licence\":\"$(tr -d '\n' < "$LICENCE_FILE")\"}" >/dev/null; then
+  echo "the dev licence was refused (see above). If it names another install id, the data directory predates licensing:" >&2
+  echo "  harness: make harness-down   (down -v, then up again)" >&2
+  echo "  native:  cp harness/dialler/install.id data/install.id   (and restart the server)" >&2
+  exit 1
+fi
+echo "licence installed"
+
 echo "# devices (fixed dev tokens)"
 # dev-a / 201 is the REAL app's identity (what `make dev-server` prints for
 # its Settings). No harness phone uses it: a real phone pointed at this

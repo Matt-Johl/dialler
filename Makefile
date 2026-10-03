@@ -21,6 +21,7 @@ server:
 
 # Dev run: self-signed TLS, data in ./data, admin token printed in the log.
 run: server
+	@test -f data/install.id || { mkdir -p data && cp harness/dialler/install.id data/install.id; }
 	./bin/dialler-server -data-dir ./data -admin-token dev
 
 # dialler-admin, the operator's web UI (SPEC §6 item 9c): a second binary
@@ -63,6 +64,11 @@ harness-test:
 
 harness-down:
 	docker compose -f harness/docker-compose.yml --profile test down -v
+
+# The product licence (SPEC §4.9): install, refuse, shrink, suspend,
+# restore, against the real server and the headless app.
+harness-licence:
+	sh harness/licence_test.sh
 
 # Headless app↔app call through the real server (registrar + wake path +
 # diago bridge), asserted on the callee's recorded audio.
@@ -192,7 +198,7 @@ harness-regression:
 	for t in harness-call harness-wake harness-qos \
 	         harness-trunk harness-trunk-srtp harness-trunk-tls harness-trunk-secure \
 	         harness-trunk-stall harness-pbx-hold harness-pbx-unavailable \
-	         harness-hold-music harness-cancel-before-answer harness-admin harness-admin-ui; do \
+	         harness-hold-music harness-cancel-before-answer harness-admin harness-admin-ui harness-licence; do \
 	  echo "=== $$t"; $(MAKE) $$t || { echo "REGRESSION FAILED: $$t"; exit 1; }; \
 	done; \
 	echo "=== NARROWBAND=1 harness-trunk"; NARROWBAND=1 sh harness/trunk_test.sh || exit 1; \
@@ -259,6 +265,7 @@ dev-server: server tone
 	@$(if $(filter 1,$(TRUNK_TLS)),test -f $(LAN_TLS)/dialler.pem || { echo "no $(LAN_TLS)/dialler.pem — run: OUT=lan DIALLER_IP=$(DIALLER_PUBLIC_HOST) ASTERISK_IP=$(ASTERISK_HOST) sh harness/tls/gen_certs.sh"; exit 1; },true)
 	( sleep 2 && DIALLER_API=https://127.0.0.1:8081 PBX_LINES=$(if $(filter lines,$(PBX_MODE)),1,0) sh harness/provision.sh ) &
 	@mkdir -p data/logs
+	@test -f data/install.id || cp harness/dialler/install.id data/install.id
 	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
 	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS) \
 	  2>&1 | tee -a data/logs/dev-server.log

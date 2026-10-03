@@ -158,6 +158,34 @@ a wrong credential that must latch refused. Asterisk stands in for CUCM —
 what it can and cannot prove is in SPEC §6 item 3c, and the CUCM-only
 checklist is §7.3 item 10.
 
+### The licence
+
+The server enforces a product licence (SPEC §4.9): a number of app devices
+until a date, signed by the vendor and bound to one installation. With no
+licence installed it has no seats, so no device can enrol or connect.
+
+- At its first start the server mints an **install id** and keeps it at
+  `<data-dir>/install.id`. The admin UI's Licence page shows it; give it to
+  the vendor, who issues a licence for that id and no other.
+- Paste the licence on the Licence page (or `PUT /v1/admin/licence`,
+  ADMIN-API §5.13). It takes effect at once. Enrolling a device takes a
+  seat; revoking it frees one; a code claimed when none is free is refused
+  with "no free licence seats" and stays claimable.
+- A smaller or expired licence suspends the newest holders beyond the
+  count, everywhere at once: gateway, SIP, device routes, PBX line. A call
+  in progress runs to its end. The clients list marks them "No seat".
+- Expiry is a hard stop. The log and the admin UI warn from 30 days out;
+  the app shows a banner in its last week. Renewal is pasting the new
+  licence; devices resume at once.
+- Back up `install.id` with the rest of the data directory: without it the
+  licence stops matching.
+
+Dev and the harness use a licence issued for a fixed install id that
+`make dev-server` seeds into `./data` and the harness bakes into its image;
+`harness/provision.sh` installs it first. The vendor's tool is
+`make licence-tool` → `bin/dialler-licence` (`keygen` once, offline;
+`issue` per customer; `inspect`); the private key never enters the repo.
+
 ## The admin UI: dialler-admin
 
 `dialler-admin` is the operator's web UI (SPEC §6 item 9c), a second
@@ -171,8 +199,9 @@ make dev-admin            # beside `make dev-server`; sign in as admin, password
 open https://127.0.0.1:8443
 ```
 
-Pages: **Fleet** (every device with its live state, and where a device is
-added and shown its enrolment code and QR), **Device** (description,
+Pages: **Clients** (every device with its live state, and where a device is
+added and shown its enrolment code and QR), **Licence** (what is installed,
+the install id for the vendor, the paste box), **Device** (description,
 enrolment, Wi-Fi networks, PBX line, the directory with inline edit, CSV
 download and upload with a preview, copy to other devices, diagnostics,
 purge), **Calls** (what is bridged right now) and **Server** (identity,

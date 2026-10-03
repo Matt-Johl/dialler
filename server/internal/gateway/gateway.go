@@ -41,6 +41,15 @@ type Config struct {
 	// DeviceConfigFor returns the device's server-managed settings for the
 	// welcome, or nil when none have been set. nil func → never included.
 	DeviceConfigFor func(deviceID string) *wire.DeviceConfig
+	// Licensed is asked, after the credential has passed, whether the
+	// device holds a licence seat (SPEC §4.9); a false answer refuses the
+	// hello with the reason as the message of a fatal unauthorized, the one
+	// error every app can decode. nil func → every device is licensed.
+	Licensed func(deviceID string) (ok bool, reason string)
+	// LicenceFor returns the licence token to carry in the welcome, "" for
+	// none; the app verifies it against the vendor key and its own clock.
+	// nil func → never included.
+	LicenceFor func() string
 }
 
 func (c Config) withDefaults() Config {
@@ -284,11 +293,18 @@ func (g *Gateway) ForgetWake(deviceID, callID string) {
 // SPEC §4.8), so whatever holds the old token must reconnect with the new
 // one or stop. No other device is touched.
 func (g *Gateway) Disconnect(deviceID string) {
+	g.DisconnectWith(deviceID, "credential rotated; re-enrol")
+}
+
+// DisconnectWith is Disconnect with the reason the device is shown: a
+// device that lost its licence seat (SPEC §4.9) reads "no licence seat" or
+// "licence expired", not "credential rotated".
+func (g *Gateway) DisconnectWith(deviceID, reason string) {
 	g.mu.Lock()
 	all := g.snapshotLocked(deviceID)
 	g.mu.Unlock()
 	for _, s := range all {
-		s.fail(wire.CodeUnauthorized, "credential rotated; re-enrol")
+		s.fail(wire.CodeUnauthorized, reason)
 	}
 }
 
@@ -502,6 +518,13 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 		s.fail(wire.CodeUnauthorized, "unknown device or bad token")
 		return
 	}
+	if g.cfg.Licensed != nil {
+		if licensed, reason := g.cfg.Licensed(h.DeviceID); !licensed {
+			log.Info("refused: no licence seat", "device", h.DeviceID, "kind", h.Client, "reason", reason)
+			s.fail(wire.CodeUnauthorized, reason)
+			return
+		}
+	}
 	s.deviceID, s.kind = h.DeviceID, h.Client
 	s.since, s.addr, s.appVersion = g.now(), conn.RemoteAddr().String(), h.AppVersion
 	log = log.With("device", s.deviceID, "kind", s.kind)
@@ -520,6 +543,9 @@ func (g *Gateway) HandleConn(ctx context.Context, conn net.Conn) {
 	}
 	if g.cfg.DeviceConfigFor != nil {
 		welcome.Config = g.cfg.DeviceConfigFor(s.deviceID)
+	}
+	if g.cfg.LicenceFor != nil {
+		welcome.Licence = g.cfg.LicenceFor()
 	}
 	if err := s.send(wire.TypeWelcome, welcome); err != nil {
 		return

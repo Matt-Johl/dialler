@@ -15,6 +15,7 @@ import (
 	"dialler/server/internal/b2bua"
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/gateway"
+	"dialler/server/internal/licence"
 	"dialler/server/internal/pbxline"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/wire"
@@ -32,7 +33,9 @@ type Deps struct {
 	Trunk         func() b2bua.TrunkStatus
 	AdminStats    func() admin.StatsView
 	EventsDropped func() int64
-	Now           func() time.Time
+	// Licence is the product licence summary (SPEC §4.9); nil → omitted.
+	Licence func() licence.Summary
+	Now     func() time.Time
 }
 
 // Info is the server's identity and effective startup configuration
@@ -121,10 +124,11 @@ type LogStartup struct {
 // ServerView is GET /v1/admin/server.
 type ServerView struct {
 	Info
-	UptimeSeconds int64      `json:"uptime_seconds"`
-	Trunk         *TrunkView `json:"trunk,omitempty"`
-	Counts        Counts     `json:"counts"`
-	Admin         adminView  `json:"admin"`
+	UptimeSeconds int64            `json:"uptime_seconds"`
+	Trunk         *TrunkView       `json:"trunk,omitempty"`
+	Counts        Counts           `json:"counts"`
+	Admin         adminView        `json:"admin"`
+	Licence       *licence.Summary `json:"licence,omitempty"`
 }
 
 // TrunkView is TrunkInfo plus the qualify state.
@@ -157,20 +161,23 @@ type adminView struct {
 type FleetView struct {
 	At      time.Time         `json:"at"`
 	Trunk   b2bua.TrunkStatus `json:"trunk"`
+	Licence *licence.Summary  `json:"licence,omitempty"`
 	Devices []DeviceStatus    `json:"devices"`
 }
 
 // DeviceStatus is one device's live state.
 type DeviceStatus struct {
-	DeviceID    string              `json:"device_id"`
-	User        string              `json:"user"`
-	Description string              `json:"description,omitempty"`
-	Revoked     bool                `json:"revoked"`
-	Enrolled    bool                `json:"enrolled"`
-	Sessions    map[string]*Session `json:"sessions"`
-	SIP         *SIPStatus          `json:"sip,omitempty"`
-	Line        *LineStatus         `json:"line,omitempty"`
-	Call        *CallRef            `json:"call,omitempty"`
+	DeviceID    string `json:"device_id"`
+	User        string `json:"user"`
+	Description string `json:"description,omitempty"`
+	Revoked     bool   `json:"revoked"`
+	Enrolled    bool   `json:"enrolled"`
+	// Licensed is whether the device holds a licence seat (SPEC §4.9).
+	Licensed bool                `json:"licensed"`
+	Sessions map[string]*Session `json:"sessions"`
+	SIP      *SIPStatus          `json:"sip,omitempty"`
+	Line     *LineStatus         `json:"line,omitempty"`
+	Call     *CallRef            `json:"call,omitempty"`
 }
 
 // Session is one live connection.
@@ -213,6 +220,7 @@ type snapshot struct {
 	lines     map[string]pbxline.Status    // by user
 	calls     []b2bua.CallView
 	trunk     b2bua.TrunkStatus
+	licence   *licence.Summary
 }
 
 // Handler serves GET /v1/admin/status, /v1/admin/server and /v1/admin/calls.
@@ -265,6 +273,10 @@ func (h *Handler) take() snapshot {
 	if h.deps.Trunk != nil {
 		s.trunk = h.deps.Trunk()
 	}
+	if h.deps.Licence != nil {
+		l := h.deps.Licence()
+		s.licence = &l
+	}
 	return s
 }
 
@@ -279,11 +291,11 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	view := FleetView{At: s.at, Trunk: s.trunk, Devices: make([]DeviceStatus, 0, len(s.devices))}
+	view := FleetView{At: s.at, Trunk: s.trunk, Licence: s.licence, Devices: make([]DeviceStatus, 0, len(s.devices))}
 	for _, d := range s.devices {
 		ds := DeviceStatus{
 			DeviceID: d.DeviceID, User: d.User, Description: d.Description,
-			Revoked: d.Revoked, Enrolled: d.Enrolled, Sessions: map[string]*Session{},
+			Revoked: d.Revoked, Enrolled: d.Enrolled, Licensed: d.Licensed, Sessions: map[string]*Session{},
 		}
 		for _, si := range s.sessions[d.DeviceID] {
 			ds.Sessions[string(si.Kind)] = &Session{Online: true, Since: si.Since, Addr: si.Addr, AppVersion: si.AppVersion}
@@ -305,7 +317,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) server(w http.ResponseWriter, r *http.Request) {
 	s := h.snap.Get()
-	view := ServerView{Info: h.info, UptimeSeconds: int64(s.at.Sub(h.info.StartedAt).Seconds())}
+	view := ServerView{Info: h.info, UptimeSeconds: int64(s.at.Sub(h.info.StartedAt).Seconds()), Licence: s.licence}
 	if h.info.Trunk != nil {
 		view.Trunk = &TrunkView{TrunkInfo: *h.info.Trunk, Qualify: s.trunk.Qualify, QualifySince: s.trunk.Since, QualifyLastError: s.trunk.LastError}
 	}

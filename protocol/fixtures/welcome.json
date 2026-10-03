@@ -18,6 +18,7 @@
     "config": {
       "version": 3,
       "ssids": ["Office", "Office-5G"]
-    }
+    },
+    "licence": "DL1.eyJ2IjoxfQ.c2ln"
   }
 }

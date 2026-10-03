@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"dialler/server/internal/b2bua"
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/gateway"
+	"dialler/server/internal/licence"
 	"dialler/server/internal/pbxline"
 	"dialler/server/internal/registry"
 	"dialler/server/internal/wire"
@@ -25,7 +27,7 @@ func fixture(now func() time.Time) (*Handler, *int) {
 		Devices: func() []enroll.Device {
 			took++
 			return []enroll.Device{
-				{DeviceID: "dev-a", User: "201", Description: "A", Enrolled: true},
+				{DeviceID: "dev-a", User: "201", Description: "A", Enrolled: true, Licensed: true},
 				{DeviceID: "dev-b", User: "202", Revoked: true, Enrolled: true},
 				{DeviceID: "dev-c", User: "203"},
 			}
@@ -46,6 +48,9 @@ func fixture(now func() time.Time) (*Handler, *int) {
 		Trunk:         func() b2bua.TrunkStatus { return b2bua.TrunkStatus{Configured: true, Qualify: "up", Since: t0} },
 		AdminStats:    func() admin.StatsView { return admin.StatsView{InFlight: 1} },
 		EventsDropped: func() int64 { return 2 },
+		Licence: func() licence.Summary {
+			return licence.Summary{State: licence.StateActive, InstallID: "0123456789abcdef0123456789abcdef", ID: "lic_X", Customer: "Example Ltd", Seats: 10, SeatsUsed: 2, DaysLeft: 200}
+		},
 	}
 	info := Info{Version: "test", StartedAt: t0.Add(-time.Hour), Mode: "lines", Trunk: &TrunkInfo{URI: "sip:asterisk", Transport: "tls"}}
 	return New(info, deps), &took
@@ -157,5 +162,36 @@ func TestEmptyDepsAnswerEmptyViews(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/admin/calls", nil))
 	if rec.Body.String() != "[]\n" {
 		t.Fatalf("calls with nothing: %q", rec.Body.String())
+	}
+}
+
+// The licence summary rides on both views, and each device says whether it
+// holds a seat (SPEC §4.9).
+func TestLicenceOnTheViews(t *testing.T) {
+	now := time.Date(2026, 9, 25, 9, 5, 0, 0, time.UTC)
+	h, _ := fixture(func() time.Time { return now })
+	var fleet FleetView
+	if code := get(h, "/v1/admin/status", &fleet); code != 200 {
+		t.Fatalf("status: %d", code)
+	}
+	if fleet.Licence == nil || fleet.Licence.Seats != 10 || fleet.Licence.SeatsUsed != 2 || fleet.Licence.Customer != "Example Ltd" || fleet.Licence.State != licence.StateActive {
+		t.Fatalf("licence on status: %+v", fleet.Licence)
+	}
+	if !fleet.Devices[0].Licensed || fleet.Devices[1].Licensed || fleet.Devices[2].Licensed {
+		t.Fatalf("licensed flags: %v %v %v", fleet.Devices[0].Licensed, fleet.Devices[1].Licensed, fleet.Devices[2].Licensed)
+	}
+	var server ServerView
+	if code := get(h, "/v1/admin/server", &server); code != 200 {
+		t.Fatalf("server: %d", code)
+	}
+	if server.Licence == nil || server.Licence.InstallID != "0123456789abcdef0123456789abcdef" || server.Licence.DaysLeft != 200 {
+		t.Fatalf("licence on server: %+v", server.Licence)
+	}
+	// No licence source: the field is absent, never null.
+	empty := New(Info{}, Deps{Now: func() time.Time { return now }})
+	rec := httptest.NewRecorder()
+	empty.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/admin/server", nil))
+	if strings.Contains(rec.Body.String(), `"licence"`) {
+		t.Fatalf("licence must be omitted with no source: %s", rec.Body.String())
 	}
 }

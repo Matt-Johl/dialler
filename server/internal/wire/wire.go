@@ -148,6 +148,11 @@ type Welcome struct {
 	DirectoryVersion int64         `json:"directory_version"`
 	SIP              *SIPAccount   `json:"sip,omitempty"`
 	Config           *DeviceConfig `json:"config,omitempty"`
+	// Licence is the server's product licence token (SPEC §4.9). The
+	// client verifies its signature with the vendor key and its expiry
+	// with its own clock, and treats a missing or failing one as a
+	// refusal, so a server the customer controls cannot extend a licence.
+	Licence string `json:"licence,omitempty"`
 }
 
 // Party names one end of a call.

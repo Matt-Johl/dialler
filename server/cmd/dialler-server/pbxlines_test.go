@@ -2,11 +2,15 @@ package main
 
 import (
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"dialler/server/internal/enroll"
 	"dialler/server/internal/pbx"
+	"dialler/server/internal/pbxline"
+	"dialler/server/internal/secrets"
 )
 
 func TestParsePBXMode(t *testing.T) {
@@ -104,4 +108,38 @@ func TestSplitList(t *testing.T) {
 			t.Errorf("splitList(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
+}
+
+// registerLine registers a device's stored line unless the device is
+// enrolled and holds no seat (SPEC §4.9). An un-enrolled device with a line
+// is registered, as it always was: the line answers once the phone arrives.
+func TestRegisterLineHonoursSeats(t *testing.T) {
+	log := slog.Default()
+	devices, _ := enroll.Open("")
+	devices.Realm = "dialler"
+	box, _ := secrets.OpenKey(filepath.Join(t.TempDir(), "pbx.key"))
+	devices.Secrets = box
+	mgr := pbxline.New(pbxline.Config{Registrar: okRegistrar{}, Log: log})
+
+	devices.SetSeats(2)
+	devices.IssueToken("dev-a", "201", "fixture-token-dev-a")
+	devices.IssueToken("dev-c", "203", "fixture-token-dev-c")
+	devices.Create("dev-b", "202", "staged")
+	for _, id := range []string{"dev-a", "dev-b", "dev-c"} {
+		if _, err := devices.SetPBXLine(id, "", "line-"+id, "s"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	devices.SetSeats(1) // dev-c is now beyond the line
+	for _, id := range []string{"dev-a", "dev-b", "dev-c"} {
+		registerLine(log, mgr, devices, id)
+	}
+	if got := strings.Join(lineUsers(mgr), ","); got != "201,202" {
+		t.Fatalf("registered lines = %s, want the holder and the un-enrolled device, not the unlicensed one", got)
+	}
+	// No line stored: nothing to do, no panic.
+	devices.Create("dev-d", "204", "")
+	registerLine(log, mgr, devices, "dev-d")
+	// Trunk mode: no manager, no panic.
+	registerLine(log, nil, devices, "dev-a")
 }

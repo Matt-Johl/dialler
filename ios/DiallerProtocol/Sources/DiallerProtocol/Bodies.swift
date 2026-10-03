@@ -68,19 +68,24 @@ public struct Welcome: Codable, Equatable, Sendable {
     public var directoryVersion: Int64
     public var sip: SIPAccount?
     public var config: DeviceConfig?
+    /// The server's product licence token (SPEC §4.9), verified by the
+    /// client against the vendor key and its own clock; absent from an
+    /// older server, which the client treats as a refusal.
+    public var licence: String?
 
-    public init(sessionID: String, heartbeatSeconds: Int, serverTime: Date, directoryVersion: Int64, sip: SIPAccount? = nil, config: DeviceConfig? = nil) {
+    public init(sessionID: String, heartbeatSeconds: Int, serverTime: Date, directoryVersion: Int64, sip: SIPAccount? = nil, config: DeviceConfig? = nil, licence: String? = nil) {
         self.sessionID = sessionID
         self.heartbeatSeconds = heartbeatSeconds
         self.serverTime = serverTime
         self.directoryVersion = directoryVersion
         self.sip = sip
         self.config = config
+        self.licence = licence
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id", heartbeatSeconds = "heartbeat_seconds"
-        case serverTime = "server_time", directoryVersion = "directory_version", sip, config
+        case serverTime = "server_time", directoryVersion = "directory_version", sip, config, licence
     }
 }
 

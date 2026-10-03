@@ -107,6 +107,7 @@ lets ~everything be validated with no device (see §7).
 | Management plane | **Separate process, `dialler-admin`** (Go, stdlib, server-rendered HTML, embedded assets) speaking only to the call server's admin API. The call server gains additive JSON endpoints and nothing else; an admin action never interrupts a call and affects only the device it names (§4.8). Call history is device-local — the server keeps no call records |
 | Device onboarding | **Short-lived enrolment code**, delivered as a QR (`dialler://enrol…`) or typed with the server address; the claim rotates the device credential and pins the server certificate (§4.8, §6 item 8) |
 | Video / IM | **Not scheduled** (§6 "Much later") |
+| Product licence | **Vendor-signed, offline, bound to the server's install id, verified on the server and on the phone** (§4.9, decided 2026-10-03): X devices until a date; enrolment refused past X; a device that loses its seat is suspended; expiry is a hard stop; no licence is 0 seats. A one-off online check-in at application is a later, optional addition; there are no regular check-ins |
 
 ## 4. Architecture
 
@@ -1700,6 +1701,23 @@ on by config — see §7.4.
        a harness scenario dialling an unprovisioned number in the range
        from each side against Asterisk, asserting 404 and exactly one
        INVITE on the trunk; and `make harness-regression` green.
+   12. **Product licence (scheduled; decided 2026-10-03, §4.9).** X app
+     devices until a date, vendor-signed, bound to the server's install
+     id, verified on the server and on the phone, seats enforced at
+     enrolment and every door for a device that loses one. Built on
+     `feature/licence` in this order, each phase tests first and green
+     under the race detector before the next, nothing in the admin UI or
+     the app until the server is proven: (A) `internal/licence` and the
+     `dialler-licence` tool; (B) seats in the device store with
+     `seat_since`; (C) gateway refusal with the reason, welcome `licence`,
+     seat-loss reconcile (gateway disconnect, SIP unregister, line drop);
+     (D1) `GET`/`PUT /v1/admin/licence`; (E) the harness licence and
+     `harness/licence_test.sh` in `make harness-test`; (D2) the
+     `dialler-admin` Licence page and seat counts; (F) the app's verifier,
+     refusal copy, 7-day banner and the enrolment 403 copy; (G) PROTOCOL,
+     ADMIN-API, README. Every API call and every condition in §4.9 has a
+     test before D2 or F starts. The one-off online check-in is a later
+     item of its own.
 
 ### Much later (not scheduled)
 
@@ -1973,6 +1991,13 @@ handled by minting a code for its replacement. The claim route, `POST
 as such: constant-time comparison; an invalid or expired code answers 404
 after a fixed 500 ms; a source address gets five attempts a minute. The reply
 is `{device_id, user, token, signal_port, sip_domain, cert_sha256}`.
+A valid code that cannot take a licence seat (§4.9) answers 403
+`{"error":"no_seats"}` after the same fixed 500 ms, and the code is not
+spent, so it can be claimed once a seat frees. That reply tells a guesser
+that a code is valid without consuming it; the five-attempts-a-minute limit
+and the 32⁸ code space keep that from being a practical attack, and hiding
+it behind a 404 would mislead the legitimate user, whose problem is seats,
+not the code.
 
 **QR and manual entry.** The QR encodes
 `dialler://enrol?h=<host>&p=<https port>&c=<code>&f=<certificate SHA-256,
@@ -2030,6 +2055,104 @@ quoting; `uri` may be a bare number, which the server normalises to
 false. The harness keeps issuing its fixed tokens through `POST
 /v1/admin/devices` and additionally prints an enrolment code per device, so
 onboarding can be exercised against it.
+
+### 4.9 Product licence (decided 2026-10-03)
+
+The server runs on the customer's hardware and must enforce a licence for
+**X app devices until a date D** without any internet dependency.
+
+**The licence.** A vendor-signed Ed25519 document,
+`DL1.<base64url payload>.<base64url signature>`, payload
+`{v, id, customer, install_id, seats, issued_at, valid_until}`. The vendor
+private key stays offline with the vendor; the public key is compiled into
+both `dialler-server` and the app. The payload is readable, not encrypted:
+what makes it a licence is that nobody without the private key can produce
+a signature over it, and changing one character of it breaks the signature.
+`server/cmd/dialler-licence` (`keygen`, `issue`, `inspect`) is the vendor's
+tool; `server/internal/licence` parses, verifies and holds the licence.
+
+**Binding.** At first start the server mints a random install id and keeps
+it in `<data-dir>/install.id`, never rewritten; the admin UI shows it, the
+operator sends it to the vendor, and the licence names it. A licence for
+another install id is refused with both ids in the message. The licence is
+stored at `<data-dir>/licence`, written only through the admin API; this is
+the one server-wide setting the API persists (ADMIN-API rules 2 and 3 carry
+the exception: it is data, not start-up configuration, and a change touches
+exactly the devices whose seat flips, never a call). `install.id` joins the
+backup set; without it the licence stops matching.
+
+**Seats.** An enrolled, non-revoked device holds one seat. Claiming an
+enrolment code, or issuing a fixture token, when no seat is free is refused
+(403 `no_seats`, 409 `no_seats` on the admin route); creating a device
+record without a credential and minting its code are always allowed, so
+phones can be staged ahead of a licence. Re-claiming a device that holds a
+seat keeps it; revoking frees it. When there are more holders than seats
+(a licence shrunk, replaced, or expired, which is 0 seats), the first N by
+`seat_since`, the time a device last entered the seat-holding state, stay
+licensed and the rest are **suspended, not deleted**: refused at the
+gateway hello (`unauthorized`, message `no licence seat`, `licence expired`
+or `no licence`; no new error code, since an app cannot decode an unknown
+one), refused for SIP (digest secret withheld, 403), 401 on the device HTTP
+API, their SIP binding dropped, and in lines mode their PBX line
+unregistered so the exchange never rings a dead line. A call in progress at
+seat loss runs to its end, as on revoke. No licence installed is 0 seats.
+
+| Door | Trunk mode | Lines mode |
+|---|---|---|
+| Claim with no free seat | 403 `no_seats`; app: "The server has no free licence seats. Ask your administrator." | same |
+| Gateway hello | fatal `unauthorized` with the reason; app shows it in Settings, stops retrying until foregrounded | same |
+| SIP REGISTER / INVITE | 403; an existing binding is unregistered on seat loss | same |
+| Inbound call to the device | wake undeliverable → 480 to the PBX | additionally the PBX line is not registered, so the exchange treats the number as offline |
+| Call in progress at seat loss | runs to its end | same |
+
+**Expiry.** A hard stop at `valid_until`: 0 seats, every holder suspended.
+The server log and the admin UI warn from 30 days out (once a day in the
+log); the app shows a banner in the last 7 days. Renewal is pasting a new
+licence; devices resume at once.
+
+**The app verifies too, and that is the load-bearing part.** The welcome
+carries the licence string. The app and the extension verify the signature
+with the compiled-in public key and `valid_until` against the phone's own
+clock, and treat failure exactly as `unauthorized` ("This server's licence
+has expired", "This server has no licence, or needs updating"). The server
+binary is in the customer's hands and can be patched or have its clock set
+back; the App Store build cannot. Authenticity and expiry are therefore
+enforced where the customer cannot reach, and seat counting is enforced on
+the server. The licence string reaches the phone over the pinned TLS
+session, is held in memory only, and is neither shown nor logged there.
+
+**What this does not prevent, accepted 2026-10-03.** A modified server
+binary can over-enrol. A copied data directory (`devices.json`,
+`install.id`, `licence`) runs a second server under the same licence, which
+no offline scheme can stop: whatever identifies the installation is data
+on the customer's disk. It is made unattractive rather than impossible: the
+theft needs the victim's administrator to leak two secrets, the thief's
+admin pages say "Licensed to <victim>" with the victim's seat count, and
+the vendor's register of licence id, customer and install id catches a
+mismatch at renewal or support. Phones cannot check `install_id`, so a
+patched server can present any genuinely signed, unexpired licence; expiry
+still holds on the phone. A phone with a badly wrong clock may refuse a
+valid licence.
+
+**Later, optional: a one-off online check-in at licence application.**
+Decided as a later addition, not part of the first build, and never a
+regular check-in. When a licence without the vendor-set `offline` flag is
+applied through the admin API, the server reports `{licence_id,
+install_id, server version}` to a vendor service once, which records the
+key as in use on that install id and answers with a vendor-signed receipt:
+`valid`, or `no longer valid` if that key was applied before, which the
+server refuses with that reason. "Once" is exactly once: a reinstall that
+re-applies the key needs a reissue; a restore that keeps the data directory
+never re-applies. A server that cannot reach the service cannot apply a
+non-offline key, and does not fall back, since that would be the bypass.
+It stops a key being pasted into a second server; it does not catch a
+copied data directory, which never applies anything.
+
+**Dev and harness.** One real vendor key; the harness commits a fixed
+`install.id` and a long-lived licence issued for it (and a 2-seat one for
+the shrink test), baked into the harness image and applied by
+`provision.sh`; the native `make dev-server` seeds the same `install.id`.
+Unit tests inject a test key.
 
 ## 7. Validation strategy: maximise automation, bound the human touch
 
@@ -2745,6 +2868,14 @@ it is neither linked nor redistributed.
     come online under the wrong address in `dialler-admin`. Validate the
     rate limit and the "other devices untouched" property in the
     `ServeHTTP` tests before the route ships.
+15. **Licence circumvention (accepted residual, §4.9).** The server binary
+    and its data directory are the customer's: a patched binary can
+    over-enrol, and a copied data directory runs a second server under one
+    licence, which no offline scheme prevents. Expiry and authenticity are
+    enforced on the phone, where the customer cannot patch; seats on the
+    server. Made visible rather than impossible: the victim's name on the
+    thief's admin pages, the vendor's register, and later the one-off
+    application check-in. Revisit if a customer base makes it worth more.
 
 Retired to §6 "Much later" with their features: Wi-Fi → cellular handoff on
 the SIP leg, and public-edge exposure to internet scanners.

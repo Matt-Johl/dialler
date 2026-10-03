@@ -37,9 +37,14 @@ public struct SessionMachine: Equatable {
     private var lastReceived: Date
     public static let idleMultiple = 3
     private let now: () -> Date
+    /// The licence check applied to every welcome (SPEC §4.9). The default
+    /// verifies the server's token against the vendor key and this clock;
+    /// tests inject a verdict.
+    private let licence: (String?) -> LicenceVerdict
 
-    public init(now: @escaping () -> Date = Date.init) {
+    public init(now: @escaping () -> Date = Date.init, licence: ((String?) -> LicenceVerdict)? = nil) {
         self.now = now
+        self.licence = licence ?? { LicenceVerifier.verify($0, now: now()) }
         lastReceived = now()
     }
 
@@ -91,6 +96,15 @@ public struct SessionMachine: Equatable {
         lastReceived = now()
         switch (state, envelope.message) {
         case (.awaitingWelcome, .welcome(let w)):
+            // The licence is checked here, on the phone, with the phone's
+            // clock (SPEC §4.9): a welcome without a valid one is the same
+            // refusal as the server's own unauthorized, so the keeper stops
+            // retrying until the next foreground and Settings says why.
+            if let reason = licence(w.licence).reason {
+                state = .closed
+                let e = ProtocolError(code: .unauthorized, message: reason, fatal: true)
+                return [.emit(.protocolError(e)), .emit(.disconnected(reason: "server: \(reason)")), .close]
+            }
             state = .live(sessionID: w.sessionID, heartbeatSeconds: w.heartbeatSeconds)
             return [.emit(.connected(w)), .scheduleLivenessCheck(seconds: w.heartbeatSeconds)]
 

@@ -82,6 +82,9 @@ public enum EnrolmentError: LocalizedError, Equatable {
     case badCode
     /// 429: the server is refusing this address for a minute.
     case tooManyAttempts
+    /// 403: the code is good but the server's licence has no free seat
+    /// (SPEC §4.9). The code stays claimable once one frees.
+    case noSeats
     /// The server could not be reached, or answered something else.
     case server(String)
     /// Manual entry: the certificate the server presented is not the one
@@ -92,6 +95,7 @@ public enum EnrolmentError: LocalizedError, Equatable {
         switch self {
         case .badCode: return "That code is not valid, has been used, or has expired. Ask for a new one."
         case .tooManyAttempts: return "Too many attempts. Wait a minute and try again."
+        case .noSeats: return "The server has no free licence seats. Ask your administrator."
         case .server(let s): return "Could not reach the server: \(s)"
         case .certificateMismatch: return "The server's certificate does not match its enrolment reply. Do not continue on this network."
         }
@@ -134,6 +138,7 @@ public struct EnrolmentClient {
         guard let http = resp as? HTTPURLResponse else { throw EnrolmentError.server("no HTTP response") }
         switch http.statusCode {
         case 200: break
+        case 403: throw EnrolmentError.noSeats
         case 404: throw EnrolmentError.badCode
         case 429: throw EnrolmentError.tooManyAttempts
         default: throw EnrolmentError.server("HTTP \(http.statusCode)")

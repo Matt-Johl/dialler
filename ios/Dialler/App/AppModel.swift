@@ -54,6 +54,13 @@ final class AppModel: ObservableObject {
     /// The same, reduced to what Settings tells the user.
     enum Link: Equatable { case offline, connecting, waiting, connected, refused }
     @Published private(set) var link: Link = .offline
+    /// Why the server refused us, in the user's words, while `link` is
+    /// `.refused` (SPEC §4.9: a seat or licence problem names itself).
+    @Published private(set) var refusalText: String?
+    /// The licence the welcome carried, as the phone verified it: when it
+    /// expires, and a one-line warning in its last week.
+    @Published private(set) var licenceValidUntil: Date?
+    @Published private(set) var licenceWarning: String?
     /// This phone's line (the SIP user the welcome names, e.g. "204"),
     /// remembered so Settings and the keypad can show it before the first
     /// welcome of a launch. Empty until one has arrived.
@@ -863,7 +870,9 @@ final class AppModel: ObservableObject {
         case .connected(let w):
             status = "connected"
             link = .connected
+            refusalText = nil
             sessionID = w.sessionID
+            noteLicence(w.licence)
             append("welcome: session \(w.sessionID), heartbeat \(w.heartbeatSeconds)s, directory v\(w.directoryVersion)")
             if sessionDropped {
                 // The SIP connection died with the old session; start over
@@ -894,7 +903,7 @@ final class AppModel: ObservableObject {
             apply(deviceConfig: cfg)
         case .protocolError(let e):
             append("gateway error \(e.code.rawValue): \(e.message ?? "")")
-            if e.fatal { status = "rejected: \(e.code.rawValue)"; link = .refused }
+            if e.fatal { status = "rejected: \(e.code.rawValue)"; link = .refused; refusalText = Self.refusalCopy(e) }
         case .disconnected(let reason):
             // Logged, not just shown: a session that goes down mid-call left
             // no trace in the diagnostics at all, so an incident could only
@@ -906,6 +915,45 @@ final class AppModel: ObservableObject {
             sessionID = ""
             sessionDropped = true
         }
+    }
+
+    /// The words Settings shows for a fatal refusal. The server (and the
+    /// session machine, for the licence it checks itself) name the reason
+    /// in the error's message; anything else is the plain refusal.
+    static func refusalCopy(_ e: ProtocolError) -> String {
+        switch e.message {
+        case "no licence seat":
+            return "The server has no free licence seat for this phone. Ask your administrator."
+        case "licence expired":
+            return "This server's licence has expired. Ask your administrator to renew it."
+        case "licence missing", "no licence":
+            return "This server has no licence, or needs updating. Ask your administrator."
+        case "licence invalid":
+            return "This server's licence could not be verified. Ask your administrator."
+        default:
+            return "Not Accepted by the Server"
+        }
+    }
+
+    /// Record what the welcome's licence says: its expiry, and a warning in
+    /// the last seven days (SPEC §4.9). The session has already refused a
+    /// welcome whose licence does not pass, so only a valid one gets here.
+    private func noteLicence(_ token: String?) {
+        guard case .valid(let until) = LicenceVerifier.verify(token, now: Date()) else {
+            licenceValidUntil = nil
+            licenceWarning = nil
+            return
+        }
+        licenceValidUntil = until
+        let days = Int(until.timeIntervalSinceNow / 86_400)
+        switch days {
+        case ..<0: licenceWarning = nil
+        case 0: licenceWarning = "This server's licence expires today. Ask your administrator to renew it."
+        case 1: licenceWarning = "This server's licence expires tomorrow. Ask your administrator to renew it."
+        case 2...7: licenceWarning = "This server's licence expires in \(days) days. Ask your administrator to renew it."
+        default: licenceWarning = nil
+        }
+        if licenceWarning != nil { append("licence expires in \(days) days") }
     }
 
     /// Wake delivered by the NEAppPushProvider extension through PushKit.

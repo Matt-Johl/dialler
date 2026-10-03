@@ -556,6 +556,11 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		},
 	})
 	adminAPI.Handle("GET /v1/admin/status", live)
+	// The product licence (SPEC §4.9): read, and installed by paste.
+	licenceAPI := licence.NewHandler(lic, o.adminToken, func() int { used, _ := devices.Seats(); return used })
+	adminAPI.Handle("GET /v1/admin/licence", licenceAPI)
+	adminAPI.Handle("PUT /v1/admin/licence", licenceAPI)
+	adminAPI.Handle("POST /v1/admin/licence", licenceAPI)
 	adminAPI.Handle("GET /v1/admin/server", live)
 	adminAPI.Handle("GET /v1/admin/calls", live)
 	// Enrolment (SPEC §4.8): the admin mints a code, the phone claims it

@@ -7,7 +7,7 @@
 <div class="titlebar">
   <div>
     <h1>{{if .Device.Description}}{{.Device.Description}}{{else}}Ext {{.Device.User}}{{end}}</h1>
-    <div class="meta"><span>Ext <strong>{{.Device.User}}</strong></span><span class="mono">device id {{$id}}</span>{{if .Device.Revoked}}<span class="chip bad">Revoked</span>{{else if .Device.Enrolled}}<span class="chip ok">Enrolled</span>{{else}}<span class="chip warn">Not enrolled yet</span>{{end}}</div>
+    <div class="meta"><span>Ext <strong>{{.Device.User}}</strong></span><span class="mono">device id {{$id}}</span>{{if .Device.Revoked}}<span class="chip bad">Revoked</span>{{else if .Device.Enrolled}}<span class="chip ok">Enrolled</span>{{if not .Live.Licensed}}<span class="chip bad" title="the licence has no seat for this client: it is refused until a seat frees or a larger licence is installed">No licence seat</span>{{end}}{{else}}<span class="chip warn">Not enrolled yet</span>{{end}}</div>
   </div>
   <div class="actions-row">
     {{if not .Device.Enrolled}}<form method="post" action="/clients/{{$id}}/code"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button {{if $ro}}disabled{{end}}>Enrol this phone</button></form>{{end}}

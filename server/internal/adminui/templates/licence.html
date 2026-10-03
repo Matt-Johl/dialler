@@ -1,0 +1,37 @@
+{{template "header" .}}
+<h1>Licence</h1>
+{{with .Data}}
+{{$ro := $.ReadOnly}}
+<div class="grid-2">
+<section class="card">
+  <h2>Installed</h2>
+  {{with .Licence}}
+  <dl>
+    <dt>State</dt><dd><span class="chip {{if eq .State "active"}}ok{{else if eq .State "expiring"}}warn{{else}}bad{{end}}">{{.State}}</span>{{if .Error}}<span class="sub-line">{{.Error}}</span>{{end}}</dd>
+    {{if .ID}}
+    <dt>Licensed to</dt><dd>{{.Customer}}<span class="sub-line mono">{{.ID}}</span></dd>
+    <dt>Seats</dt><dd><b>{{.SeatsUsed}}</b> in use of <b>{{.Seats}}</b> seats{{if gt .SeatsUsed .Seats}}<span class="sub-line">{{.SeatsUsed}} clients are enrolled but only the first {{.Seats}} hold a seat; the rest are suspended until a seat frees or a larger licence is installed.</span>{{end}}</dd>
+    <dt>Valid until</dt><dd>{{date .ValidUntil}}{{if eq .State "expired"}} · <strong>expired</strong>{{else}} · {{.DaysLeft}} days left{{end}}</dd>
+    {{end}}
+    <dt>Install id</dt><dd class="mono">{{.InstallID}}<span class="sub-line">Give this to your vendor; a licence is issued for one install id and works on no other server.</span></dd>
+  </dl>
+  {{if eq .State "missing"}}<p class="hint">No licence is installed. Until one is, no client can enrol or connect.</p>
+  {{else if eq .State "expired"}}<p class="hint">The licence has expired: every client is suspended until a new one is installed below.</p>
+  {{else if eq .State "expiring"}}<p class="hint">The licence expires in {{.DaysLeft}} days. Ask your vendor for a renewal and paste it below; clients continue without interruption.</p>
+  {{else if eq .State "wrong_install"}}<p class="hint">The stored licence was issued for another install id. Ask your vendor for one issued for the id above.</p>
+  {{else if eq .State "invalid"}}<p class="hint">The stored licence cannot be verified. Paste the one the vendor sent, or ask for it again.</p>{{end}}
+  {{end}}
+</section>
+
+<section class="card">
+  <h2>Install a licence</h2>
+  <form method="post" action="/licence" class="stack">
+    <input type="hidden" name="csrf" value="{{$.CSRF}}">
+    <label>Licence <textarea name="licence" rows="5" spellcheck="false" placeholder="DL1.…" {{if $ro}}disabled{{end}}>{{with .Form}}{{index . "licence"}}{{end}}</textarea></label>
+    <div><button {{if $ro}}disabled{{end}}>Install</button></div>
+  </form>
+  <p class="hint">Paste the whole token the vendor sent. It replaces the installed licence at once: clients beyond the new seat count are suspended, clients within it carry on, and a call in progress is never interrupted.</p>
+</section>
+</div>
+{{end}}
+{{template "footer" .}}

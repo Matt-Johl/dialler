@@ -27,6 +27,7 @@ import (
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/events"
+	"dialler/server/internal/licence"
 	"dialler/server/internal/loglevel"
 	"dialler/server/internal/status"
 )
@@ -148,6 +149,23 @@ func (c *Client) do(ctx context.Context, method, path string, body any, ifMatch 
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// ---- licence ---------------------------------------------------------------
+
+// Licence is the product licence summary (SPEC §4.9).
+func (c *Client) Licence(ctx context.Context) (licence.Summary, error) {
+	var v licence.Summary
+	err := c.do(ctx, "GET", "/v1/admin/licence", nil, "", &v)
+	return v, err
+}
+
+// SetLicence installs a pasted licence token; a refusal comes back as an
+// APIError naming the reason.
+func (c *Client) SetLicence(ctx context.Context, token string) (licence.Summary, error) {
+	var v licence.Summary
+	err := c.do(ctx, "PUT", "/v1/admin/licence", map[string]string{"licence": token}, "", &v)
+	return v, err
 }
 
 // ---- server ----------------------------------------------------------------

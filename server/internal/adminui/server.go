@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"dialler/server/internal/licence"
 	"dialler/server/internal/status"
 )
 
@@ -55,7 +56,7 @@ type lastFetch struct {
 // page is what every template receives.
 type page struct {
 	Title    string
-	Nav      string // server, clients, calls, diagnostics
+	Nav      string // server, clients, calls, diagnostics, licence
 	CSRF     string
 	Version  string
 	Banner   string // the call server is not answering
@@ -95,6 +96,13 @@ func New(cfg Config) (*UI, error) {
 				return ""
 			}
 			return t.Local().Format("2006-01-02 15:04:05")
+		},
+		// date: a day, for things that are valid until a day (the licence).
+		"date": func(t time.Time) string {
+			if t.IsZero() {
+				return ""
+			}
+			return t.UTC().Format("2 January 2006")
 		},
 		"clock": func(t time.Time) string {
 			if t.IsZero() {
@@ -198,6 +206,8 @@ func (u *UI) routes() {
 	m.HandleFunc("GET /calls", u.auth(u.calls))
 	m.HandleFunc("GET /diagnostics", u.auth(u.diagnostics))
 	m.HandleFunc("POST /diagnostics/log", u.auth(u.setLog))
+	m.HandleFunc("GET /licence", u.auth(u.licence))
+	m.HandleFunc("POST /licence", u.auth(u.setLicence))
 	u.mux = m
 }
 
@@ -404,6 +414,11 @@ type clientsData struct {
 	Rows   []ClientRow
 	Trunk  status.FleetView
 	Counts map[string]int
+	// Licence is the product licence summary (SPEC §4.9), nil from a
+	// server that does not report one; NoSeat is how many enrolled,
+	// unrevoked clients hold no seat.
+	Licence *licence.Summary
+	NoSeat  int
 }
 
 func (u *UI) clients(w http.ResponseWriter, r *http.Request) {
@@ -433,7 +448,7 @@ func (u *UI) loadClients(ctx context.Context) (clientsData, error) {
 	for _, d := range st.Devices {
 		live[d.DeviceID] = d
 	}
-	d := clientsData{Trunk: st, Counts: map[string]int{}}
+	d := clientsData{Trunk: st, Counts: map[string]int{}, Licence: st.Licence}
 	for _, dev := range devices {
 		row := ClientRow{DeviceStatus: live[dev.DeviceID], IssuedAt: dev.IssuedAt, CodePending: dev.CodePending, CodeExpiresAt: dev.CodeExpiresAt, HasConfig: dev.Config != nil, HasLine: dev.PBXLine != nil}
 		row.DeviceID, row.User, row.Description, row.Revoked, row.Enrolled = dev.DeviceID, dev.User, dev.Description, dev.Revoked, dev.Enrolled
@@ -453,6 +468,9 @@ func (u *UI) loadClients(ctx context.Context) (clientsData, error) {
 		}
 		if row.Call != nil {
 			d.Counts["calls"]++
+		}
+		if dev.Enrolled && !dev.Revoked && !row.Licensed {
+			d.NoSeat++
 		}
 	}
 	sort.Slice(d.Rows, func(i, j int) bool { return d.Rows[i].User < d.Rows[j].User })
@@ -477,6 +495,52 @@ func (u *UI) server(w http.ResponseWriter, r *http.Request) {
 		p.Error = describe(err)
 	}
 	u.render(w, "server.html", p)
+}
+
+// ---- licence ----------------------------------------------------------------
+
+type licenceData struct {
+	Licence licence.Summary
+	Form    map[string]string
+}
+
+func (u *UI) licence(w http.ResponseWriter, r *http.Request) {
+	u.renderLicence(w, r, "", nil)
+}
+
+func (u *UI) renderLicence(w http.ResponseWriter, r *http.Request, errMsg string, form map[string]string) {
+	ctx, cancel := u.ctx(r)
+	defer cancel()
+	lic, err := u.cfg.Client.Licence(ctx)
+	got, lastAt, banner := u.fetched("licence", licenceData{Licence: lic}, err)
+	p := page{Title: "Licence", Nav: "licence", CSRF: csrf(r), Banner: banner, ReadOnly: banner != "", LastAt: lastAt, Error: errMsg, Flash: u.flashFor(r)}
+	if got != nil {
+		d := got.(licenceData)
+		d.Form = form
+		p.Data = d
+	} else if err != nil && banner == "" {
+		p.Error = describe(err)
+	}
+	u.render(w, "licence.html", p)
+}
+
+// setLicence forwards the paste as it is, whitespace trimmed; the call
+// server verifies it and says why not.
+func (u *UI) setLicence(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := u.ctx(r)
+	defer cancel()
+	tok := strings.TrimSpace(r.FormValue("licence"))
+	form := map[string]string{"licence": tok}
+	if tok == "" {
+		u.renderLicence(w, r, "Paste the licence the vendor sent you.", form)
+		return
+	}
+	s, err := u.cfg.Client.SetLicence(ctx, tok)
+	if err != nil {
+		u.renderLicence(w, r, describe(err), form)
+		return
+	}
+	http.Redirect(w, r, "/licence"+u.flash(fmt.Sprintf("Licence installed: %d seats, valid until %s.", s.Seats, s.ValidUntil.UTC().Format("2 January 2006"))), http.StatusSeeOther)
 }
 
 // ---- calls -----------------------------------------------------------------

@@ -25,6 +25,7 @@
     <dt>SIP registered</dt><dd>{{.Server.Counts.SIPRegistered}}</dd>
     {{if eq .Server.Mode "lines"}}<dt>PBX lines</dt><dd>{{.Server.Counts.LinesRegistered}} registered{{if .Server.Counts.LinesFailed}}, <strong>{{.Server.Counts.LinesFailed}} failing</strong>{{end}}</dd>{{end}}
     <dt>Calls</dt><dd><a href="/calls">{{.Server.Counts.Calls}}</a></dd>
+    {{with .Server.Licence}}<dt>Licence</dt><dd><span class="chip {{if eq .State "active"}}ok{{else if eq .State "expiring"}}warn{{else}}bad{{end}}">{{.State}}</span>{{if .ID}} {{.Customer}} · {{.SeatsUsed}} of {{.Seats}} seats · until {{date .ValidUntil}}{{end}} · <a href="/licence">details</a></dd>{{end}}
     <dt>Admin API</dt><dd>{{.Server.Admin.InFlight}} in flight · refused {{.Server.Admin.RejectedRate}} by rate, {{.Server.Admin.RejectedBusy}} as busy · {{.Server.Admin.EventsDropped}} events dropped</dd>
   </dl>
   {{with .Server.Trunk}}

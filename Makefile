@@ -28,6 +28,11 @@ run: server
 admin:
 	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
 
+# The vendor's licence tool (SPEC §4.9): keygen once, issue per customer,
+# inspect a token. Runs offline; the private key never enters the repo.
+licence-tool:
+	cd server && go build -o ../bin/dialler-licence ./cmd/dialler-licence
+
 # Dev run beside `make dev-server` (token "harness") or `make run` (token
 # "dev": ADMIN_TOKEN=dev make dev-admin). Sign in as "admin"; the password lives in
 # data/admin/password, created as "dialler" on first run; the UI serves

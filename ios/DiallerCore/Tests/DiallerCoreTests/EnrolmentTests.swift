@@ -75,4 +75,17 @@ final class EnrolmentTests: XCTestCase {
             XCTFail("unexpected \(error)", file: file, line: line)
         }
     }
+
+    /// A valid code on a server with no free seat is 403 (SPEC §4.9): its
+    /// own error, with words that send the user to the administrator rather
+    /// than back to the code.
+    func testClaimRefusedWithNoSeats() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StubURLProtocol.self]
+        let client = EnrolmentClient(session: URLSession(configuration: config))
+        let link = EnrolmentLink(host: "srv", port: 8080, code: "A7K2M9PX", certSHA256: "FP")
+        StubURLProtocol.respond = { _ in (403, #"{"error":"no_seats","message":"the server has no free licence seats"}"#) }
+        await assertThrows(EnrolmentError.noSeats) { try await client.claim(link) }
+        XCTAssertEqual(EnrolmentError.noSeats.errorDescription, "The server has no free licence seats. Ask your administrator.")
+    }
 }

@@ -40,6 +40,7 @@ struct StatusView: View {
             SettingsSection("Gateway")
             SettingsRow("Status", value: Self.sentence(model.status))
             if !model.sessionID.isEmpty { SettingsRow("Session", value: model.sessionID) }
+            if let until = model.licenceValidUntil { SettingsRow("Licence", value: "Valid until " + until.formatted(date: .abbreviated, time: .omitted)) }
             SettingsRow("SIP Engine", value: Self.sentence(model.engineState))
             HStack(spacing: 10) {
                 Button("Connect") { model.connect() }

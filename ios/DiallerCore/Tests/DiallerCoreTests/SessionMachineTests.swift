@@ -7,6 +7,10 @@ final class SessionMachineTests: XCTestCase {
     lazy var welcome = Welcome(sessionID: "s1", heartbeatSeconds: 25, serverTime: t0, directoryVersion: 3)
 
     func env(_ m: Message, id: String = "x") -> Envelope { Envelope(id: id, ts: t0, message: m) }
+    /// The welcome fixture above carries no licence; these tests are about
+    /// the session, so they accept any. The licence check has its own tests
+    /// below and in LicenceVerifierTests.
+    static let accept: (String?) -> LicenceVerdict = { _ in .valid(validUntil: .distantFuture) }
 
     func wake(_ id: String, expiresIn: TimeInterval = 30) -> Wake {
         Wake(callID: id, from: Party(displayName: "Reception", uri: "sip:100@pbx"), to: Party(uri: "sip:201@dialler"),
@@ -14,7 +18,7 @@ final class SessionMachineTests: XCTestCase {
     }
 
     func testHandshakeThenHeartbeat() {
-        var m = SessionMachine(now: { self.t0 })
+        var m = SessionMachine(now: { self.t0 }, licence: Self.accept)
         let hello = Hello(deviceID: "d", token: "t", client: .app)
         XCTAssertEqual(m.didOpen(hello: hello), [.send(.hello(hello))])
         XCTAssertEqual(m.state, .awaitingWelcome)
@@ -36,7 +40,7 @@ final class SessionMachineTests: XCTestCase {
     }
 
     func testFatalErrorBeforeWelcomeCloses() {
-        var m = SessionMachine(now: { self.t0 })
+        var m = SessionMachine(now: { self.t0 }, licence: Self.accept)
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "bad", client: .app))
         let e = ProtocolError(code: .unauthorized, message: nil, fatal: true)
         XCTAssertEqual(m.received(env(.error(e))),
@@ -50,7 +54,7 @@ final class SessionMachineTests: XCTestCase {
     /// extension logged the error and never reconnected because only
     /// `.close` followed.
     func testFatalErrorWhileLiveIsADrop() {
-        var m = SessionMachine(now: { self.t0 })
+        var m = SessionMachine(now: { self.t0 }, licence: Self.accept)
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .extensionKind))
         _ = m.received(env(.welcome(welcome)))
         let e = ProtocolError(code: .idleTimeout, message: "no frame within 3×heartbeat", fatal: true)
@@ -64,7 +68,7 @@ final class SessionMachineTests: XCTestCase {
     /// whatever TCP thinks: the machine closes so the keeper reconnects.
     func testASilentServerIsDroppedAfterThreeHeartbeats() {
         var now = t0
-        var m = SessionMachine(now: { now })
+        var m = SessionMachine(now: { now }, licence: Self.accept)
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .extensionKind))
         _ = m.received(env(.welcome(welcome)))
 
@@ -85,7 +89,7 @@ final class SessionMachineTests: XCTestCase {
 
     func testWakeDedupAndExpiry() {
         var now = t0
-        var m = SessionMachine(now: { now })
+        var m = SessionMachine(now: { now }, licence: Self.accept)
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .extensionKind))
         _ = m.received(env(.welcome(welcome)))
 
@@ -109,7 +113,7 @@ final class SessionMachineTests: XCTestCase {
         // Server clock is an hour behind ours (Docker VM drift): its wake says
         // "expires at server-now + 30s", which on our clock is already past.
         let serverNow = t0.addingTimeInterval(-3600)
-        var m = SessionMachine(now: { self.t0 })
+        var m = SessionMachine(now: { self.t0 }, licence: Self.accept)
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .app))
         _ = m.received(Envelope(id: "w", ts: serverNow, message: .welcome(welcome)))
 
@@ -127,12 +131,49 @@ final class SessionMachineTests: XCTestCase {
     }
 
     func testNonFatalErrorKeepsSession() {
-        var m = SessionMachine(now: { self.t0 })
+        var m = SessionMachine(now: { self.t0 }, licence: Self.accept)
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .app))
         _ = m.received(env(.welcome(welcome)))
         let e = ProtocolError(code: .unknownCall, message: "no such call", fatal: false)
         XCTAssertEqual(m.received(env(.error(e))), [.emit(.protocolError(e))])
         XCTAssertEqual(m.state, .live(sessionID: "s1", heartbeatSeconds: 25))
         XCTAssertEqual(m.didClose(reason: "server closed"), [.emit(.disconnected(reason: "server closed"))])
+    }
+
+    // MARK: Licence (SPEC §4.9)
+
+    /// A welcome whose licence does not pass is the same refusal as the
+    /// server's own unauthorized: the keeper stops retrying, Settings says
+    /// why, and nothing is treated as connected.
+    func testAWelcomeWithoutAValidLicenceIsARefusal() {
+        for (verdict, reason) in [(LicenceVerdict.missing, "licence missing"), (.invalid, "licence invalid"), (.expired, "licence expired")] {
+            var m = SessionMachine(now: { self.t0 }, licence: { _ in verdict })
+            _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .app))
+            let e = ProtocolError(code: .unauthorized, message: reason, fatal: true)
+            XCTAssertEqual(m.received(env(.welcome(welcome))),
+                           [.emit(.protocolError(e)), .emit(.disconnected(reason: "server: \(reason)")), .close], reason)
+            XCTAssertEqual(m.state, .closed, reason)
+            XCTAssertEqual(m.received(env(.ping)), [], "closed: nothing is answered")
+        }
+    }
+
+    func testTheWelcomeTokenIsWhatIsVerified() {
+        var seen: String?
+        var m = SessionMachine(now: { self.t0 }, licence: { seen = $0; return .valid(validUntil: self.t0.addingTimeInterval(3600)) })
+        _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .app))
+        var w = welcome
+        w.licence = "DL1.payload.sig"
+        XCTAssertEqual(m.received(env(.welcome(w))), [.emit(.connected(w)), .scheduleLivenessCheck(seconds: 25)])
+        XCTAssertEqual(seen, "DL1.payload.sig")
+    }
+
+    /// The default verifier is the real one: a welcome with no token is
+    /// refused by a machine built with defaults, as the transport builds it.
+    func testTheDefaultVerifierIsStrict() {
+        var m = SessionMachine(now: { self.t0 })
+        _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .app))
+        let actions = m.received(env(.welcome(welcome)))
+        XCTAssertEqual(actions.first, .emit(.protocolError(ProtocolError(code: .unauthorized, message: "licence missing", fatal: true))))
+        XCTAssertEqual(m.state, .closed)
     }
 }

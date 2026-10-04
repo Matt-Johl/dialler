@@ -40,6 +40,9 @@ const (
 	KindLineRemoved        = "line_removed"
 	KindDirectoryChanged   = "directory_changed"
 	KindLogLevel           = "log_level"
+	KindLicenceChanged     = "licence_changed"
+	KindSeatLost           = "seat_lost"
+	KindSeatGained         = "seat_gained"
 )
 
 // Event is one entry of the ring, as the API serialises it.

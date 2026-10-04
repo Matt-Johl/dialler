@@ -42,7 +42,12 @@ marks what does not exist yet.
    server-wide setting, so an operator can always reason about a server
    from its unit file plus the data directory, and rule 2 holds by
    construction. What an operator changes day to day is per device, and
-   that is what the API writes.
+   that is what the API writes. One exception, decided with SPEC §4.9: the
+   **product licence** is data, not configuration. It is kept at
+   `<data-dir>/licence`, installed by `PUT /v1/admin/licence` (§5.13), and
+   a change touches exactly the devices whose seat flips, never a call;
+   rule 2's "only the device it names" reads, for that one route, "only
+   the devices the seat count moves across the line".
 4. **The API authenticates a caller, not a person.** Bearer token over TLS
    on a listener of its own (§4.1); no operator identity crosses it and
    the call server keeps no audit trail (SPEC 9a, settled 2026-09-23). The
@@ -248,6 +253,7 @@ Every non-2xx answer on `/v1/admin/` carries:
 | 405 | `method_not_allowed` | With `Allow` |
 | 409 | `device_exists` | `POST /v1/admin/devices` on an id that exists, without a `token` (§5.1) |
 | 409 | `user_taken` | Another device already has that user |
+| 409 | `no_seats` | `POST /v1/admin/devices` with a `token` when the licence has no free seat (§5.1, SPEC §4.9); the same condition on the device route `POST /v1/enrol` is 403 `{"error":"no_seats"}` |
 | 409 | `immutable` | An attempt to change `user` |
 | 412 | `version_mismatch` | `If-Match` did not match (§4.5) |
 | 413 | `too_large` | Body over the route's limit |
@@ -389,7 +395,7 @@ additive):
 {
   "device_id": "dev_7K3M9Q", "user": "204", "description": "Warehouse 3",
   "issued_at": "…", "updated_at": "…",
-  "revoked": false, "enrolled": true,
+  "revoked": false, "enrolled": true, "licensed": true,
   "code_pending": true, "code_expires_at": "…",
   "config": {"version": 3, "ssids": ["Office"]},
   "pbx_line": {"dn": "", "digest_user": "line204", "configured": true, "updated_at": "…"}
@@ -545,7 +551,7 @@ of)* → `200`:
   "devices": [
     {
       "device_id": "dev_7K3M9Q", "user": "204", "description": "Warehouse 3",
-      "revoked": false, "enrolled": true,
+      "revoked": false, "enrolled": true, "licensed": true,
       "sessions": {
         "app":       {"online": true, "since": "…", "addr": "10.18.0.41:52011", "app_version": "1.4 (212)"},
         "extension": {"online": true, "since": "…", "addr": "10.18.0.41:52012", "app_version": "1.4 (212)"}
@@ -592,6 +598,7 @@ hold in memory. It takes no store lock and never blocks a call.
   "rtp": {"min": 20000, "max": 20100, "symmetric": true},
   "data_dir": "/var/lib/dialler", "diag_retain_seconds": 2592000,
   "counts": {"devices": 42, "enrolled": 40, "revoked": 2, "app_online": 31, "extension_online": 38, "sip_registered": 30, "lines_registered": 38, "lines_failed": 1, "calls": 3},
+  "licence": {"state": "active", "install_id": "0123456789abcdef0123456789abcdef", "id": "lic_7Q3M8K2A", "customer": "Example Ltd", "seats": 50, "seats_used": 40, "issued_at": "…", "valid_until": "…", "days_left": 212},
   "admin": {"in_flight": 1, "rejected_busy": 0, "rejected_rate": 0, "events_dropped": 0}
 }
 ```
@@ -714,11 +721,55 @@ nothing prunes and one dev device holds about 490 files.
 | GET, PUT, POST, DELETE | `/v1/admin/devices/{id}/pbx-line` | yes | 4 KiB |
 | GET, PUT, POST | `/v1/admin/devices/{id}/directory` | yes; `?dry_run=1` 9b | 4 MiB / 64 KiB |
 | PUT, DELETE | `/v1/admin/devices/{id}/directory/{cid}` | yes | 64 KiB |
+| GET, PUT, POST | `/v1/admin/licence` | yes | 4 KiB + 256 |
 | GET, DELETE | `/v1/admin/devices/{id}/diag` | 9b | — |
 | GET, DELETE | `/v1/admin/devices/{id}/diag/{name}` | 9b | — |
 
 Device-facing routes (`/v1/directory…`, `/v1/diag`, `/v1/enrol`) are
 unchanged by this document.
+
+### 5.13 Licence
+
+The product licence (SPEC §4.9): X app devices until a date, signed by the
+vendor, bound to this server's install id.
+
+**`GET /v1/admin/licence`** → the summary, the same object `/status` and
+`/server` carry as `licence`:
+
+```json
+{"state": "active", "install_id": "0123456789abcdef0123456789abcdef",
+ "id": "lic_7Q3M8K2A", "customer": "Example Ltd", "seats": 50, "seats_used": 40,
+ "issued_at": "2026-10-03T12:00:00Z", "valid_until": "2027-10-04T00:00:00Z", "days_left": 212}
+```
+
+`state` is one of `missing` (nothing installed), `invalid` (a stored file
+that does not verify; `error` says why), `wrong_install` (a valid licence
+for another server), `active`, `expiring` (inside the last 30 days) or
+`expired`. `seats` is the count in force, 0 unless active or expiring;
+`seats_used` counts enrolled, non-revoked devices, and may exceed `seats`
+after a licence shrank or lapsed, in which case the first `seats` of them
+by the time they took a seat are licensed and the rest are suspended
+(`licensed: false` on the device). `install_id` is minted at first start
+and kept at `<data-dir>/install.id`; the operator gives it to the vendor.
+
+**`PUT /v1/admin/licence`** `{"licence": "DL1.…"}` (POST accepted too) →
+`200` with the summary. The token is verified (signature, grammar, this
+install id, not expired) and stored at `<data-dir>/licence` by temp file
+and rename; the devices whose seat changes are cut off or let back in at
+once, and a call in progress is never interrupted. Refusals are `400
+invalid` with `field: licence` and a reason the operator can act on: not a
+licence token, the signature does not verify, issued for install id X
+while this server is Y, expired on a date, or a payload this server does
+not understand. A refusal changes nothing; `500 store` leaves the previous
+licence in force. Installing the same token again is a no-op.
+
+**Device-side effects**, for completeness: `POST /v1/enrol` answers 403
+`{"error":"no_seats","message":…}` after the same fixed delay as a miss
+when the code is valid but no seat is free, and the code is not spent; a
+device with no seat is refused at the signal gateway (`unauthorized`,
+message `no licence seat`, `licence expired` or `no licence`), on SIP
+(403) and on the device HTTP routes (401), and in lines mode its PBX line
+is not registered. Events: `licence_changed`, `seat_lost`, `seat_gained`.
 
 ## 6. Wire and persistence
 
@@ -747,11 +798,12 @@ the app sends or receives changes.
   checks this on every store.
 - **Backup** is a file copy of `-data-dir` taken at any time: every file
   is written atomically, so any instant copy is per-file consistent, and
-  the three things that must be kept together are `devices.json`,
-  `pbx.key` (without it every line secret is unreadable) and `tls/`
-  (without it every phone must re-enrol). There is no backup API; the
-  operator's runbook says `tar` the directory. Restore is stop, replace,
-  start.
+  the things that must be kept together are `devices.json`, `pbx.key`
+  (without it every line secret is unreadable), `tls/` (without it every
+  phone must re-enrol), and `install.id` with `licence` (without the id the
+  licence stops matching and the server has no seats until the vendor
+  issues one for the new id). There is no backup API; the operator's
+  runbook says `tar` the directory. Restore is stop, replace, start.
 
 ## 7. Harness
 

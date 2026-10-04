@@ -44,6 +44,15 @@ type Device struct {
 	// Enrolled is whether the device holds a credential at all: false
 	// between its creation and the claim of its enrolment code.
 	Enrolled bool `json:"enrolled"`
+	// Licensed is whether the device holds a licence seat (SPEC §4.9): an
+	// enrolled, non-revoked device within the seat count. False for a
+	// device that is not enrolled, is revoked, or is a holder beyond the
+	// seats, which every door refuses.
+	Licensed bool `json:"licensed"`
+	// SeatSince is when the device last entered the seat-holding state,
+	// which is its place in the queue when there are more holders than
+	// seats; zero while it holds none.
+	SeatSince time.Time `json:"seat_since,omitzero"`
 	// CodePending is whether an unexpired enrolment code is outstanding,
 	// and CodeExpiresAt when it stops being claimable.
 	CodePending   bool      `json:"code_pending,omitempty"`
@@ -84,6 +93,13 @@ type record struct {
 	IssuedAt  time.Time `json:"issued_at"`
 	UpdatedAt time.Time `json:"updated_at,omitzero"`
 	Revoked   bool      `json:"revoked"`
+	// SeatSince is when the record last became a seat holder (first
+	// credential, or a revoked device claiming its way back); a re-issue
+	// or re-claim of a live device leaves it alone, so rotating a
+	// credential never sends a device to the back of the seat queue.
+	// Cleared on revoke. Zero in files written before seats existed, for
+	// which IssuedAt stands in.
+	SeatSince time.Time `json:"seat_since,omitzero"`
 	// The outstanding enrolment code (SPEC §4.8), stored only as its hex
 	// sha256, and when it stops being claimable.
 	CodeHash    string    `json:"code_hash,omitempty"`
@@ -181,7 +197,44 @@ type Store struct {
 	// thing here the server must be able to replay rather than verify.
 	// Nil refuses to store one rather than writing a password in clear.
 	Secrets *secrets.Box
+
+	// Licence seats (SPEC §4.9), kept under mu and recomputed after every
+	// write: seats is the count in force (NoSeatLimit until SetSeats);
+	// used is how many enrolled, non-revoked devices hold one; unlicensed
+	// is the holders beyond the first `seats` by SeatSince, whom every
+	// door refuses. Not persisted: the licence manager sets the count at
+	// start and on every change.
+	seats      int
+	used       int
+	unlicensed map[string]bool
+	onSeats    func(SeatChange)
 }
+
+// NoSeatLimit is the seat count of a store nobody has given one: every
+// holder is licensed. It is the library's default so a store used on its
+// own behaves as before; the server sets the real count before it binds a
+// listener.
+const NoSeatLimit = -1
+
+// SeatChange is what OnSeats is told after a write or a seat-count change
+// moved a device across the line: the ids that gained a seat, the ids
+// that lost one, and the totals after.
+type SeatChange struct {
+	Gained, Lost []string
+	Used, Seats  int
+}
+
+// SeatStatus is a device's standing in the seat count.
+type SeatStatus string
+
+const (
+	// SeatHolder: enrolled, not revoked, within the seats.
+	SeatHolder SeatStatus = "holder"
+	// SeatUnlicensed: enrolled, not revoked, beyond the seats.
+	SeatUnlicensed SeatStatus = "unlicensed"
+	// SeatNone: unknown, un-enrolled or revoked — holds no seat.
+	SeatNone SeatStatus = "none"
+)
 
 // Match is an If-Match precondition (ADMIN-API.md §4.5): a write proceeds
 // only if the record is as the caller last saw it. Checked inside the
@@ -225,13 +278,17 @@ var (
 	ErrUserTaken = errors.New("enroll: another device already has that user")
 	// ErrImmutable is returned for an attempt to change a device's user.
 	ErrImmutable = errors.New("enroll: a device's user cannot change; add a new device and purge the old")
+	// ErrNoSeats is returned when a device would take a licence seat and
+	// none is free (SPEC §4.9). Nothing is changed: a claim leaves the code
+	// claimable, an issue leaves no record.
+	ErrNoSeats = errors.New("enroll: no free licence seats")
 )
 
 // Open loads the store at path, creating it on first save. An empty path
 // gives an in-memory store. A file of a newer schema than this binary
 // knows is refused rather than misread.
 func Open(path string) (*Store, error) {
-	s := &Store{path: path, devices: map[string]*record{}, now: time.Now}
+	s := &Store{path: path, devices: map[string]*record{}, now: time.Now, seats: NoSeatLimit, unlicensed: map[string]bool{}}
 	if path == "" {
 		return s, nil
 	}
@@ -249,7 +306,18 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("enroll: parse %s: %w", path, err)
 	}
+	// A holder written before seats existed has no seat_since. Its place in
+	// the queue is when it was issued, fixed here at load: read from
+	// issued_at on every recompute it would move to the back each time its
+	// credential is re-issued or re-claimed, which rewrites issued_at (SPEC
+	// §4.9). Persisted with the next write.
+	for _, r := range devices {
+		if r.holdsSeat() && r.SeatSince.IsZero() {
+			r.SeatSince = r.IssuedAt
+		}
+	}
 	s.devices = devices
+	s.recomputeSeatsLocked()
 	return s, nil
 }
 
@@ -303,6 +371,19 @@ func hashToken(tok string) string {
 // the entry is unchanged (ADMIN-API.md §4.4, 500 store). mutate returns
 // an error to abort with nothing changed.
 func (s *Store) commit(mutate func() error) error {
+	change, err := s.commitLocked(mutate)
+	if err != nil {
+		return err
+	}
+	s.fireSeats(change)
+	return nil
+}
+
+// commitLocked is commit under the writer lock. It returns the seat
+// change the write caused, if any, for the caller to announce once the
+// lock is released: the hooks disconnect sessions and drop lines, which
+// must never run while the store is held.
+func (s *Store) commitLocked(mutate func() error) (*SeatChange, error) {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	s.mu.Lock()
@@ -310,21 +391,38 @@ func (s *Store) commit(mutate func() error) error {
 	for id, r := range s.devices {
 		backup[id] = r.clone()
 	}
+	prevLicensed := s.licensedSetLocked()
+	prevUnlicensed, prevUsed := s.unlicensed, s.used
 	err := mutate()
 	if err != nil {
 		s.devices = backup
+		s.mu.Unlock()
+		return nil, err
 	}
+	s.recomputeSeatsLocked()
 	s.mu.Unlock()
-	if err != nil {
-		return err
-	}
 	if err := s.save(); err != nil {
 		s.mu.Lock()
-		s.devices = backup
+		s.devices, s.unlicensed, s.used = backup, prevUnlicensed, prevUsed
 		s.mu.Unlock()
-		return err
+		return nil, err
 	}
-	return nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.seatDiffLocked(prevLicensed), nil
+}
+
+// fireSeats tells OnSeats about a change, with no lock held.
+func (s *Store) fireSeats(change *SeatChange) {
+	if change == nil {
+		return
+	}
+	s.mu.RLock()
+	fn := s.onSeats
+	s.mu.RUnlock()
+	if fn != nil {
+		fn(*change)
+	}
 }
 
 // save serialises under the shared lock (readers are not blocked by it)
@@ -391,6 +489,7 @@ func (s *Store) IssueToken(deviceID, user, token string) (string, error) {
 	err := s.commit(func() error {
 		now := s.now()
 		rec, ok := s.devices[deviceID]
+		wasHolder := ok && rec.holdsSeat()
 		if ok {
 			if rec.User != user {
 				return ErrImmutable
@@ -401,6 +500,15 @@ func (s *Store) IssueToken(deviceID, user, token string) (string, error) {
 			}
 			rec = &record{User: user, IssuedAt: now}
 			s.devices[deviceID] = rec
+		}
+		// A credential makes a non-revoked device a seat holder; a device
+		// that already holds one keeps it, and a revoked one stays
+		// revoked and takes none (SPEC §4.9).
+		if !wasHolder && !rec.Revoked {
+			if !s.freeSeatLocked() {
+				return ErrNoSeats
+			}
+			rec.SeatSince = now
 		}
 		rec.TokenHash = hashToken(tok)
 		rec.HA1 = ""
@@ -544,6 +652,16 @@ func (s *Store) Claim(code string) (Claimed, error) {
 		}
 		if rec == nil {
 			return ErrBadCode
+		}
+		// A device that does not hold a seat takes one now, or is refused
+		// with its code intact: the operator frees a seat and the phone
+		// claims the same code (SPEC §4.9). A holder rotating its
+		// credential keeps its place in the queue.
+		if !rec.holdsSeat() {
+			if !s.freeSeatLocked() {
+				return ErrNoSeats
+			}
+			rec.SeatSince = now
 		}
 		var b [32]byte
 		if _, err := rand.Read(b[:]); err != nil {
@@ -693,6 +811,7 @@ func (s *Store) Revoke(deviceID string) (bool, error) {
 			return errNoChange
 		}
 		r.Revoked = true
+		r.SeatSince = time.Time{}
 		r.UpdatedAt = s.now()
 		return nil
 	})
@@ -758,7 +877,7 @@ func (s *Store) DigestSecret(deviceID string) (ha1, user string, ok bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	r, found := s.devices[deviceID]
-	if !found || r.Revoked || r.HA1 == "" {
+	if !found || r.Revoked || r.HA1 == "" || s.unlicensed[deviceID] {
 		return "", "", false
 	}
 	return r.HA1, r.User, true
@@ -792,7 +911,9 @@ func (s *Store) viewLocked(id string, r *record) Device {
 	d := Device{
 		DeviceID: id, User: r.User, Description: r.Description,
 		IssuedAt: r.IssuedAt, UpdatedAt: r.UpdatedAt, Revoked: r.Revoked,
-		Enrolled: r.TokenHash != "",
+		Enrolled:  r.TokenHash != "",
+		Licensed:  r.holdsSeat() && !s.unlicensed[id],
+		SeatSince: r.SeatSince,
 	}
 	if r.CodeHash != "" && now.Before(r.CodeExpires) {
 		d.CodePending, d.CodeExpiresAt = true, r.CodeExpires
@@ -805,4 +926,149 @@ func (s *Store) viewLocked(id string, r *record) Device {
 		d.PBXLine = &line
 	}
 	return d
+}
+
+// ---- licence seats (SPEC §4.9) ------------------------------------------------
+
+// holdsSeat is whether a record is an enrolled, non-revoked device: the
+// definition of a seat holder.
+func (r *record) holdsSeat() bool { return r.TokenHash != "" && !r.Revoked }
+
+// seatSince is the record's place in the queue: when it last took a seat,
+// or when its credential was issued for records written before seats
+// existed.
+func (r *record) seatSince() time.Time {
+	if r.SeatSince.IsZero() {
+		return r.IssuedAt
+	}
+	return r.SeatSince
+}
+
+// SetSeats sets the seat count in force and announces the devices it
+// moves across the line. The licence manager calls it at start and on
+// every change; NoSeatLimit lifts the limit.
+func (s *Store) SetSeats(n int) {
+	if n < 0 {
+		n = NoSeatLimit
+	}
+	s.mu.Lock()
+	if n == s.seats {
+		s.mu.Unlock()
+		return
+	}
+	prev := s.licensedSetLocked()
+	s.seats = n
+	s.recomputeSeatsLocked()
+	change := s.seatDiffLocked(prev)
+	s.mu.Unlock()
+	s.fireSeats(change)
+}
+
+// OnSeats registers the one callback told, after the write that caused
+// it has been saved and with no lock held, which devices gained or lost
+// a seat. The server disconnects, unregisters and drops lines from it.
+func (s *Store) OnSeats(fn func(SeatChange)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onSeats = fn
+}
+
+// Licensed is whether deviceID holds a seat within the count: the call
+// path's question, which every door asks after the credential check.
+func (s *Store) Licensed(deviceID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.devices[deviceID]
+	return ok && r.holdsSeat() && !s.unlicensed[deviceID]
+}
+
+// SeatState is deviceID's standing: holder, unlicensed, or none.
+func (s *Store) SeatState(deviceID string) SeatStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.devices[deviceID]
+	switch {
+	case !ok || !r.holdsSeat():
+		return SeatNone
+	case s.unlicensed[deviceID]:
+		return SeatUnlicensed
+	}
+	return SeatHolder
+}
+
+// Seats reports how many devices hold a seat and how many the licence
+// grants (NoSeatLimit when none is set).
+func (s *Store) Seats() (used, total int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.used, s.seats
+}
+
+// freeSeatLocked is whether one more device may take a seat.
+func (s *Store) freeSeatLocked() bool {
+	return s.seats == NoSeatLimit || s.used < s.seats
+}
+
+// recomputeSeatsLocked rebuilds used and unlicensed from the records:
+// holders ordered by seatSince then id, the first `seats` licensed, the
+// rest not. O(n log n) over at most a few hundred devices, once per write.
+func (s *Store) recomputeSeatsLocked() {
+	type holder struct {
+		id    string
+		since time.Time
+	}
+	holders := make([]holder, 0, len(s.devices))
+	for id, r := range s.devices {
+		if r.holdsSeat() {
+			holders = append(holders, holder{id, r.seatSince()})
+		}
+	}
+	sort.Slice(holders, func(i, j int) bool {
+		if !holders[i].since.Equal(holders[j].since) {
+			return holders[i].since.Before(holders[j].since)
+		}
+		return holders[i].id < holders[j].id
+	})
+	s.used = len(holders)
+	s.unlicensed = map[string]bool{}
+	if s.seats == NoSeatLimit {
+		return
+	}
+	for i := s.seats; i < len(holders); i++ {
+		s.unlicensed[holders[i].id] = true
+	}
+}
+
+// licensedSetLocked is the ids holding a seat within the count.
+func (s *Store) licensedSetLocked() map[string]bool {
+	out := map[string]bool{}
+	for id, r := range s.devices {
+		if r.holdsSeat() && !s.unlicensed[id] {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// seatDiffLocked is the change from prev to now, or nil if no device
+// crossed the line.
+func (s *Store) seatDiffLocked(prev map[string]bool) *SeatChange {
+	now := s.licensedSetLocked()
+	c := SeatChange{Used: s.used, Seats: s.seats}
+	for id := range now {
+		if !prev[id] {
+			c.Gained = append(c.Gained, id)
+		}
+	}
+	for id := range prev {
+		if !now[id] {
+			c.Lost = append(c.Lost, id)
+		}
+	}
+	if len(c.Gained) == 0 && len(c.Lost) == 0 {
+		return nil
+	}
+	sort.Strings(c.Gained)
+	sort.Strings(c.Lost)
+	return &c
 }

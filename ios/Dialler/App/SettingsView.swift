@@ -186,7 +186,7 @@ struct SettingsView: View {
         case .connecting: return "Connecting…"
         case .waiting: return "Waiting for Network"
         case .offline: return "Not Connected"
-        case .refused: return "Not Accepted by the Server"
+        case .refused: return model.refusalText ?? "Not Accepted by the Server"
         }
     }
 

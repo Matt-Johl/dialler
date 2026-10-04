@@ -56,7 +56,7 @@ requires bumping `v`.
 
 | Type | Body | Purpose |
 |---|---|---|
-| `welcome` | `session_id`, `heartbeat_seconds`, `server_time`, `directory_version`, `sip{user,domain,host,port,transport}` (optional), `config{version,ssids[]}` (optional, see `config`) | Successful `hello`. Connection is now live. If `sip` is present the app SHOULD register that user agent immediately so calls reach it directly while it runs (SPEC §2 foreground path). |
+| `welcome` | `session_id`, `heartbeat_seconds`, `server_time`, `directory_version`, `sip{user,domain,host,port,transport}` (optional), `config{version,ssids[]}` (optional, see `config`), `licence` (optional, SPEC §4.9) | Successful `hello`. Connection is now live. If `sip` is present the app SHOULD register that user agent immediately so calls reach it directly while it runs (SPEC §2 foreground path). `licence` is the server's product licence token (`DL1.<payload>.<signature>`): the client MUST verify its Ed25519 signature with the vendor key compiled into it and its `valid_until` against the client's own clock, and MUST treat a missing, unverifiable or expired token as a fatal `unauthorized` with message `licence missing`, `licence invalid` or `licence expired`. Additive, no bump: an older client ignores the field and is gated by the server alone. |
 | `pong` | — | Answer to `ping`. |
 | `wake` | `call_id`, `from{display_name,uri}`, `to{display_name,uri}`, `sip{host,port,transport}`, `expires_at` | Incoming call. Client MUST report to CallKit immediately and then register SIP to `sip`. |
 | `wake_cancel` | `call_id`, `reason` (`"caller_hangup"` \| `"answered_elsewhere"` \| `"timeout"`) | Stop ringing. |
@@ -180,7 +180,7 @@ same wake again and MUST NOT ring twice.
 | `unsupported_version` | yes | `v` ≠ 1 |
 | `bad_frame` | yes | Frame too large or not JSON |
 | `hello_expected` | yes | First frame was not `hello` |
-| `unauthorized` | yes | Unknown device or bad token |
+| `unauthorized` | yes | Unknown device or bad token. Also a device the licence has no seat for, or any device once the licence has lapsed (SPEC §4.9); `message` says which, from a fixed set: `unknown device or bad token`, `credential rotated; re-enrol`, `no licence seat`, `licence expired`, `no licence`. The client raises the same code for itself, with `licence missing`, `licence invalid` or `licence expired`, when `welcome.licence` does not pass. On any of these the client stops retrying until its next foreground. |
 | `superseded` | yes | Replaced by a newer connection of the same kind |
 | `idle_timeout` | yes | No frame within 3 × heartbeat |
 | `unknown_call` | no | `wake_ack` for a `call_id` the server no longer has |

@@ -32,6 +32,7 @@ import (
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/events"
 	"dialler/server/internal/gateway"
+	"dialler/server/internal/licence"
 	"dialler/server/internal/loglevel"
 	"dialler/server/internal/pbx"
 	"dialler/server/internal/pbxline"
@@ -298,6 +299,13 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if devices.Secrets, err = secrets.OpenKey(filepath.Join(o.dataDir, "pbx.key")); err != nil {
 		return err
 	}
+	// The product licence (SPEC §4.9): the install id this server is bound
+	// by, and the seats in force, set before anything registers or listens.
+	_, lic, err := startLicence(log, o.dataDir)
+	if err != nil {
+		return err
+	}
+	devices.SetSeats(lic.Seats())
 	// One directory per device (SPEC §6 item 7): <data-dir>/directories/
 	// <device>.json. A pre-item-7 global directory.json is folded into
 	// every enrolled device's directory once, then renamed.
@@ -401,6 +409,11 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 			}
 			return &wire.DeviceConfig{Version: c.Version, SSIDs: c.SSIDs}
 		},
+		// The licence gate (SPEC §4.9), after the credential check: a holder
+		// beyond the seats, or any device once the licence has lapsed, is
+		// told why on the one error code every app decodes.
+		Licensed:   licenceGate(devices, lic),
+		LicenceFor: lic.Token,
 	}, devices)
 	dir.OnChange(gw.NotifyDirectory)
 	dir.OnWrite(func(deviceID string, version int64, by string) {
@@ -477,6 +490,15 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	} else if o.pbxRegistrar != "" || o.pbxDomain != "" || len(o.pbxPeers) > 0 || o.pbxDefaultLine != "" {
 		log.Warn("-pbx-* flags ignored: -pbx-mode is trunk")
 	}
+	// Seats move when the licence changes or a device is enrolled, revoked
+	// or purged: the devices that crossed the line are cut off or let back
+	// in, one by one, and nothing else is touched (SPEC §4.9).
+	devices.OnSeats(seatHooks(log, ring, reg, gw, lines, devices))
+	lic.OnChange(func(seats int) {
+		ring.Emit(events.KindLicenceChanged, "", "", map[string]any{"seats": seats, "state": string(lic.State())})
+		devices.SetSeats(seats)
+	})
+	go lic.Run(ctx)
 
 	// A wake_ack of decline/busy ends that call's wait for a registration at
 	// once (the caller gets 486) instead of at the ring timeout.
@@ -528,8 +550,17 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		Trunk:         calls.TrunkStatus,
 		AdminStats:    adminStats.View,
 		EventsDropped: ring.Dropped,
+		Licence: func() licence.Summary {
+			used, _ := devices.Seats()
+			return lic.Summary(used)
+		},
 	})
 	adminAPI.Handle("GET /v1/admin/status", live)
+	// The product licence (SPEC §4.9): read, and installed by paste.
+	licenceAPI := licence.NewHandler(lic, o.adminToken, func() int { used, _ := devices.Seats(); return used })
+	adminAPI.Handle("GET /v1/admin/licence", licenceAPI)
+	adminAPI.Handle("PUT /v1/admin/licence", licenceAPI)
+	adminAPI.Handle("POST /v1/admin/licence", licenceAPI)
 	adminAPI.Handle("GET /v1/admin/server", live)
 	adminAPI.Handle("GET /v1/admin/calls", live)
 	// Enrolment (SPEC §4.8): the admin mints a code, the phone claims it
@@ -747,14 +778,8 @@ func adminHooks(log *slog.Logger, ring *events.Ring, reg *registry.Registry, gw 
 			reg.Provision(user, deviceID)
 			gw.Disconnect(deviceID)
 			// A claim un-revokes, so a line that was dropped on revocation
-			// comes back with the replacement phone.
-			if lines != nil {
-				if cred, ok, err := devices.PBXCredential(deviceID); err != nil {
-					log.Error("pbx line for the claimed device could not be read", "device", deviceID, "err", err)
-				} else if ok {
-					lines.Put(pbxline.Line{User: cred.User, DN: cred.DN, DigestUser: cred.DigestUser, Secret: cred.Secret})
-				}
-			}
+			// comes back with the replacement phone (if it holds a seat).
+			registerLine(log, lines, devices, deviceID)
 		},
 		// Settings changed: that device's live sessions get them now; a
 		// device not connected gets them in its next welcome.

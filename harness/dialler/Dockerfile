@@ -15,6 +15,11 @@ COPY --from=build /fake-app /fake-app
 COPY --from=build /dialler-admin /dialler-admin
 COPY --chown=65532:65532 harness/admin/password /admin-password
 COPY --from=build --chown=65532:65532 /data /data
+# The harness's fixed install id and the dev licence issued for it (SPEC
+# §4.9): baked into /data so a fresh named volume inherits them on first
+# mount. provision.sh applies the licence through the admin API as well,
+# which also covers a volume that predates licensing.
+COPY --chown=65532:65532 harness/dialler/install.id harness/dialler/licence* /data/
 VOLUME ["/data"]
 EXPOSE 7443 5061 8080 8081 8443
 ENTRYPOINT ["/dialler-server"]

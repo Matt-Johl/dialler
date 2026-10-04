@@ -131,6 +131,16 @@ func NewEnrolHandler(store *Store, info EnrolInfo, hooks Hooks) http.Handler {
 			http.Error(w, "unknown or expired enrolment code", http.StatusNotFound)
 			return
 		}
+		if errors.Is(err, ErrNoSeats) {
+			// The code is valid and unspent; the licence is full (SPEC
+			// §4.9). The same delay as a miss, so timing says nothing.
+			time.Sleep(info.Delay)
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error":   "no_seats",
+				"message": "the server has no free licence seats; ask your administrator",
+			})
+			return
+		}
 		if err != nil {
 			http.Error(w, "enrolment store: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -193,7 +203,7 @@ func (s *Store) DeviceAuth(next http.Handler) http.Handler {
 			return
 		}
 		ok, _ := s.Authenticate(r.Context(), id, tok)
-		if !ok {
+		if !ok || !s.Licensed(id) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

@@ -25,6 +25,7 @@ const (
 	CodeDeviceExists         = "device_exists"
 	CodeUserTaken            = "user_taken"
 	CodeImmutable            = "immutable"
+	CodeNoSeats              = "no_seats"
 	CodeVersionMismatch      = "version_mismatch"
 	CodeTooLarge             = "too_large"
 	CodeUnsupportedMediaType = "unsupported_media_type"

@@ -51,5 +51,19 @@ struct ContentView: View {
             DirectoryView().tabItem { Label("Directory", systemImage: "person.2") }.tag(Tab.directory)
             SettingsView(path: $settingsPath).tabItem { Label("Settings", systemImage: "slider.horizontal.3") }.tag(Tab.settings)
         }
+        // The licence's last week (SPEC §4.9): one line above every tab, so
+        // the person who can do something about it hears before the day
+        // calls stop.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let warning = model.licenceWarning {
+                Text(warning)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 16)
+                    .background(Color.yellow.opacity(0.25))
+            }
+        }
     }
 }

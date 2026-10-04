@@ -163,6 +163,31 @@ func pbxLineHook(log *slog.Logger, mgr *pbxline.Manager, devices *enroll.Store) 
 			return
 		}
 		log.Info("pbx line set", "device", deviceID, "user", cred.User, "dn", cred.DN, "digest_user", cred.DigestUser)
-		mgr.Put(pbxline.Line{User: cred.User, DN: cred.DN, DigestUser: cred.DigestUser, Secret: cred.Secret})
+		registerLine(log, mgr, devices, deviceID)
 	}
+}
+
+// registerLine puts deviceID's stored line on the exchange, unless the
+// device is enrolled and holds no licence seat (SPEC §4.9): the exchange
+// must not ring a phone the server refuses everywhere else. A device that
+// has not enrolled yet is registered as it always was, so its line answers
+// the moment the phone is in someone's hand. Nothing to do with no line
+// stored or, in trunk mode, no manager.
+func registerLine(log *slog.Logger, mgr *pbxline.Manager, devices *enroll.Store, deviceID string) {
+	if mgr == nil {
+		return
+	}
+	cred, ok, err := devices.PBXCredential(deviceID)
+	if err != nil {
+		log.Error("pbx line could not be read", "device", deviceID, "err", err)
+		return
+	}
+	if !ok {
+		return
+	}
+	if devices.SeatState(deviceID) == enroll.SeatUnlicensed {
+		log.Info("pbx line stored but not registered: the device holds no licence seat", "device", deviceID, "user", cred.User)
+		return
+	}
+	mgr.Put(pbxline.Line{User: cred.User, DN: cred.DN, DigestUser: cred.DigestUser, Secret: cred.Secret})
 }

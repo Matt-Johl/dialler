@@ -21,6 +21,7 @@ import (
 	"dialler/server/internal/directory"
 	"dialler/server/internal/enroll"
 	"dialler/server/internal/events"
+	"dialler/server/internal/licence"
 	"dialler/server/internal/loglevel"
 	"dialler/server/internal/status"
 )
@@ -36,6 +37,7 @@ type fakeAPI struct {
 	diag     map[string][]diag.Entry
 	log      loglevel.View
 	calls    []b2bua.CallView
+	licence  licence.Summary
 	// lastIfMatch is the If-Match of the last write, for the concurrency test.
 	lastIfMatch string
 	lastBody    string
@@ -46,6 +48,9 @@ func newFakeAPI() *fakeAPI {
 	f := &fakeAPI{devices: map[string]enroll.Device{}, dirs: map[string]directory.ListResponse{}, diag: map[string][]diag.Entry{}}
 	f.devices["dev-a"] = enroll.Device{DeviceID: "dev-a", User: "201", Description: "Matt", IssuedAt: t0, UpdatedAt: t0, Enrolled: true, Config: &enroll.DeviceConfig{Version: 2, SSIDs: []string{"Office"}}, PBXLine: &enroll.PBXLine{DigestUser: "line201", Configured: true}}
 	f.devices["dev-b"] = enroll.Device{DeviceID: "dev-b", User: "202", Description: "Spare", IssuedAt: t0, UpdatedAt: t0}
+	// dev-c: enrolled but beyond the licence's seats (SPEC §4.9).
+	f.devices["dev-c"] = enroll.Device{DeviceID: "dev-c", User: "203", Description: "Overflow", IssuedAt: t0, UpdatedAt: t0, Enrolled: true}
+	f.licence = licence.Summary{State: licence.StateActive, InstallID: "harness-install-0001", ID: "lic_TEST0001", Customer: "Example Ltd", Seats: 10, SeatsUsed: 2, ValidUntil: t0.Add(400 * 24 * time.Hour), DaysLeft: 400}
 	f.dirs["dev-a"] = directory.ListResponse{Version: 5, Contacts: []directory.Contact{{ID: "ct_01", DisplayName: "Desk", URI: "sip:100@asterisk", Mode: directory.ModeTrunk, Favourite: true, Version: 5}}}
 	f.dirs["dev-b"] = directory.ListResponse{Version: 1}
 	f.diag["dev-a"] = []diag.Entry{{Name: "20260925T085512.000Z-applog.log", Kind: "applog", Size: 1234, At: "2026-09-25T08:55:12Z"}}
@@ -75,13 +80,28 @@ func (f *fakeAPI) RoundTrip(r *http.Request) (*http.Response, error) {
 	case p == "/v1/admin/whoami":
 		return jsonResp(200, map[string]bool{"ok": true}), nil
 	case p == "/v1/admin/server":
-		v := status.ServerView{Counts: status.Counts{Devices: len(f.devices)}}
+		lic := f.licence
+		v := status.ServerView{Counts: status.Counts{Devices: len(f.devices)}, Licence: &lic}
 		v.Version, v.Mode, v.LocalDomain, v.StartedAt = "test", "trunk", "dialler", time.Now().Add(-time.Hour)
 		return jsonResp(200, v), nil
 	case p == "/v1/admin/status":
-		fv := status.FleetView{At: time.Now(), Trunk: b2bua.TrunkStatus{Configured: true, Qualify: "up"}}
-		fv.Devices = append(fv.Devices, status.DeviceStatus{DeviceID: "dev-a", User: "201", Enrolled: true, Sessions: map[string]*status.Session{"app": {Online: true, Since: time.Now(), Addr: "10.0.0.5:1", AppVersion: "1.4"}}, SIP: &status.SIPStatus{Registered: true, Contact: "sip:201@10.0.0.5", ExpiresAt: time.Now().Add(time.Hour)}})
+		lic := f.licence
+		fv := status.FleetView{At: time.Now(), Trunk: b2bua.TrunkStatus{Configured: true, Qualify: "up"}, Licence: &lic}
+		fv.Devices = append(fv.Devices, status.DeviceStatus{DeviceID: "dev-a", User: "201", Enrolled: true, Licensed: true, Sessions: map[string]*status.Session{"app": {Online: true, Since: time.Now(), Addr: "10.0.0.5:1", AppVersion: "1.4"}}, SIP: &status.SIPStatus{Registered: true, Contact: "sip:201@10.0.0.5", ExpiresAt: time.Now().Add(time.Hour)}})
+		fv.Devices = append(fv.Devices, status.DeviceStatus{DeviceID: "dev-c", User: "203", Enrolled: true, Licensed: false, Sessions: map[string]*status.Session{}})
 		return jsonResp(200, fv), nil
+	case p == "/v1/admin/licence" && r.Method == "GET":
+		return jsonResp(200, f.licence), nil
+	case p == "/v1/admin/licence" && (r.Method == "PUT" || r.Method == "POST"):
+		var in struct {
+			Licence string `json:"licence"`
+		}
+		_ = json.Unmarshal(body, &in)
+		if !strings.HasPrefix(in.Licence, "DL1.good") {
+			return jsonResp(400, admin.ErrorBody{Error: "invalid", Message: "not a licence token: expected payload and signature", Field: "licence"}), nil
+		}
+		f.licence.ID, f.licence.Seats = "lic_NEW00001", 25
+		return jsonResp(200, f.licence), nil
 	case p == "/v1/admin/calls":
 		return jsonResp(200, f.calls), nil
 	case p == "/v1/admin/events":
@@ -620,4 +640,72 @@ func TestCSVRoundTrip(t *testing.T) {
 	if err != nil || len(out) != 2 || out[1].Mode != directory.ModeTrunk {
 		t.Fatalf("%v %+v", err, out)
 	}
+}
+
+// The Licence page (SPEC §4.9): what is installed, the install id to give
+// the vendor, and the paste box; a paste is forwarded as-is and its refusal
+// comes back with the reason and the text kept.
+func TestLicencePageAndPaste(t *testing.T) {
+	h := newHarness(t)
+	rec := h.get("/licence")
+	if rec.Code != 200 {
+		t.Fatalf("licence: %d", rec.Code)
+	}
+	mustContain(t, rec, "<h1>Licence</h1>", "Example Ltd", "harness-install-0001", "lic_TEST0001", "10</b> seats", "2</b> in use", "400 days", `name="licence"`, ">Licence</a>")
+	if strings.Contains(rec.Body.String(), "fleet") {
+		t.Fatal("banned wording on the licence page")
+	}
+
+	// A refused paste: the reason, and the text still in the box.
+	rec = h.post("/licence", "licence", "DL1.not.alicence")
+	if rec.Code != 200 {
+		t.Fatalf("bad paste: %d", rec.Code)
+	}
+	mustContain(t, rec, "not a licence token", "DL1.not.alicence")
+	if h.api.licence.Seats != 10 {
+		t.Fatal("a refused paste changed the fake's licence")
+	}
+	// An empty paste never reaches the server.
+	n := len(h.api.requests)
+	rec = h.post("/licence", "licence", "   ")
+	mustContain(t, rec, "Paste the licence")
+	for _, r := range h.api.requests[n:] {
+		if strings.Contains(r, "/v1/admin/licence") && !strings.HasPrefix(r, "GET") {
+			t.Fatalf("an empty paste was sent: %s", r)
+		}
+	}
+	// A good paste: sent whole (surrounding whitespace trimmed), then a
+	// redirect with the news.
+	rec = h.post("/licence", "licence", "  DL1.good.token\n")
+	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/licence") {
+		t.Fatalf("good paste: %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	if !strings.Contains(h.api.lastBody, `"licence":"DL1.good.token"`) {
+		t.Fatalf("paste body: %s", h.api.lastBody)
+	}
+	rec = h.get(rec.Header().Get("Location"))
+	mustContain(t, rec, "Licence installed", "25</b> seats", "lic_NEW00001")
+}
+
+// Seats are visible where clients are: the count on the list and the server
+// page, and a chip on the row and page of a client that holds no seat.
+func TestSeatsOnClientsAndServerPages(t *testing.T) {
+	h := newHarness(t)
+	rec := h.get("/clients")
+	mustContain(t, rec, "2</b> of <b>10</b> seats", "No seat")
+	body := rec.Body.String()
+	rowC := body[strings.Index(body, ">203</a>"):]
+	rowC = rowC[:strings.Index(rowC, "</tr>")]
+	if !strings.Contains(rowC, "No seat") {
+		t.Fatalf("dev-c's row lacks the chip:\n%s", rowC)
+	}
+	rowA := body[strings.Index(body, ">201</a>"):]
+	rowA = rowA[:strings.Index(rowA, "</tr>")]
+	if strings.Contains(rowA, "No seat") {
+		t.Fatal("dev-a holds a seat and must not show the chip")
+	}
+	rec = h.get("/clients/dev-c")
+	mustContain(t, rec, "No licence seat")
+	rec = h.get("/server")
+	mustContain(t, rec, "Licence", "Example Ltd", "2 of 10 seats", `href="/licence"`)
 }

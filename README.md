@@ -182,9 +182,34 @@ licence installed it has no seats, so no device can enrol or connect.
 
 Dev and the harness use a licence issued for a fixed install id that
 `make dev-server` seeds into `./data` and the harness bakes into its image;
-`harness/provision.sh` installs it first. The vendor's tool is
-`make licence-tool` → `bin/dialler-licence` (`keygen` once, offline;
-`issue` per customer; `inspect`); the private key never enters the repo.
+`harness/provision.sh` installs it first.
+
+#### Issuing a licence (vendor only)
+
+`make licence-tool` builds `bin/dialler-licence`. The private key is made
+once, kept offline, and never enters the repo (`.gitignore` covers
+`vendor.key`); a second key pair would strand every licence issued under
+the first.
+
+```sh
+# once: writes vendor.key and vendor.pub into DIR and prints the public-key
+# literals to paste into server/internal/licence/vendorkey.go and
+# ios/DiallerCore/Sources/DiallerCore/Licence.swift
+bin/dialler-licence keygen -out DIR
+
+# per customer: the install id is read off their admin Licence page;
+# -valid-until is the last day of validity (expires at the start of the
+# next day, UTC); prints the DL1… token to paste on that page
+bin/dialler-licence issue -key DIR/vendor.key -customer "Acme Ltd" \
+    -install-id 0123456789abcdef0123456789abcdef -seats 25 -valid-until 2027-12-31
+
+# check any token against the compiled-in key (or -pub DIR/vendor.pub)
+bin/dialler-licence inspect DL1.…
+```
+
+`issue` also takes `-id` to choose the licence id (default `lic_` plus
+eight random characters). A renewal is a new `issue` for the same install
+id, pasted over the old one.
 
 ## The admin UI: dialler-admin
 

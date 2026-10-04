@@ -469,3 +469,52 @@ func TestAdminCreateWithFixtureTokenRefusesWithNoSeats(t *testing.T) {
 		t.Fatalf("re-post counted a seat: %d", used)
 	}
 }
+
+// A device written before seats existed has no seat_since. Its place in the
+// queue is when it was issued, and rotating its credential must not move it:
+// the place is fixed at load, not read from issued_at, which every re-issue
+// and re-claim rewrites (SPEC §4.9, "re-claiming keeps the seat").
+func TestLegacyRecordsKeepTheirPlaceAcrossRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	legacy := `{"schema":1,"devices":{
+	  "dev-old":{"user":"201","token_hash":"h","ha1":"x","issued_at":"2026-09-01T10:00:00Z"},
+	  "dev-mid":{"user":"202","token_hash":"h","ha1":"x","issued_at":"2026-09-15T10:00:00Z"},
+	  "dev-new":{"user":"203","token_hash":"h","ha1":"x","issued_at":"2026-09-30T10:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used, _ := s.Seats(); used != 3 {
+		t.Fatalf("a freshly opened store must count its holders: used=%d", used)
+	}
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	// The oldest device rotates its credential twice: re-issue, then claim.
+	if _, err := s.IssueToken("dev-old", "201", "fixture-token-dev-old"); err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := s.MintCode("dev-old")
+	if _, err := s.Claim(code); err != nil {
+		t.Fatal(err)
+	}
+	s.SetSeats(2)
+	if got := strings.Join(licensedIDs(s), ","); got != "dev-mid,dev-old" {
+		t.Fatalf("after rotating its credential the oldest device must still hold its seat: licensed %s, want dev-mid,dev-old", got)
+	}
+	// And the place is written down, so it survives a restart.
+	raw, _ := os.ReadFile(path)
+	if strings.Count(string(raw), `"seat_since"`) != 3 {
+		t.Fatalf("every holder's place must be persisted:\n%s", raw)
+	}
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2.SetSeats(2)
+	if got := strings.Join(licensedIDs(s2), ","); got != "dev-mid,dev-old" {
+		t.Fatalf("after a restart: licensed %s", got)
+	}
+}

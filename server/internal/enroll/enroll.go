@@ -306,7 +306,18 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("enroll: parse %s: %w", path, err)
 	}
+	// A holder written before seats existed has no seat_since. Its place in
+	// the queue is when it was issued, fixed here at load: read from
+	// issued_at on every recompute it would move to the back each time its
+	// credential is re-issued or re-claimed, which rewrites issued_at (SPEC
+	// §4.9). Persisted with the next write.
+	for _, r := range devices {
+		if r.holdsSeat() && r.SeatSince.IsZero() {
+			r.SeatSince = r.IssuedAt
+		}
+	}
 	s.devices = devices
+	s.recomputeSeatsLocked()
 	return s, nil
 }
 

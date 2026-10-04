@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,11 +78,12 @@ func TestTrunkStatus(t *testing.T) {
 // The qualifier reports each transition, and only transitions.
 func TestQualifierReportsState(t *testing.T) {
 	var states []bool
-	fail := true
+	var fail atomic.Bool // written by the test, read by the qualifier goroutine
+	fail.Store(true)
 	q := &trunkQualifier{
 		interval: 5 * time.Millisecond, timeout: time.Second, log: slog.Default(),
 		probe: func(context.Context) error {
-			if fail {
+			if fail.Load() {
 				return errors.New("no answer")
 			}
 			return nil
@@ -93,7 +95,7 @@ func TestQualifierReportsState(t *testing.T) {
 	done := make(chan struct{})
 	go func() { q.run(ctx); close(done) }()
 	time.Sleep(30 * time.Millisecond)
-	fail = false
+	fail.Store(false)
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 	<-done

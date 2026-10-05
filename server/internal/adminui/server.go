@@ -16,8 +16,8 @@ import (
 	"time"
 	"unicode"
 
-	"dialler/server/internal/licence"
-	"dialler/server/internal/status"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/status"
 )
 
 //go:embed templates/*.html static/*
@@ -365,7 +365,7 @@ func describe(err error) string {
 	case Unreachable(err):
 		return ErrUnreachable.Error() + "; nothing was changed."
 	case errors.Is(err, ErrUnauthorized):
-		return "The call server refused dialler-admin's token; check -admin-token-file on both sides."
+		return "The call server refused dialpark-admin's token; check -admin-token-file on both sides."
 	case errors.As(err, &ae):
 		switch ae.Status {
 		case http.StatusPreconditionFailed:

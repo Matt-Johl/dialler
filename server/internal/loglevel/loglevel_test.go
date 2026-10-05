@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // fixture is a controller over a fresh LevelVar and a recorded trace

@@ -5,7 +5,7 @@ import (
 
 	"github.com/emiago/diago/media"
 
-	"dialler/server/internal/pbx"
+	"dialpark/server/internal/pbx"
 )
 
 func TestIsTrunkSource(t *testing.T) {

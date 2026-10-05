@@ -8,13 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/pbx"
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/pbx"
+	"dialpark/server/internal/wire"
 )
 
 func TestCallsViewAndTracking(t *testing.T) {
 	s := &Server{log: slog.Default()}
-	a := &callLeg{name: "caller", party: wire.Party{DisplayName: "Matt", URI: "sip:201@dialler"}}
+	a := &callLeg{name: "caller", party: wire.Party{DisplayName: "Matt", URI: "sip:201@dialpark"}}
 	b := &callLeg{name: "callee", trunk: true, party: wire.Party{URI: "sip:100@asterisk"}}
 	c := newBridgedCall(s, s.log, "call-1", a, b)
 	s.live.trackBridged(c)

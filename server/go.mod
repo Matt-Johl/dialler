@@ -1,4 +1,4 @@
-module dialler/server
+module dialpark/server
 
 go 1.25
 

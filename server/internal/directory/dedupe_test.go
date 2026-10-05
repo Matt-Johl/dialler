@@ -12,11 +12,11 @@ func TestUpsertByURIDoesNotDuplicate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := s.Upsert("dev-a", Contact{DisplayName: "Phone B", URI: "sip:202@dialler", Mode: ModeLocal})
+	first, err := s.Upsert("dev-a", Contact{DisplayName: "Phone B", URI: "sip:202@dialpark", Mode: ModeLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := s.Upsert("dev-a", Contact{DisplayName: "Phone B (renamed)", URI: "SIP:202@dialler", Mode: ModeLocal})
+	again, err := s.Upsert("dev-a", Contact{DisplayName: "Phone B (renamed)", URI: "SIP:202@dialpark", Mode: ModeLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestUpsertByURIDoesNotDuplicate(t *testing.T) {
 	if _, err := s.Delete("dev-a", first.ID); err != nil {
 		t.Fatal(err)
 	}
-	third, err := s.Upsert("dev-a", Contact{DisplayName: "Phone B", URI: "sip:202@dialler", Mode: ModeLocal})
+	third, err := s.Upsert("dev-a", Contact{DisplayName: "Phone B", URI: "sip:202@dialpark", Mode: ModeLocal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestUpsertCollapsesExistingDuplicates(t *testing.T) {
 	// Five live contacts for one URI, each with a distinct explicit ID (the
 	// pre-dedupe accumulation this heals).
 	for i, id := range []string{"ct_a", "ct_b", "ct_c", "ct_d", "ct_e"} {
-		if _, err := s.Upsert("dev-a", Contact{ID: id, DisplayName: "Matt", URI: "sip:201@dialler", Mode: ModeLocal}); err != nil {
+		if _, err := s.Upsert("dev-a", Contact{ID: id, DisplayName: "Matt", URI: "sip:201@dialpark", Mode: ModeLocal}); err != nil {
 			t.Fatalf("seed %d: %v", i, err)
 		}
 	}
@@ -67,7 +67,7 @@ func TestUpsertCollapsesExistingDuplicates(t *testing.T) {
 	sinceCollapse := s.Version("dev-a")
 
 	// A re-seed (empty ID, provision.sh style) collapses them to one.
-	if _, err := s.Upsert("dev-a", Contact{DisplayName: "Matt (201)", URI: "sip:201@dialler", Mode: ModeLocal}); err != nil {
+	if _, err := s.Upsert("dev-a", Contact{DisplayName: "Matt (201)", URI: "sip:201@dialpark", Mode: ModeLocal}); err != nil {
 		t.Fatal(err)
 	}
 	live, _ := s.Changes("dev-a", 0)

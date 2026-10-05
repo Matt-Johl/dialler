@@ -43,12 +43,12 @@ SCRATCH="${TMPDIR:-/tmp}/spm-build-ios"
 IOS_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 OUT="${TMPDIR:-/tmp}/sim-call.log"
 C="docker compose -f harness/docker-compose.yml --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 # The server must advertise an address the simulated phone can reach for SIP
 # and media; localhost works because Docker publishes those ports there.
 # Exported so every compose invocation below sees the same config — a
 # differing value makes `compose up` recreate the server mid-test.
-export DIALLER_PUBLIC_HOST="$HOST"
+export DIALPARK_PUBLIC_HOST="$HOST"
 
 echo "== build sim-call for the simulator"
 # SwiftPM writes module caches under ~/Library by default, which the build
@@ -82,7 +82,7 @@ if [ "$SERVER" = native ]; then
   echo "== native server at $HOST (make dev-server); starting the docker caller only"
   STARTED=1
   BARESIP_B_OUTBOUND="$HOST:5061" $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
-elif docker ps --format '{{.Names}}' | grep -q '^dialler-harness-dialler-1$'; then
+elif docker ps --format '{{.Names}}' | grep -q '^dialpark-harness-dialpark-1$'; then
   # Leave a running server alone (its flags, e.g. -log-level, were chosen
   # by whoever started it); a plain `up` would recreate it with defaults.
   echo "== server already running (leaving it as is)"
@@ -94,7 +94,7 @@ else
   # --build: the other suites rebuild the server image; without it this one
   # ran whatever image was last built (a stale one failed Phase F for an
   # hour, 2026-09-13).
-  $C up -d --build dialler baresip-b >/dev/null 2>&1
+  $C up -d --build dialpark baresip-b >/dev/null 2>&1
   # A server we started has an empty data volume (a previous test's
   # `down -v` removed it): enrol the dev devices and seed the directory,
   # or every registration is refused as an unknown device.
@@ -124,7 +124,7 @@ if [ -n "${OUTBOUND:-}" ] && [ "$OUTBOUND" != echo ] && [ "$OUTBOUND" != 600 ]; 
   else
     $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
     i=0
-    until $C logs --no-log-prefix --since "$MARK" dialler 2>/dev/null | grep -q 'sip register" user=212'; do
+    until $C logs --no-log-prefix --since "$MARK" dialpark 2>/dev/null | grep -q 'sip register" user=212'; do
       i=$((i+1)); [ $i -le 25 ] || { echo "FAIL: phone-b did not register within 25s"; exit 1; }
       sleep 1
     done
@@ -153,7 +153,7 @@ xcrun simctl boot "$SIM" 2>/dev/null || true
 # auto-answers and plays its tone — the keypad / directory path.
 MODE=""; [ "${GATEWAY:-yes}" = no ] && MODE=nogateway
 [ -n "${OUTBOUND:-}" ] && MODE="outbound:$OUTBOUND"
-SIGNAL_PORT="${SIGNAL_PORT:-${DIALLER_SIGNAL_HOSTPORT:-7443}}"
+SIGNAL_PORT="${SIGNAL_PORT:-${DIALPARK_SIGNAL_HOSTPORT:-7443}}"
 # HOLD_MS=3000: hold the call for 3 s after the first verdict, then resume;
 # asserts media stops while held and flows again after.
 # TRANSFER=echo: after the first verdict the simulated phone REFERs the
@@ -219,7 +219,7 @@ echo "   registered as 203 (dev-s)"
 if [ -n "${RESTART_SERVER:-}" ]; then
   [ "$SERVER" = native ] && { echo "FAIL: RESTART_SERVER needs the docker server"; exit 1; }
   echo "== restarting the server under the registered app"
-  $C restart dialler >/dev/null 2>&1
+  $C restart dialpark >/dev/null 2>&1
   i=0
   until [ "$(grep -c 'sim: gateway connected' "$OUT")" -ge 2 ] && [ "$(grep -c 'engine: registered' "$OUT")" -ge 2 ]; do
     i=$((i+1)); [ $i -le 45 ] || { echo "FAIL: the simulated phone did not reconnect and re-register within 45s"; grep -E 'sim:|engine:' "$OUT" | tail -14 | sed 's/^/   /'; exit 1; }
@@ -242,7 +242,7 @@ while :; do
   if [ -n "${OUTBOUND:-}" ]; then
     echo "   (outbound: the simulated phone dials $OUTBOUND)"
   else
-    ctl '{"command":"dial","params":"203@dialler"}'
+    ctl '{"command":"dial","params":"203@dialpark"}'
   fi
   if [ -n "${CALLWAITING:-}" ]; then
     # The second caller: phone-a dials once the first call is up.
@@ -258,7 +258,7 @@ while :; do
     done
     sleep 3 # past the sim's 2 s verdict, so it is ready for the second ring
     echo "== phone-a (211) dials 203 too (call waiting)"
-    ctl_to baresip-a '{"command":"dial","params":"203@dialler"}'
+    ctl_to baresip-a '{"command":"dial","params":"203@dialpark"}'
   fi
   i=0
   until grep -q "sim: call $n: \|sim: FAIL" "$OUT"; do
@@ -385,7 +385,7 @@ if [ "$SERVER" = native ]; then
   echo "== server: native; its relay lines are in the dev-server terminal"
 else
   echo "== server"
-  $C logs --no-log-prefix --since 90s dialler 2>&1 | grep -E 'invite|woke|wake_ack|register|bridged|ended|480|rtp|media|relay|RELAY' | tail -20 | sed 's/^/   /' || true
+  $C logs --no-log-prefix --since 90s dialpark 2>&1 | grep -E 'invite|woke|wake_ack|register|bridged|ended|480|rtp|media|relay|RELAY' | tail -20 | sed 's/^/   /' || true
 fi
 
 if [ -n "${RING_RESET:-}" ]; then

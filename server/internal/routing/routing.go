@@ -5,8 +5,8 @@ package routing
 import (
 	"strings"
 
-	"dialler/server/internal/registry"
-	"dialler/server/internal/sip"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/sip"
 )
 
 // Target is the routing outcome.

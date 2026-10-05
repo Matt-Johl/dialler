@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"dialler/server/internal/directory"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/events"
-	"dialler/server/internal/gateway"
-	"dialler/server/internal/registry"
+	"dialpark/server/internal/directory"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/events"
+	"dialpark/server/internal/gateway"
+	"dialpark/server/internal/registry"
 )
 
 // The hooks the admin API fires must all work in TRUNK mode, where there

@@ -8,14 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/b2bua"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/gateway"
-	"dialler/server/internal/licence"
-	"dialler/server/internal/pbxline"
-	"dialler/server/internal/registry"
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/b2bua"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/gateway"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/pbxline"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/wire"
 )
 
 func fixture(now func() time.Time) (*Handler, *int) {

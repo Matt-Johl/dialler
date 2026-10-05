@@ -7,7 +7,7 @@
 // Registers, then waits for an incoming call and answers it. Exit 0 if a
 // registration was achieved (and, if a call arrived, it was established);
 // exit 1 with baresip's own log otherwise. Pair with:
-//   DIALLER_PUBLIC_HOST=<mac-ip> make harness-up
+//   DIALPARK_PUBLIC_HOST=<mac-ip> make harness-up
 //   make engine-probe              (this)
 //   make harness-ring-sim          (in another shell: 202 dials 201)
 import DiallerCore
@@ -25,7 +25,7 @@ guard args.count >= 2 else {
     exit(2)
 }
 let host = args[1]
-let user = args.count > 2 ? args[2] : "201@dialler"
+let user = args.count > 2 ? args[2] : "201@dialpark"
 let port = args.count > 3 ? Int(args[3]) ?? 5061 : 5061
 let seconds = args.count > 4 ? Int(args[4]) ?? 30 : 30
 

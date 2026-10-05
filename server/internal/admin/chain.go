@@ -79,7 +79,7 @@ func (w *errorWriter) Write(b []byte) (int, error) {
 }
 
 // Whoami is GET /v1/admin/whoami: the cheapest authenticated call, how
-// dialler-admin checks its token at start and tells "wrong token" from
+// dialpark-admin checks its token at start and tells "wrong token" from
 // "server down".
 func Whoami() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

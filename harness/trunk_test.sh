@@ -5,7 +5,7 @@
 #   out:  app 211 (baresip-a) dials 100 → server → trunk (TCP) → Asterisk →
 #         desk phone 100 (baresip-c, registered to Asterisk over UDP with
 #         Digest, G.711 only). Asserts the desk phone recorded the app's tone.
-#   in:   desk phone 100 dials 211 → Asterisk dial plan → PJSIP/211@dialler →
+#   in:   desk phone 100 dials 211 → Asterisk dial plan → PJSIP/211@dialpark →
 #         server's trunk listener → app 211 (registered). Asserts the app
 #         recorded the desk phone's tone.
 #   transfer: desk phone 100 dials 211, then the app transfers it to 600
@@ -46,7 +46,7 @@ cd "$(dirname "$0")/.."
 # test that lives entirely inside the compose network; NOT for ones a
 # simulator or a real phone has to reach (sim_call.sh, ring_*.sh, probe_*).
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
 PBX_CODEC=G722
 if [ "${NARROWBAND:-0}" = 1 ]; then
@@ -58,7 +58,7 @@ fi
 # (SPEC §6 item 3a). Unset = the default deployment: plain RTP to the PBX.
 if [ -n "${TRUNK_SRTP:-}" ]; then
   export ASTERISK_SRTP=yes
-  export DIALLER_TRUNK_SRTP="$TRUNK_SRTP"
+  export DIALPARK_TRUNK_SRTP="$TRUNK_SRTP"
 fi
 # TRUNK_TLS=1 moves the whole trunk leg onto SIP/TLS with mutual
 # authentication against a private CA — the shape of a CUCM secure trunk
@@ -66,14 +66,14 @@ fi
 if [ "${TRUNK_TLS:-0}" = 1 ]; then
   sh harness/tls/gen_certs.sh
   export ASTERISK_TLS=yes
-  export DIALLER_TRUNK="sip:172.30.0.20:5061;transport=tls"
+  export DIALPARK_TRUNK="sip:172.30.0.20:5061;transport=tls"
   # Not :5061 — that is the app leg's port.
-  export DIALLER_TRUNK_ADDR=":5062"
-  export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
-  export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
-  export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
+  export DIALPARK_TRUNK_ADDR=":5062"
+  export DIALPARK_TRUNK_TLS_CERT=/tls/dialpark.pem
+  export DIALPARK_TRUNK_TLS_KEY=/tls/dialpark.key
+  export DIALPARK_TRUNK_TLS_CA=/tls/ca.pem
 fi
-NET=dialler-harness_default
+NET=dialpark-harness_default
 MEDIA_DIR=harness/baresip/media
 DIRECTION="${DIRECTION:-both}"
 CALL_SECONDS="${CALL_SECONDS:-8}"
@@ -93,7 +93,7 @@ cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== up: server, asterisk, apps 211 and 212, desk phone 100"
-$COMPOSE up --build -d dialler asterisk >/dev/null 2>&1
+$COMPOSE up --build -d dialpark asterisk >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a baresip-b baresip-c >/dev/null 2>&1
@@ -113,7 +113,7 @@ echo "   desk phone 100 registered to Asterisk; app 211 registered to the server
 
 # Asterisk only dials a trunk contact it has qualified (OPTIONS → 200).
 i=0
-until $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -q "is now Reachable.*RTT\|Contact dialler/.* is now Reachable"; do
+until $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -q "is now Reachable.*RTT\|Contact dialpark/.* is now Reachable"; do
   i=$((i+1)); [ $i -le 40 ] || { echo "FAIL: Asterisk never qualified the server as reachable"; $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -i reachable | tail -3; exit 1; }
   sleep 1
 done
@@ -128,17 +128,17 @@ fail=0
 # checks name which end is misconfigured when it does not.
 if [ "${TRUNK_TLS:-0}" = 1 ]; then
   ok=1
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "b2bua listening.*trunk_tls=true" || {
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q "b2bua listening.*trunk_tls=true" || {
     echo "   FAIL: the server did not build a trunk TLS config"; ok=0; }
   $COMPOSE exec -T asterisk asterisk -rx "pjsip show transport transport-tls" 2>/dev/null | grep -q "0.0.0.0:5061" || {
     echo "   FAIL: Asterisk has no TLS transport listening"
     $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "tls|ssl|cert" | tail -6 | sed 's/^/   asterisk: /'; ok=0; }
-  $COMPOSE exec -T asterisk asterisk -rx "pjsip show aor dialler" 2>/dev/null | grep -q "transport=tls" || {
+  $COMPOSE exec -T asterisk asterisk -rx "pjsip show aor dialpark" 2>/dev/null | grep -q "transport=tls" || {
     echo "   FAIL: Asterisk's trunk contact is not a TLS URI"; ok=0; }
   # The warning §6 item 3a leaves on an unencrypted trunk: with TLS it must
   # be gone. Asserting on its absence is what keeps the two items honest —
   # SDES keys in cleartext SDP is the thing TLS is here to stop.
-  if [ -n "${TRUNK_SRTP:-}" ] && $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "trunk SRTP over unencrypted signalling"; then
+  if [ -n "${TRUNK_SRTP:-}" ] && $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q "trunk SRTP over unencrypted signalling"; then
     echo "   FAIL: the server still thinks the trunk signalling is in the clear"; ok=0
   fi
   [ "$ok" = 1 ] && echo "   trunk is SIP/TLS, mutually authenticated (Asterisk requires a client certificate)"
@@ -151,15 +151,15 @@ if $COMPOSE exec -T asterisk asterisk -rx "core show codecs audio" 2>/dev/null |
 else
   echo "FAIL: Asterisk has no g722 codec"; exit 1
 fi
-echo "   Asterisk allows: $($COMPOSE exec -T asterisk asterisk -rx "pjsip show endpoint dialler" 2>/dev/null | grep -E '^ *allow ' | head -1 | tr -s ' ')"
+echo "   Asterisk allows: $($COMPOSE exec -T asterisk asterisk -rx "pjsip show endpoint dialpark" 2>/dev/null | grep -E '^ *allow ' | head -1 | tr -s ' ')"
 
 # The trunk call must negotiate one codec end to end (SPEC §4.4 rule 4):
 # G.722 with a wideband PBX, PCMU when the PBX only has G.711.
 codec_check() {
-  if $COMPOSE logs --no-log-prefix --since 60s dialler 2>&1 | grep -q "callee answered.*codec=$PBX_CODEC"; then
+  if $COMPOSE logs --no-log-prefix --since 60s dialpark 2>&1 | grep -q "callee answered.*codec=$PBX_CODEC"; then
     echo "   negotiated $PBX_CODEC on both legs"
   else
-    echo "FAIL $1: the call did not negotiate $PBX_CODEC"; $COMPOSE logs --no-log-prefix --since 60s dialler 2>&1 | grep 'callee answered' | tail -2 | sed 's/^/   /'; fail=1
+    echo "FAIL $1: the call did not negotiate $PBX_CODEC"; $COMPOSE logs --no-log-prefix --since 60s dialpark 2>&1 | grep 'callee answered' | tail -2 | sed 's/^/   /'; fail=1
   fi
 }
 
@@ -169,22 +169,22 @@ codec_check() {
 # `$1` is the leg to check as the server logs it ("callee" out, "caller" in).
 srtp_check() {
   [ -n "${TRUNK_SRTP:-}" ] || return 0
-  if $COMPOSE logs --no-log-prefix --since 60s dialler 2>&1 | grep -qE "bridged.*$2_srtp=on"; then
+  if $COMPOSE logs --no-log-prefix --since 60s dialpark 2>&1 | grep -qE "bridged.*$2_srtp=on"; then
     echo "   trunk leg is SRTP ($2_srtp=on)"
   else
     echo "FAIL $1: the trunk leg is not encrypted under -trunk-srtp=$TRUNK_SRTP"
-    $COMPOSE logs --no-log-prefix --since 60s dialler 2>&1 | grep -E 'bridged|callee answered' | tail -2 | sed 's/^/   /'
+    $COMPOSE logs --no-log-prefix --since 60s dialpark 2>&1 | grep -E 'bridged|callee answered' | tail -2 | sed 's/^/   /'
     fail=1
   fi
 }
 
 if [ "$DIRECTION" = out ] || [ "$DIRECTION" = both ]; then
   echo "== out: app 211 dials 100 (desk phone via the trunk)"
-  ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+  ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
   sleep "$CALL_SECONDS"
   ctl baresip-a '{"command":"hangup"}'
   sleep 2
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
   if python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-100.wav" --reference "$MEDIA_DIR/in.wav" \
        --max-gap-ms "${MAX_GAP_MS:-0}" --max-gaps "${MAX_GAPS:-0}"; then
     echo "PASS out: the desk phone heard the app through the trunk"
@@ -192,7 +192,7 @@ if [ "$DIRECTION" = out ] || [ "$DIRECTION" = both ]; then
     srtp_check out callee
   else
     echo "FAIL out"; fail=1
-    $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialler|100|error|warn|rtp" | tail -8 | sed 's/^/   asterisk: /'
+    $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialpark|100|error|warn|rtp" | tail -8 | sed 's/^/   asterisk: /'
   fi
 fi
 
@@ -203,7 +203,7 @@ if [ "$DIRECTION" = in ] || [ "$DIRECTION" = both ]; then
   sleep "$CALL_SECONDS"
   ctl baresip-c '{"command":"hangup"}'
   sleep 2
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
   if python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-211.wav" --reference "$MEDIA_DIR/in.wav" \
        --max-gap-ms "${MAX_GAP_MS:-0}" --max-gaps "${MAX_GAPS:-0}"; then
     echo "PASS in: the app heard the desk phone through the trunk"
@@ -211,7 +211,7 @@ if [ "$DIRECTION" = in ] || [ "$DIRECTION" = both ]; then
     srtp_check in caller
   else
     echo "FAIL in"; fail=1
-    $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialler|211|error|warn" | tail -8 | sed 's/^/   asterisk: /'
+    $COMPOSE logs --no-log-prefix asterisk 2>&1 | grep -iE "dialpark|211|error|warn" | tail -8 | sed 's/^/   asterisk: /'
   fi
 fi
 
@@ -230,7 +230,7 @@ if [ "$DIRECTION" = transfer ] || [ "$DIRECTION" = both ]; then
   sleep 3
   # While the desk phone is still on the (transferred) call, the server's
   # part of it must already be over.
-  early="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+  early="$($COMPOSE logs --no-log-prefix --since "$MARK" dialpark 2>&1)"
   sleep 5
   ctl baresip-c '{"command":"hangup"}'
   sleep 2
@@ -258,13 +258,13 @@ if [ "$DIRECTION" = xfer-app ] || [ "$DIRECTION" = both ]; then
   sleep 5
   rm -f "$MEDIA_DIR/out-100.wav"
   MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ctl baresip-a '{"command":"dial","params":"212@dialler"}'
+  ctl baresip-a '{"command":"dial","params":"212@dialpark"}'
   sleep 4
   ctl baresip-a '{"command":"transfer","params":"100"}'
   sleep "$CALL_SECONDS"
   ctl baresip-b '{"command":"hangup"}'
   sleep 2
-  logs="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+  logs="$($COMPOSE logs --no-log-prefix --since "$MARK" dialpark 2>&1)"
   echo "$logs" | grep -E 'callee answered|transfer|call ended|level=(ERROR|WARN)' | tail -8 | sed 's/^/   /'
   ok=1
   echo "$logs" | grep -q 'callee answered.*codec=opus' || { echo "   FAIL: the app↔app call was not Opus"; ok=0; }
@@ -296,13 +296,13 @@ if [ "$DIRECTION" = xfer-echo ] || [ "$DIRECTION" = both ]; then
   sleep 5
   rm -f "$MEDIA_DIR/out-100.wav"
   MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ctl baresip-a '{"command":"dial","params":"600@dialler"}'
+  ctl baresip-a '{"command":"dial","params":"600@dialpark"}'
   sleep 4
   ctl baresip-a '{"command":"transfer","params":"100"}'
   sleep "$CALL_SECONDS"
   ctl baresip-c '{"command":"hangup"}'
   sleep 2
-  logs="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+  logs="$($COMPOSE logs --no-log-prefix --since "$MARK" dialpark 2>&1)"
   echo "$logs" | grep -E 'transfer|msg=relay.*transfer|call ended|level=(ERROR|WARN)' | tail -8 | sed 's/^/   /'
   ok=1
   if echo "$logs" | grep -q 'transfer: offloaded to PBX'; then

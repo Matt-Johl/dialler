@@ -1,12 +1,12 @@
-// Command dialler-licence is the vendor's tool for product licences (SPEC
+// Command dialpark-licence is the vendor's tool for product licences (SPEC
 // §4.9): it makes the vendor key pair once, issues a licence for one
 // customer's server, and inspects a licence token.
 //
-//	dialler-licence keygen -out DIR
-//	dialler-licence issue -key DIR/vendor.key -customer "Example Ltd" \
+//	dialpark-licence keygen -out DIR
+//	dialpark-licence issue -key DIR/vendor.key -customer "Example Ltd" \
 //	    -install-id <id from the customer's admin Licence page> \
 //	    -seats 25 -valid-until 2027-12-31 [-id lic_XXXXXXXX]
-//	dialler-licence inspect [-pub DIR/vendor.pub] TOKEN
+//	dialpark-licence inspect [-pub DIR/vendor.pub] TOKEN
 //
 // The private key never leaves the vendor; the public half is pasted into
 // server/internal/licence/vendorkey.go and the app's verifier, which keygen
@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"dialler/server/internal/licence"
+	"dialpark/server/internal/licence"
 )
 
 func main() {
@@ -37,7 +37,7 @@ func main() {
 // what it printed.
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: dialler-licence keygen|issue|inspect ...")
+		fmt.Fprintln(stderr, "usage: dialpark-licence keygen|issue|inspect ...")
 		return 2
 	}
 	var err error
@@ -55,7 +55,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 2
 		}
-		fmt.Fprintln(stderr, "dialler-licence:", err)
+		fmt.Fprintln(stderr, "dialpark-licence:", err)
 		return 1
 	}
 	return 0

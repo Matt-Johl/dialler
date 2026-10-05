@@ -3,9 +3,9 @@
 # the config files in this directory. Run ON the Ubuntu machine, as root:
 #
 #   scp -r harness/asterisk-native ubuntu-box:~/
-#   ssh ubuntu-box 'sudo DIALLER_HOST=<this Mac's LAN address> sh asterisk-native/install-ubuntu.sh'
+#   ssh ubuntu-box 'sudo DIALPARK_HOST=<this Mac's LAN address> sh asterisk-native/install-ubuntu.sh'
 #
-# DIALLER_HOST is the address of the light server (make dev-server on the
+# DIALPARK_HOST is the address of the light server (make dev-server on the
 # Mac); Asterisk trusts calls from it by address and sends calls for 2XX to
 # its trunk listener on :5062. Re-run after editing any .conf here.
 #
@@ -15,9 +15,9 @@
 # and copy them over with this directory, so the keys travel one way only
 # and the repo keeps the generator:
 #
-#   OUT=lan DIALLER_IP=<mac> ASTERISK_IP=<pbx> sh harness/tls/gen_certs.sh
+#   OUT=lan DIALPARK_IP=<mac> ASTERISK_IP=<pbx> sh harness/tls/gen_certs.sh
 #   scp -r harness/asterisk-native harness/tls/lan ubuntu-box:~/
-#   ssh ubuntu-box 'sudo TRUNK_TLS=1 DIALLER_HOST=<mac> sh asterisk-native/install-ubuntu.sh'
+#   ssh ubuntu-box 'sudo TRUNK_TLS=1 DIALPARK_HOST=<mac> sh asterisk-native/install-ubuntu.sh'
 #
 # TRUNK_SRTP=1 puts media_encryption=sdes on the trunk endpoint, so the PBX
 # offers and accepts SDES on the leg to us (SPEC §6 item 3a). It has to
@@ -38,7 +38,7 @@ LINES="${LINES:-0}"
 # trusted by its credential and reached at whatever its REGISTER advertised,
 # so in lines mode there is nothing to substitute.
 if [ "$LINES" != 1 ]; then
-  [ -n "${DIALLER_HOST:-}" ] || { echo "set DIALLER_HOST=<light server address>"; exit 1; }
+  [ -n "${DIALPARK_HOST:-}" ] || { echo "set DIALPARK_HOST=<light server address>"; exit 1; }
 fi
 if [ "$LINES" = 1 ] && { [ "$TRUNK_TLS" = 1 ] || [ "$TRUNK_SRTP" = 1 ]; }; then
   echo "LINES=1 is plain UDP: encryption on the line leg is unscheduled (SPEC §6 'Much later', encryption on the line leg) — the documented CUCM setup for a third-party SIP device is non-secure with digest, and the app leg is encrypted either way. The TLS/SRTP options here configure the TRUNK." >&2
@@ -56,7 +56,7 @@ if [ "$TRUNK_TLS" = 1 ]; then
   done
   if [ -z "$CERTS" ]; then
     echo "TRUNK_TLS=1 needs ca.pem + asterisk.{pem,key}. On the Mac:" >&2
-    echo "  OUT=lan DIALLER_IP=$DIALLER_HOST ASTERISK_IP=$PBX_HOST sh harness/tls/gen_certs.sh" >&2
+    echo "  OUT=lan DIALPARK_IP=$DIALPARK_HOST ASTERISK_IP=$PBX_HOST sh harness/tls/gen_certs.sh" >&2
     echo "  scp -r harness/tls/lan $(hostname):~/" >&2
     exit 1
   fi
@@ -75,7 +75,7 @@ ETC=/etc/asterisk
 [ -d "$ETC.dist" ] || cp -a "$ETC" "$ETC.dist"     # keep the package's originals once
 if [ "$LINES" = 1 ]; then
   # Lines mode: the light server registers a line per device instead of
-  # trunking (SPEC §6 item 3c). No @DIALLER_HOST@ substitution — the address
+  # trunking (SPEC §6 item 3c). No @DIALPARK_HOST@ substitution — the address
   # we call it back on is whatever its REGISTER advertises — and no
   # identify section, which is the point (see pjsip-lines.conf).
   echo "== installing configs into $ETC (lines mode: the server registers to us)"
@@ -83,8 +83,8 @@ if [ "$LINES" = 1 ]; then
   cp extensions-lines.conf "$ETC/extensions.conf"
   for f in modules.conf rtp.conf logger.conf; do cp "$f" "$ETC/$f"; done
 else
-  echo "== installing configs into $ETC (trunk peer $DIALLER_HOST)"
-  sed -e "s|@DIALLER_HOST@|$DIALLER_HOST|g" pjsip.conf > "$ETC/pjsip.conf"
+  echo "== installing configs into $ETC (trunk peer $DIALPARK_HOST)"
+  sed -e "s|@DIALPARK_HOST@|$DIALPARK_HOST|g" pjsip.conf > "$ETC/pjsip.conf"
   for f in extensions.conf modules.conf rtp.conf logger.conf; do cp "$f" "$ETC/$f"; done
 fi
 
@@ -116,15 +116,15 @@ require_client_cert=yes
 verify_server=yes
 EOF
   # Move the trunk endpoint onto it, exactly as the container build does.
-  awk '/^\[dialler\]$/ { d=1 } /^\[/ && !/^\[dialler\]$/ { d=0 } \
+  awk '/^\[dialpark\]$/ { d=1 } /^\[/ && !/^\[dialpark\]$/ { d=0 } \
        d && /^contact=sip:/ { print $0 "\\;transport=tls"; next } \
        { print } \
        d && /^type=endpoint$/ { print "transport=transport-tls" }' \
     "$ETC/pjsip.conf" > "$ETC/pjsip.conf.new" && mv "$ETC/pjsip.conf.new" "$ETC/pjsip.conf"
 fi
 if [ "$TRUNK_SRTP" = 1 ]; then
-  echo "== trunk SRTP: media_encryption=sdes on the dialler endpoint"
-  awk '/^\[dialler\]$/ { d=1 } /^\[/ && !/^\[dialler\]$/ { d=0 } { print } \
+  echo "== trunk SRTP: media_encryption=sdes on the dialpark endpoint"
+  awk '/^\[dialpark\]$/ { d=1 } /^\[/ && !/^\[dialpark\]$/ { d=0 } { print } \
        d && /^type=endpoint$/ { print "media_encryption=sdes" }' \
     "$ETC/pjsip.conf" > "$ETC/pjsip.conf.new" && mv "$ETC/pjsip.conf.new" "$ETC/pjsip.conf"
   [ "$TRUNK_TLS" = 1 ] || echo "WARNING: SDES without TLS sends the media keys in cleartext SDP; the server will warn too" >&2
@@ -169,4 +169,4 @@ if [ "$TRUNK_TLS" = 1 ] || [ "$TRUNK_SRTP" = 1 ]; then
   echo
   echo "== now on the Mac:  $( [ "$TRUNK_TLS" = 1 ] && printf 'TRUNK_TLS=1 ' )$( [ "$TRUNK_SRTP" = 1 ] && printf 'TRUNK_SRTP=sdes ' )ASTERISK_HOST=$PBX_HOST make dev-server"
 fi
-echo "== done. Phone: register 101/dialler101 to $PBX_HOST:5060 UDP; console: sudo asterisk -rvvv"
+echo "== done. Phone: register 101/dialpark101 to $PBX_HOST:5060 UDP; console: sudo asterisk -rvvv"

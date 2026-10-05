@@ -4,7 +4,7 @@
   INVITE to a destination the server itself cannot route → 404. With a PBX
   trunk configured (the harness has one) every user resolves to the PBX, so
   "a user nobody provisioned" is the PBX's decision; what the server still
-  refuses on its own is a request with no user at all (INVITE sip:dialler).
+  refuses on its own is a request with no user at all (INVITE sip:dialpark).
 
   The initial INVITE is Digest-challenged first (401, ACKed), then re-sent
   with the enrolled device's credential; only an authenticated caller learns
@@ -13,11 +13,11 @@
 <scenario name="invite_unknown_404">
   <send>
     <![CDATA[
-      INVITE sip:dialler SIP/2.0
+      INVITE sip:dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag03[call_number]
-      To: <sip:dialler>
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag03[call_number]
+      To: <sip:dialpark>
       Call-ID: [call_id]
       CSeq: 1 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
@@ -36,11 +36,11 @@
   <recv response="401" auth="true" timeout="5000"/>
   <send>
     <![CDATA[
-      ACK sip:dialler SIP/2.0
+      ACK sip:dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag03[call_number]
-      To: <sip:dialler>[peer_tag_param]
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag03[call_number]
+      To: <sip:dialpark>[peer_tag_param]
       Call-ID: [call_id]
       CSeq: 1 ACK
       Content-Length: 0
@@ -48,11 +48,11 @@
   </send>
   <send>
     <![CDATA[
-      INVITE sip:dialler SIP/2.0
+      INVITE sip:dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag03[call_number]
-      To: <sip:dialler>
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag03[call_number]
+      To: <sip:dialpark>
       Call-ID: [call_id]
       CSeq: 2 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
@@ -73,11 +73,11 @@
   <recv response="404" timeout="5000"/>
   <send>
     <![CDATA[
-      ACK sip:dialler SIP/2.0
+      ACK sip:dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag03[call_number]
-      To: <sip:dialler>[peer_tag_param]
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag03[call_number]
+      To: <sip:dialpark>[peer_tag_param]
       Call-ID: [call_id]
       CSeq: 2 ACK
       Content-Length: 0

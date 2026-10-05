@@ -10,8 +10,8 @@
     "directory_version": 42,
     "sip": {
       "user": "201",
-      "domain": "dialler.example.local",
-      "host": "dialler.example.local",
+      "domain": "dialpark.example.local",
+      "host": "dialpark.example.local",
       "port": 5061,
       "transport": "tls"
     },
@@ -19,6 +19,6 @@
       "version": 3,
       "ssids": ["Office", "Office-5G"]
     },
-    "licence": "DL1.eyJ2IjoxfQ.c2ln"
+    "licence": "DP1.eyJ2IjoxfQ.c2ln"
   }
 }

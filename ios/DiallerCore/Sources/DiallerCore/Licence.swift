@@ -36,7 +36,7 @@ public enum LicenceVerifier {
     /// old one, so it is a decision, not a routine.
     public static let vendorPublicKey = Data(base64Encoded: "i/rXva6yT8+f+Yku+odVRoQTkEw1w2rTAriuI8yWfos=")!
 
-    static let prefix = "DL1."
+    static let prefix = "DP1."
     static let maxLength = 4096
 
     /// Verify a token: signature with `key`, then `valid_until` against `now`.

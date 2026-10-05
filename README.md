@@ -1,8 +1,10 @@
-# Dialler
+# Dialpark
 
-Native iOS SIP softphone with on-prem wakeups (no APNS) and an on-prem light
-server that is its own exchange. [SPEC.md](SPEC.md) is the source of truth for
-architecture and phases; this file is the map of the repo.
+Dialpark is an on-prem call server that is its own exchange and wakes phones
+without APNS. Dialler is the iOS SIP softphone that enrols to a Dialpark
+server: the app keeps the Dialler name; the system and its servers are
+Dialpark. [SPEC.md](SPEC.md) is the source of truth for architecture and
+phases; this file is the map of the repo.
 
 | Path | What | Status |
 |---|---|---|
@@ -85,8 +87,8 @@ the phone keeps whatever it has.
 
 ### The SIP domain
 
-Users are SIP addresses like `sip:201@dialler`; the part after the `@` is
-the **SIP domain**, set with `-local-domain` (`dialler` in `make dev-server`
+Users are SIP addresses like `sip:201@dialpark`; the part after the `@` is
+the **SIP domain**, set with `-local-domain` (`dialpark` in `make dev-server`
 and in the docker harness; unset, it defaults to the server's own address).
 It plays the role a domain plays in an email address, naming who owns those
 identities, and need not be a DNS name. The server uses it for:
@@ -186,7 +188,7 @@ Dev and the harness use a licence issued for a fixed install id that
 
 #### Issuing a licence (vendor only)
 
-`make licence-tool` builds `bin/dialler-licence`. The private key is made
+`make licence-tool` builds `bin/dialpark-licence`. The private key is made
 once, kept offline, and never enters the repo (`.gitignore` covers
 `vendor.key`); a second key pair would strand every licence issued under
 the first.
@@ -195,32 +197,32 @@ the first.
 # once: writes vendor.key and vendor.pub into DIR and prints the public-key
 # literals to paste into server/internal/licence/vendorkey.go and
 # ios/DiallerCore/Sources/DiallerCore/Licence.swift
-bin/dialler-licence keygen -out DIR
+bin/dialpark-licence keygen -out DIR
 
 # per customer: the install id is read off their admin Licence page;
 # -valid-until is the last day of validity (expires at the start of the
-# next day, UTC); prints the DL1… token to paste on that page
-bin/dialler-licence issue -key DIR/vendor.key -customer "Acme Ltd" \
+# next day, UTC); prints the DP1… token to paste on that page
+bin/dialpark-licence issue -key DIR/vendor.key -customer "Acme Ltd" \
     -install-id 0123456789abcdef0123456789abcdef -seats 25 -valid-until 2027-12-31
 
 # check any token against the compiled-in key (or -pub DIR/vendor.pub)
-bin/dialler-licence inspect DL1.…
+bin/dialpark-licence inspect DP1.…
 ```
 
 `issue` also takes `-id` to choose the licence id (default `lic_` plus
 eight random characters). A renewal is a new `issue` for the same install
 id, pasted over the old one.
 
-## The admin UI: dialler-admin
+## The admin UI: dialpark-admin
 
-`dialler-admin` is the operator's web UI (SPEC §6 item 9c), a second
+`dialpark-admin` is the operator's web UI (SPEC §6 item 9c), a second
 binary that talks only to the call server's admin API on 8081 and to
 nothing else. It holds the admin token and one operator password, serves
 HTTPS on its own certificate, and keeps no state the API cannot re-read,
 so it can be restarted or redeployed with no effect on a call.
 
 ```sh
-make dev-admin            # beside `make dev-server`; sign in as admin, password "dialler" (data/admin/password)
+make dev-admin            # beside `make dev-server`; sign in as admin, password "dialpark" (data/admin/password)
 open https://127.0.0.1:8443
 ```
 
@@ -233,7 +235,7 @@ purge), **Calls** (what is bridged right now) and **Server** (identity,
 certificate expiry, trunk and lines, logging, recent events).
 
 Production flags: `-listen`, `-server https://127.0.0.1:8081`,
-`-admin-token-file` (the same file `dialler-server` was started with),
+`-admin-token-file` (the same file `dialpark-server` was started with),
 `-server-ca` (the call server's certificate; `-insecure` only against the
 self-signed dev one), `-password-file`, `-tls-cert`/`-tls-key` (self-signed
 and kept in `-data-dir` when absent). Every form carries the version it
@@ -248,7 +250,7 @@ there is nothing to download and the binary stays standard library only.
 ## Server packages
 
 ```
-cmd/dialler-server     wiring + flags
+cmd/dialpark-server     wiring + flags
 internal/wire          protocol envelope, bodies, framing        (golden tests)
 internal/gateway       TLS signal gateway: hello/welcome, wake fan-out, replay, supersede, idle
 internal/enroll        device credentials, enrolment codes + the claim route, admin API, device-auth middleware
@@ -269,7 +271,7 @@ Dependencies are vendored (`server/vendor`), so builds and tests are offline.
 ## Headless call test
 
 ```sh
-make harness-call      # 201 dials 202 through dialler-server; asserts the callee's recorded audio
+make harness-call      # 201 dials 202 through dialpark-server; asserts the callee's recorded audio
 make harness-wake      # callee asleep: gateway wake → fake app registers it → bridge → audio
 make harness-up        # server + Asterisk, provisioned
 make harness-test      # SIPp: TLS register, offline → 480, unknown → 404, unregister, plain TCP refused
@@ -293,7 +295,7 @@ The roadmap lives in [SPEC.md §6](SPEC.md) ("Remaining near-term"). Items 6–9
 (added 2026-09-21) are the next tranche, in build order: a Recents tab,
 per-device directories with favourites, search and in-app editing, first-run
 enrolment by QR or code with the Status tab hidden behind a gesture, and a
-separate `dialler-admin` web UI (`cmd/dialler-admin`, `internal/qr`) that
+separate `dialpark-admin` web UI (`cmd/dialpark-admin`, `internal/qr`) that
 manages devices and directories (CSV up/down) through the admin API. The
 mechanism and the isolation rule are in SPEC §4.8: nothing the admin does
 interrupts the call server or any device other than the one named.

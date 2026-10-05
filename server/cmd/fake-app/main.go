@@ -19,12 +19,12 @@ import (
 	"os"
 	"time"
 
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/wire"
 )
 
 func main() {
 	var (
-		server   = flag.String("server", "dialler:7443", "gateway host:port")
+		server   = flag.String("server", "dialpark:7443", "gateway host:port")
 		deviceID = flag.String("device", "", "enrolled device id")
 		token    = flag.String("token", "", "device token from enrolment")
 		kind     = flag.String("kind", "extension", "connection kind: app | extension")

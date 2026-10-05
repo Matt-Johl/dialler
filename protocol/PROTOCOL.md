@@ -1,4 +1,4 @@
-# Dialler wire protocol — v1 (frozen)
+# Dialpark wire protocol — v1 (frozen)
 
 This is the single protocol spoken between every client transport
 (`WebSocketTransport` foreground LAN socket, `LPCTransport` extension socket,
@@ -56,7 +56,7 @@ requires bumping `v`.
 
 | Type | Body | Purpose |
 |---|---|---|
-| `welcome` | `session_id`, `heartbeat_seconds`, `server_time`, `directory_version`, `sip{user,domain,host,port,transport}` (optional), `config{version,ssids[]}` (optional, see `config`), `licence` (optional, SPEC §4.9) | Successful `hello`. Connection is now live. If `sip` is present the app SHOULD register that user agent immediately so calls reach it directly while it runs (SPEC §2 foreground path). `licence` is the server's product licence token (`DL1.<payload>.<signature>`): the client MUST verify its Ed25519 signature with the vendor key compiled into it and its `valid_until` against the client's own clock, and MUST treat a missing, unverifiable or expired token as a fatal `unauthorized` with message `licence missing`, `licence invalid` or `licence expired`. Additive, no bump: an older client ignores the field and is gated by the server alone. |
+| `welcome` | `session_id`, `heartbeat_seconds`, `server_time`, `directory_version`, `sip{user,domain,host,port,transport}` (optional), `config{version,ssids[]}` (optional, see `config`), `licence` (optional, SPEC §4.9) | Successful `hello`. Connection is now live. If `sip` is present the app SHOULD register that user agent immediately so calls reach it directly while it runs (SPEC §2 foreground path). `licence` is the server's product licence token (`DP1.<payload>.<signature>`): the client MUST verify its Ed25519 signature with the vendor key compiled into it and its `valid_until` against the client's own clock, and MUST treat a missing, unverifiable or expired token as a fatal `unauthorized` with message `licence missing`, `licence invalid` or `licence expired`. Additive, no bump: an older client ignores the field and is gated by the server alone. |
 | `pong` | — | Answer to `ping`. |
 | `wake` | `call_id`, `from{display_name,uri}`, `to{display_name,uri}`, `sip{host,port,transport}`, `expires_at` | Incoming call. Client MUST report to CallKit immediately and then register SIP to `sip`. |
 | `wake_cancel` | `call_id`, `reason` (`"caller_hangup"` \| `"answered_elsewhere"` \| `"timeout"`) | Stop ringing. |

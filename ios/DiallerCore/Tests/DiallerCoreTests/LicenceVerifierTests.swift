@@ -16,8 +16,8 @@ final class LicenceVerifierTests: XCTestCase {
     /// Sign a payload the way the vendor tool does.
     func sign(_ payload: String, with k: Curve25519.Signing.PrivateKey? = nil) throws -> String {
         let p = b64url(Data(payload.utf8))
-        let sig = try (k ?? priv).signature(for: Data(("DL1." + p).utf8))
-        return "DL1." + p + "." + b64url(sig)
+        let sig = try (k ?? priv).signature(for: Data(("DP1." + p).utf8))
+        return "DP1." + p + "." + b64url(sig)
     }
 
     let good = #"{"v":1,"id":"lic_X","customer":"Example Ltd","install_id":"abc","seats":10,"issued_at":"2026-10-03T12:00:00Z","valid_until":"2027-10-03T12:00:00Z"}"#
@@ -42,20 +42,21 @@ final class LicenceVerifierTests: XCTestCase {
         XCTAssertEqual(LicenceVerifier.verify("", now: now, key: key), .missing)
         let tok = try sign(good)
         let parts = tok.split(separator: ".").map(String.init)
-        XCTAssertEqual(LicenceVerifier.verify("DL2." + parts[1] + "." + parts[2], now: now, key: key), .invalid, "prefix")
-        XCTAssertEqual(LicenceVerifier.verify("DL1." + parts[1], now: now, key: key), .invalid, "two parts")
+        XCTAssertEqual(LicenceVerifier.verify("DP2." + parts[1] + "." + parts[2], now: now, key: key), .invalid, "prefix")
+        XCTAssertEqual(LicenceVerifier.verify("DL1." + parts[1] + "." + parts[2], now: now, key: key), .invalid, "old DL1 prefix")
+        XCTAssertEqual(LicenceVerifier.verify("DP1." + parts[1], now: now, key: key), .invalid, "two parts")
         XCTAssertEqual(LicenceVerifier.verify(tok + ".x", now: now, key: key), .invalid, "four parts")
-        XCTAssertEqual(LicenceVerifier.verify("DL1.!!!." + parts[2], now: now, key: key), .invalid, "bad base64")
+        XCTAssertEqual(LicenceVerifier.verify("DP1.!!!." + parts[2], now: now, key: key), .invalid, "bad base64")
         // Edit the expiry inside the signed payload.
         let edited = b64url(Data(good.replacingOccurrences(of: "2027-10-03", with: "2037-10-03").utf8))
-        XCTAssertEqual(LicenceVerifier.verify("DL1." + edited + "." + parts[2], now: now, key: key), .invalid, "edited payload")
+        XCTAssertEqual(LicenceVerifier.verify("DP1." + edited + "." + parts[2], now: now, key: key), .invalid, "edited payload")
         // Signed by someone else.
         XCTAssertEqual(LicenceVerifier.verify(try sign(good, with: Curve25519.Signing.PrivateKey()), now: now, key: key), .invalid, "another key")
         // Signed, but not a licence this build understands.
         XCTAssertEqual(LicenceVerifier.verify(try sign(#"{"v":2,"valid_until":"2027-10-03T12:00:00Z"}"#), now: now, key: key), .invalid, "v2")
         XCTAssertEqual(LicenceVerifier.verify(try sign(#"{"v":1}"#), now: now, key: key), .invalid, "no date")
         XCTAssertEqual(LicenceVerifier.verify(try sign("not json"), now: now, key: key), .invalid, "not json")
-        XCTAssertEqual(LicenceVerifier.verify("DL1." + String(repeating: "A", count: 5000) + "." + parts[2], now: now, key: key), .invalid, "too long")
+        XCTAssertEqual(LicenceVerifier.verify("DP1." + String(repeating: "A", count: 5000) + "." + parts[2], now: now, key: key), .invalid, "too long")
     }
 
     func testTheCompiledInKeyIsTheVendors() {

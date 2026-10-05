@@ -1,7 +1,7 @@
 # Headless harness
 
 Everything here runs without a phone or a human (SPEC §7.2). Status on
-2026-09-05: `dialler`, `asterisk`, and the `sipp` conformance suite build and
+2026-09-05: `dialpark`, `asterisk`, and the `sipp` conformance suite build and
 pass on Apple silicon (Docker Desktop 29). The baresip phones are the next
 piece to verify. Each piece is independent so failures are easy to isolate.
 
@@ -27,19 +27,19 @@ audio. Passing on 2026-09-05 (callee RMS ≈ 6500 against a threshold of 200).
 
 | Path | Role |
 |---|---|
-| `dialler/` | Builds `dialler-server` from `../server` into a distroless image |
-| `asterisk/` | Alpine-packaged Asterisk (Debian 12 dropped it) as the customer PBX peer: desk phone `100` (G.722 first, G.711 fallback), trunk peer `dialler` |
-| `tls/` | `gen_certs.sh` — a private CA and a certificate each for the server and the PBX, for the TLS trunk (`make harness-trunk-tls`, SPEC §6 item 3b). Generated on demand and gitignored; only the script is committed. The default set is for the compose addresses; `OUT=lan DIALLER_IP=… ASTERISK_IP=…` makes a second set for the Ubuntu PBX (see `asterisk-native/README.md`), because a certificate's SANs must be the addresses each side is really dialled by |
+| `dialpark/` | Builds `dialpark-server` from `../server` into a distroless image |
+| `asterisk/` | Alpine-packaged Asterisk (Debian 12 dropped it) as the customer PBX peer: desk phone `100` (G.722 first, G.711 fallback), trunk peer `dialpark` |
+| `tls/` | `gen_certs.sh` — a private CA and a certificate each for the server and the PBX, for the TLS trunk (`make harness-trunk-tls`, SPEC §6 item 3b). Generated on demand and gitignored; only the script is committed. The default set is for the compose addresses; `OUT=lan DIALPARK_IP=… ASTERISK_IP=…` makes a second set for the Ubuntu PBX (see `asterisk-native/README.md`), because a certificate's SANs must be the addresses each side is really dialled by |
 | `sipp/` | App-leg conformance: REGISTER over TLS succeeds, plain TCP is refused, INVITE returns 501 until the B2BUA exists |
 | `baresip/` | Two headless phones (`211`, `212`) registering over TLS with WAV audio in/out; SRTP mandatory on that leg (`mediaenc=srtp-mand`, set by `entrypoint.sh` for TLS), plain RTP for the desk phone on UDP |
-| `provision.sh` | Installs the dev licence (`harness/dialler/licence`, issued for the fixed install id in `harness/dialler/install.id`), then enrols the two phones (and dev-a, dev-s) and seeds each device's directory via the admin API. A data volume that predates licensing holds another install id and refuses it: `make harness-down` (down -v) first |
+| `provision.sh` | Installs the dev licence (`harness/dialpark/licence`, issued for the fixed install id in `harness/dialpark/install.id`), then enrols the two phones (and dev-a, dev-s) and seeds each device's directory via the admin API. A data volume that predates licensing holds another install id and refuses it: `make harness-down` (down -v) first |
 | `licence_test.sh` | The licence bench: install, a refused paste, a 2-seat licence suspending the newest holders at the gateway and on enrolment, restore (`make harness-licence`) |
 | `call_test.sh` | End-to-end call 211 → server → 212 with media asserted (`make harness-call`) |
 | `wake_test.sh` | Callee starts with no SIP UA; `fake-app` on the gateway receives the wake, creates the UA via `uanew`, bridge completes, media asserted (`make harness-wake`) |
 | `innet.sh` | Runs a repo script inside the compose network, for hosts that cannot reach published localhost ports |
 | `flow_gone_test.sh` | Callee registered then SIGKILLed (no clean unregister): the server must detect the dead connection and take the wake path, never dial the stale route (`make harness-flow-gone`) |
 | `qos_test.sh` + `qos/` | **QoS gate** (`make harness-qos`): a tcpdump sidecar in the server's network namespace (profile `qos`, started last like `netem`) captures one 211 → echo call and requires every RTP packet the server sent to carry DSCP EF (`tos 0xb8`) and every SIP/TLS packet CS3 (`tos 0x60`). See SPEC §4.4 rule 5a. |
-| `probe_call.sh` | **NAT regression** (`make probe-call`, macOS host only): the real baresip engine on this Mac registers through Docker's port forwarding, a genuine NAT, and 212 calls it. `DIALLER_REWRITE_CONTACT=false make probe-call` must fail. |
+| `probe_call.sh` | **NAT regression** (`make probe-call`, macOS host only): the real baresip engine on this Mac registers through Docker's port forwarding, a genuine NAT, and 212 calls it. `DIALPARK_REWRITE_CONTACT=false make probe-call` must fail. |
 
 Why the NAT case needs the host: the container phones bind their outbound
 TLS connection to their listening port, so their advertised Contact equals
@@ -51,7 +51,7 @@ the Mac. This is the bug that reached a real phone on 2026-09-06.
 
 ## Addresses and ports
 
-`make harness-up` advertises this Mac's en0 address (`DIALLER_PUBLIC_HOST`)
+`make harness-up` advertises this Mac's en0 address (`DIALPARK_PUBLIC_HOST`)
 to phones for SIP and media, and publishes 7443 (signal), 5061 (SIP/TLS),
 8080 (HTTPS, device API), 8081 (HTTPS, admin API) and UDP 20000–20100 (relayed media) on the host. The docker
 phones reach the relay through the same published ports, so one setting
@@ -62,28 +62,28 @@ serves both real devices and the container tests.
 ```sh
 python3 harness/baresip/media/gen_tone.py                       # once: creates in.wav (an aperiodic burst pattern: the quality gates correlate recordings against it)
 # Next to a running `make dev-server`: move the published ports and pin the
-# public host, e.g. DIALLER_PUBLIC_HOST=dialler DIALLER_SIGNAL_HOSTPORT=7444
-# DIALLER_SIP_HOSTPORT=5063 DIALLER_HTTP_HOSTPORT=8082 DIALLER_ADMIN_HOSTPORT=8083 DIALLER_RTP_MIN=20200
-# DIALLER_RTP_MAX=20300 make harness-…  (the Mac-address default would send
+# public host, e.g. DIALPARK_PUBLIC_HOST=dialpark DIALPARK_SIGNAL_HOSTPORT=7444
+# DIALPARK_SIP_HOSTPORT=5063 DIALPARK_HTTP_HOSTPORT=8082 DIALPARK_ADMIN_HOSTPORT=8083 DIALPARK_RTP_MIN=20200
+# DIALPARK_RTP_MAX=20300 make harness-…  (the Mac-address default would send
 # a phone's responses to the native server on 5061).
 # Identities: dev-ha/211 and dev-hb/212 are the docker phones; the simulator
 # harness (sim_call.sh) and the Mac engine probe are dev-s/203; dev-a/201 is
 # the REAL app's and no test dials it (ring_native/ring_sim do, on purpose),
 # so a real phone pointed at this server never takes a test's calls.
-docker compose -f harness/docker-compose.yml up --build -d dialler asterisk
+docker compose -f harness/docker-compose.yml up --build -d dialpark asterisk
 sh harness/provision.sh                                          # prints device tokens
 docker compose -f harness/docker-compose.yml --profile test run --rm sipp
 docker compose -f harness/docker-compose.yml --profile test up baresip-a baresip-b
 ```
 
-Server logs (`docker compose logs -f dialler`) show `sip register user=211`
+Server logs (`docker compose logs -f dialpark`) show `sip register user=211`
 when a baresip phone binds.
 
 ## What is deliberately missing until the Phase 0 engine spike
 
 - **INVITE handling / B2BUA.** The registrar answers 501. `invite_refused.xml`
   pins that so the switch to real call setup is a deliberate scenario change.
-- **Trunk-side listener.** Asterisk's `dialler` peer points at `dialler:5060`
+- **Trunk-side listener.** Asterisk's `dialpark` peer points at `dialpark:5060`
   over TCP, which nothing listens on yet. Asterisk will log the peer as
   unreachable; that is expected.
 - **SIP Digest on the app leg.** Registration is accepted for any provisioned

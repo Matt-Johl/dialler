@@ -17,33 +17,33 @@ fmt:
 	cd server && gofmt -l -w .
 
 server:
-	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-server ./cmd/dialler-server
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialpark-server ./cmd/dialpark-server
 
 # Dev run: self-signed TLS, data in ./data, admin token printed in the log.
 run: server
-	@test -f data/install.id || { mkdir -p data && cp harness/dialler/install.id data/install.id; }
-	./bin/dialler-server -data-dir ./data -admin-token dev
+	@test -f data/install.id || { mkdir -p data && cp harness/dialpark/install.id data/install.id; }
+	./bin/dialpark-server -data-dir ./data -admin-token dev
 
-# dialler-admin, the operator's web UI (SPEC §6 item 9c): a second binary
+# dialpark-admin, the operator's web UI (SPEC §6 item 9c): a second binary
 # that talks only to the call server's admin API on 8081.
 admin:
-	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialler-admin ./cmd/dialler-admin
+	cd server && go build -ldflags "-X main.version=$$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)" -o ../bin/dialpark-admin ./cmd/dialpark-admin
 
 # The vendor's licence tool (SPEC §4.9): keygen once, issue per customer,
 # inspect a token. Runs offline; the private key never enters the repo.
 licence-tool:
-	cd server && go build -o ../bin/dialler-licence ./cmd/dialler-licence
+	cd server && go build -o ../bin/dialpark-licence ./cmd/dialpark-licence
 
 # Dev run beside `make dev-server` (token "harness") or `make run` (token
 # "dev": ADMIN_TOKEN=dev make dev-admin). Sign in as "admin"; the password lives in
-# data/admin/password, created as "dialler" on first run; the UI serves
+# data/admin/password, created as "dialpark" on first run; the UI serves
 # https://127.0.0.1:8443 on a self-signed certificate kept in data/admin.
 ADMIN_TOKEN ?= harness
 dev-admin: admin
 	@mkdir -p data/admin
-	@test -f data/admin/password || { printf 'dialler\n' > data/admin/password; echo "created data/admin/password (password: dialler)"; }
-	@grep -q '^pbkdf2' data/admin/password && { echo "data/admin/password is a hash from the old UI; dialler-admin reads the plain password. Replace it: printf 'dialler\\n' > data/admin/password"; exit 1; } || true
-	./bin/dialler-admin -listen 127.0.0.1:8443 -server https://127.0.0.1:8081 -admin-token $(ADMIN_TOKEN) -insecure \
+	@test -f data/admin/password || { printf 'dialpark\n' > data/admin/password; echo "created data/admin/password (password: dialpark)"; }
+	@grep -q '^pbkdf2' data/admin/password && { echo "data/admin/password is a hash from the old UI; dialpark-admin reads the plain password. Replace it: printf 'dialpark\\n' > data/admin/password"; exit 1; } || true
+	./bin/dialpark-admin -listen 127.0.0.1:8443 -server https://127.0.0.1:8081 -admin-token $(ADMIN_TOKEN) -insecure \
 	  -password-file data/admin/password -data-dir data/admin
 
 tone:
@@ -52,12 +52,12 @@ tone:
 # The address the server advertises to phones for SIP and media. Defaults to
 # this Mac's en0 address so real devices work; inside-docker-only tests are
 # fine with it too because the media ports are published on the host.
-export DIALLER_PUBLIC_HOST ?= $(shell ipconfig getifaddr en0 2>/dev/null || ifconfig en0 2>/dev/null | awk '/inet /{print $$2; exit}' || echo dialler)
+export DIALPARK_PUBLIC_HOST ?= $(shell ipconfig getifaddr en0 2>/dev/null || ifconfig en0 2>/dev/null | awk '/inet /{print $$2; exit}' || echo dialpark)
 
 harness-up: tone
-	@echo "advertising public host $(DIALLER_PUBLIC_HOST)"
-	docker compose -f harness/docker-compose.yml up --build -d dialler asterisk
-	sleep 2 && sh harness/innet.sh dialler-harness_default harness/provision.sh
+	@echo "advertising public host $(DIALPARK_PUBLIC_HOST)"
+	docker compose -f harness/docker-compose.yml up --build -d dialpark asterisk
+	sleep 2 && sh harness/innet.sh dialpark-harness_default harness/provision.sh
 
 harness-test:
 	docker compose -f harness/docker-compose.yml --profile test run --rm --build sipp
@@ -91,7 +91,7 @@ harness-peer-gone:
 # registers through Docker's port forwarding — a genuine NAT — and must be
 # reached over its own TLS connection with symmetric RTP.
 #   make probe-call                                 # PASS
-#   DIALLER_REWRITE_CONTACT=false make probe-call   # must FAIL (the bug this guards)
+#   DIALPARK_REWRITE_CONTACT=false make probe-call   # must FAIL (the bug this guards)
 probe-call:
 	sh harness/probe_call.sh
 
@@ -184,7 +184,7 @@ harness-pbx-lines:
 harness-admin:
 	sh harness/admin_test.sh
 
-# dialler-admin end to end: the real UI against the real server, driven
+# dialpark-admin end to end: the real UI against the real server, driven
 # with curl inside the compose network (SPEC §6 item 9c).
 harness-admin-ui:
 	sh harness/admin_ui_test.sh
@@ -250,23 +250,23 @@ ASTERISK_HOST ?=
 TRUNK_TLS ?= 0
 TRUNK_SRTP ?=
 LAN_TLS = harness/tls/lan
-TRUNK_TLS_FLAGS = $(if $(filter 1,$(TRUNK_TLS)),-trunk "sip:$(ASTERISK_HOST):5061;transport=tls" -trunk-tls-cert $(LAN_TLS)/dialler.pem -trunk-tls-key $(LAN_TLS)/dialler.key -trunk-tls-ca $(LAN_TLS)/ca.pem,-trunk "sip:$(ASTERISK_HOST):5060;transport=udp")
+TRUNK_TLS_FLAGS = $(if $(filter 1,$(TRUNK_TLS)),-trunk "sip:$(ASTERISK_HOST):5061;transport=tls" -trunk-tls-cert $(LAN_TLS)/dialpark.pem -trunk-tls-key $(LAN_TLS)/dialpark.key -trunk-tls-ca $(LAN_TLS)/ca.pem,-trunk "sip:$(ASTERISK_HOST):5060;transport=udp")
 # PBX_MODE=lines makes the server register a line per device to the PBX
 # instead of trunking to it (SPEC §6 item 3c). The PBX must have been
 # installed the same way (LINES=1 sh install-ubuntu.sh), and each device
 # needs its credential, which provision.sh seeds for dev-a under PBX_LINES=1.
 PBX_MODE ?= trunk
 PBX_MODE_FLAGS = $(if $(filter lines,$(PBX_MODE)),-pbx-mode=lines -pbx-domain=$(ASTERISK_HOST),)
-TRUNK_FLAGS = $(if $(ASTERISK_HOST),$(TRUNK_TLS_FLAGS) -trunk-addr :5062 -trunk-external-host $(DIALLER_PUBLIC_HOST) $(if $(TRUNK_SRTP),-trunk-srtp $(TRUNK_SRTP),) $(PBX_MODE_FLAGS),)
+TRUNK_FLAGS = $(if $(ASTERISK_HOST),$(TRUNK_TLS_FLAGS) -trunk-addr :5062 -trunk-external-host $(DIALPARK_PUBLIC_HOST) $(if $(TRUNK_SRTP),-trunk-srtp $(TRUNK_SRTP),) $(PBX_MODE_FLAGS),)
 dev-server: server tone
-	@echo "native server on $(DIALLER_PUBLIC_HOST); enrol the app with the dev-a code printed below (15 min), or the dev path: host $(DIALLER_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed (fresh data dir only — an enrolled dev-a keeps its own token)"
+	@echo "native server on $(DIALPARK_PUBLIC_HOST); enrol the app with the dev-a code printed below (15 min), or the dev path: host $(DIALPARK_PUBLIC_HOST), port 7443, dev-a / tok_dev_a_harness_fixed (fresh data dir only — an enrolled dev-a keeps its own token)"
 	@$(if $(filter lines,$(PBX_MODE)),$(if $(ASTERISK_HOST),true,{ echo "PBX_MODE=lines needs a PBX to register to: set ASTERISK_HOST=<ubuntu-ip>"; exit 1; }),true)
 	@echo "pbx: $(if $(ASTERISK_HOST),$(if $(filter lines,$(PBX_MODE)),LINES — registering 201 to Asterisk at $(ASTERISK_HOST):5060; the PBX must have LINES=1 too,trunk to Asterisk at $(ASTERISK_HOST):$(if $(filter 1,$(TRUNK_TLS)),5061 over TLS,5060 over UDP))$(if $(TRUNK_SRTP), ; media SRTP $(TRUNK_SRTP),); listener :5062,none (set ASTERISK_HOST=<ubuntu-ip> for the PBX))"
-	@$(if $(filter 1,$(TRUNK_TLS)),test -f $(LAN_TLS)/dialler.pem || { echo "no $(LAN_TLS)/dialler.pem — run: OUT=lan DIALLER_IP=$(DIALLER_PUBLIC_HOST) ASTERISK_IP=$(ASTERISK_HOST) sh harness/tls/gen_certs.sh"; exit 1; },true)
-	( sleep 2 && DIALLER_API=https://127.0.0.1:8081 PBX_LINES=$(if $(filter lines,$(PBX_MODE)),1,0) sh harness/provision.sh ) &
+	@$(if $(filter 1,$(TRUNK_TLS)),test -f $(LAN_TLS)/dialpark.pem || { echo "no $(LAN_TLS)/dialpark.pem — run: OUT=lan DIALPARK_IP=$(DIALPARK_PUBLIC_HOST) ASTERISK_IP=$(ASTERISK_HOST) sh harness/tls/gen_certs.sh"; exit 1; },true)
+	( sleep 2 && DIALPARK_API=https://127.0.0.1:8081 PBX_LINES=$(if $(filter lines,$(PBX_MODE)),1,0) sh harness/provision.sh ) &
 	@mkdir -p data/logs
-	@test -f data/install.id || cp harness/dialler/install.id data/install.id
-	./bin/dialler-server -data-dir ./data -admin-token harness -public-host $(DIALLER_PUBLIC_HOST) -local-domain dialler \
+	@test -f data/install.id || cp harness/dialpark/install.id data/install.id
+	./bin/dialpark-server -data-dir ./data -admin-token harness -public-host $(DIALPARK_PUBLIC_HOST) -local-domain dialpark \
 	  -http-addr 0.0.0.0:8080 -ring-timeout 30s -rtp-min 20000 -rtp-max 20100 $(TRUNK_FLAGS) $(DEV_SERVER_FLAGS) \
 	  2>&1 | tee -a data/logs/dev-server.log
 # The server log is also kept in data/logs/dev-server.log, and devices upload
@@ -358,11 +358,11 @@ re-udp-dead-probe:
 
 # Headless run of the real baresip engine on this Mac against the docker
 # server: registers 203 (dev-s, the simulator/probe identity), answers a call if one arrives. Needs the macOS slice
-# (ios-vendor) and a server started with DIALLER_PUBLIC_HOST=<mac-ip>.
+# (ios-vendor) and a server started with DIALPARK_PUBLIC_HOST=<mac-ip>.
 #   make engine-probe HOST=$$(ipconfig getifaddr en0)
 HOST ?= 127.0.0.1
 engine-probe:
-	cd ios/DiallerEngine && swift run --disable-sandbox engine-probe $(HOST) 203@dialler 5061 40 dev-s tok_dev_s_harness_fixed
+	cd ios/DiallerEngine && swift run --disable-sandbox engine-probe $(HOST) 203@dialpark 5061 40 dev-s tok_dev_s_harness_fixed
 
 # Does the audiounit driver move audio under the CallKit contract (units
 # start only on release, in every event ordering)? No SIP, no server.

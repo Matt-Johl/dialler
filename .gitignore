@@ -30,6 +30,9 @@ harness/tls/**/*.srl
 # UI screenshots (harness/screenshot.sh)
 harness/shots/
 
-# the product-licence vendor key (dialler-licence keygen): offline only
+# the product-licence vendor key (dialpark-licence keygen): offline only
 vendor.key
 *.vendor.key
+
+# compiled Python from the harness helpers
+__pycache__/

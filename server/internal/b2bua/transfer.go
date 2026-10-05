@@ -15,9 +15,9 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/moh"
-	"dialler/server/internal/routing"
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/moh"
+	"dialpark/server/internal/routing"
+	"dialpark/server/internal/wire"
 )
 
 // callLeg is one side of a bridged call as the relay sees it.

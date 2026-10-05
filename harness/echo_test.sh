@@ -28,13 +28,13 @@ cd "$(dirname "$0")/.."
 PROFILES="--profile test"
 [ "${IMPAIR:-0}" = 1 ] && PROFILES="$PROFILES --profile impair"
 COMPOSE="docker compose -f harness/docker-compose.yml $PROFILES"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 MEDIA_DIR=harness/baresip/media
 CALL_SECONDS="${CALL_SECONDS:-8}"
 KEEP="${KEEP:-0}"
-TARGET="echo@dialler"; WHERE="the server"; DELAY_BOUND=150; GAP_BOUND=0; GAPS_BOUND=0
+TARGET="echo@dialpark"; WHERE="the server"; DELAY_BOUND=150; GAP_BOUND=0; GAPS_BOUND=0
 if [ "${TRUNK:-0}" = 1 ]; then
-  TARGET="600@dialler"; WHERE="the PBX through the trunk"; DELAY_BOUND=200
+  TARGET="600@dialpark"; WHERE="the PBX through the trunk"; DELAY_BOUND=200
   # This loop is G.722 (G.711 fallback). With the server's egress impaired
   # on both legs (to the PBX and back to the phone) every lost packet used
   # to be a gap — 8 of 16 drops audible on G.711, 7 of 18 on G.722. With
@@ -61,7 +61,7 @@ cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== up"
-$COMPOSE up --build -d dialler asterisk >/dev/null 2>&1
+$COMPOSE up --build -d dialpark asterisk >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a >/dev/null 2>&1
@@ -86,7 +86,7 @@ ctl "{\"command\":\"dial\",\"params\":\"$TARGET\"}"
 sleep "$CALL_SECONDS"
 ctl '{"command":"hangup"}'
 sleep 2
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'echo|invite|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'echo|invite|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
 if [ "${IMPAIR:-0}" = 1 ]; then
   # Proof the shaping applied to this call: netem's own counters.
   stats="$($COMPOSE exec -T netem tc -s qdisc show dev eth0 2>&1 | tr '\n' ' ' | sed 's/  */ /g')"

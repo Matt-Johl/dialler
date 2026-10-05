@@ -5,7 +5,7 @@
 #   sh harness/spike/dial.sh                 # 201 → 202, ~6s of tone
 #   python3 harness/spike/assert_audio.py    # callee recording has energy
 #   docker compose -f harness/docker-compose.spike.yml down -v
-name: dialler-spike
+name: dialpark-spike
 
 services:
   spike:

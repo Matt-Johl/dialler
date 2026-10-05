@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"dialler/server/internal/diag"
-	"dialler/server/internal/directory"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/loglevel"
-	"dialler/server/internal/status"
+	"dialpark/server/internal/diag"
+	"dialpark/server/internal/directory"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/loglevel"
+	"dialpark/server/internal/status"
 )
 
 type loglevelView struct{ loglevel.View }

@@ -11,10 +11,10 @@
     },
     "to": {
       "display_name": "Matt",
-      "uri": "sip:201@dialler.example.local"
+      "uri": "sip:201@dialpark.example.local"
     },
     "sip": {
-      "host": "dialler.example.local",
+      "host": "dialpark.example.local",
       "port": 5061,
       "transport": "tls"
     },

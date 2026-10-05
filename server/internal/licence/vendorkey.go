@@ -3,7 +3,7 @@ package licence
 import "encoding/base64"
 
 // The vendor's public key, 32 bytes base64, pasted from the output of
-// `dialler-licence keygen`. The private half never enters the repository.
+// `dialpark-licence keygen`. The private half never enters the repository.
 // The same bytes are embedded in the app's verifier; rotating the key
 // strands every licence issued under the old one, so it is a decision, not
 // a routine.

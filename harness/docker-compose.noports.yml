@@ -12,9 +12,9 @@
 # PBX behind it (2026-09-15).
 #
 #   docker compose -f harness/docker-compose.yml -f harness/docker-compose.noports.yml \
-#     up -d --build dialler asterisk
+#     up -d --build dialpark asterisk
 services:
-  dialler:
+  dialpark:
     ports: !reset []
   asterisk:
     ports: !reset []

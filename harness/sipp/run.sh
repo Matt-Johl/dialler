@@ -1,11 +1,11 @@
 #!/bin/sh
-# Runs the app-leg conformance scenarios against the dialler server.
+# Runs the app-leg conformance scenarios against the dialpark server.
 # Exit code is non-zero if any scenario fails. All SIPp output is captured
 # and shown on failure so connection/TLS problems are visible, not just
 # scenario mismatches.
 set -u
-HOST="${DIALLER_HOST:-dialler}"
-PORT="${DIALLER_SIP_PORT:-5061}"
+HOST="${DIALPARK_HOST:-dialpark}"
+PORT="${DIALPARK_SIP_PORT:-5061}"
 USER="${SIP_USER:-211}"
 
 echo "== environment"

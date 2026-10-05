@@ -8,11 +8,11 @@
 <scenario name="register_unenrolled_403">
   <send>
     <![CDATA[
-      REGISTER sip:dialler SIP/2.0
+      REGISTER sip:dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag06[call_number]
-      To: <sip:[service]@dialler>
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag06[call_number]
+      To: <sip:[service]@dialpark>
       Call-ID: [call_id]
       CSeq: 1 REGISTER
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300
@@ -25,11 +25,11 @@
 
   <send>
     <![CDATA[
-      REGISTER sip:dialler SIP/2.0
+      REGISTER sip:dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag06[call_number]
-      To: <sip:[service]@dialler>
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag06[call_number]
+      To: <sip:[service]@dialpark>
       Call-ID: [call_id]
       CSeq: 2 REGISTER
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>;expires=300

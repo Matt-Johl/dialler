@@ -16,11 +16,11 @@ cd "$(dirname "$0")/.."
 HOST="${HOST:-$(ipconfig getifaddr en0 2>/dev/null || ifconfig en0 2>/dev/null | awk '/inet /{print $2; exit}')}"
 [ -n "$HOST" ] || { echo "FAIL: cannot determine this Mac's LAN address; set HOST=..."; exit 1; }
 C="docker compose -f harness/docker-compose.yml --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 CALL_SECONDS="${CALL_SECONDS:-20}"
 
 export BARESIP_B_OUTBOUND="$HOST:5061"
-# --no-deps: do not start (or recreate) the dialler container; the server is native.
+# --no-deps: do not start (or recreate) the dialpark container; the server is native.
 $C up -d --no-deps --force-recreate baresip-b >/dev/null 2>&1
 sleep 3
 ctl() {
@@ -28,7 +28,7 @@ ctl() {
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
 }
 echo "== phone-b (212, docker) → native server at $HOST → dials 201 (the phone)"
-ctl '{"command":"dial","params":"201@dialler"}'
+ctl '{"command":"dial","params":"201@dialpark"}'
 echo "   ringing for ${CALL_SECONDS}s — answer on the phone; the native server's log shows the relay counters"
 sleep "$CALL_SECONDS"
 ctl '{"command":"hangup"}'

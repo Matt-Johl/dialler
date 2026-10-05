@@ -1,4 +1,4 @@
-// Package adminui is dialler-admin, the operator's web UI (SPEC §6 item
+// Package adminui is dialpark-admin, the operator's web UI (SPEC §6 item
 // 9c; protocol/ADMIN-API.md §9): a second process that speaks only to the
 // call server's admin API over HTTPS, holds the admin token and a login of
 // its own, and keeps no state the API cannot re-read. It never touches
@@ -21,18 +21,18 @@ import (
 	"strings"
 	"time"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/b2bua"
-	"dialler/server/internal/diag"
-	"dialler/server/internal/directory"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/events"
-	"dialler/server/internal/licence"
-	"dialler/server/internal/loglevel"
-	"dialler/server/internal/status"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/b2bua"
+	"dialpark/server/internal/diag"
+	"dialpark/server/internal/directory"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/events"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/loglevel"
+	"dialpark/server/internal/status"
 )
 
-// Client is the admin API as dialler-admin sees it. Every method is one
+// Client is the admin API as dialpark-admin sees it. Every method is one
 // request; the types are the call server's own, so a shape change is a
 // compile error here rather than a surprise in a template.
 type Client struct {

@@ -1,6 +1,6 @@
 // Phase 0 engine spike (SPEC §6): a diago-based B2BUA, kept in its own module
 // so the tested server stays dependency-free until the approach is committed.
-module diallerspike
+module dialparkspike
 
 go 1.25
 

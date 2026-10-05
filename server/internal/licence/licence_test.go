@@ -50,7 +50,7 @@ func mustSign(t *testing.T, l Licence) string {
 
 func TestRoundTrip(t *testing.T) {
 	tok := mustSign(t, sample())
-	if !strings.HasPrefix(tok, "DL1.") || strings.Count(tok, ".") != 2 {
+	if !strings.HasPrefix(tok, "DP1.") || strings.Count(tok, ".") != 2 {
 		t.Fatalf("token shape: %q", tok)
 	}
 	got, err := Parse(tok)
@@ -80,25 +80,25 @@ func TestTamperedTokensAreRefused(t *testing.T) {
 		if s == string(decoded) {
 			t.Fatalf("field %q not in payload %s", from, decoded)
 		}
-		return "DL1." + base64.RawURLEncoding.EncodeToString([]byte(s)) + "." + sig
+		return "DP1." + base64.RawURLEncoding.EncodeToString([]byte(s)) + "." + sig
 	}
 	cases := map[string]struct {
 		tok  string
 		want error
 	}{
 		"empty":             {"", ErrFormat},
-		"wrong prefix":      {"DL2." + payload + "." + sig, ErrFormat},
-		"two parts":         {"DL1." + payload, ErrFormat},
+		"wrong prefix":      {"DP2." + payload + "." + sig, ErrFormat},
+		"two parts":         {"DP1." + payload, ErrFormat},
 		"four parts":        {tok + ".x", ErrFormat},
-		"bad base64":        {"DL1.!!!." + sig, ErrFormat},
-		"short signature":   {"DL1." + payload + "." + sig[:10], ErrFormat},
-		"flipped signature": {"DL1." + payload + "." + flip(sig), ErrSignature},
+		"bad base64":        {"DP1.!!!." + sig, ErrFormat},
+		"short signature":   {"DP1." + payload + "." + sig[:10], ErrFormat},
+		"flipped signature": {"DP1." + payload + "." + flip(sig), ErrSignature},
 		"seats altered":     {alter(`"seats":10`, `"seats":500`), ErrSignature},
 		"expiry altered":    {alter(`2027-10-03`, `2037-10-03`), ErrSignature},
 		"install altered":   {alter(`0123456789abcdef0123456789abcdef`, `ffffffffffffffffffffffffffffffff`), ErrSignature},
 		"id altered":        {alter(`lic_TESTX001`, `lic_TESTX002`), ErrSignature},
 		"customer altered":  {alter(`Example Ltd`, `Another Ltd`), ErrSignature},
-		"too long":          {"DL1." + strings.Repeat("A", 5000) + "." + sig, ErrFormat},
+		"too long":          {"DP1." + strings.Repeat("A", 5000) + "." + sig, ErrFormat},
 	}
 	for name, c := range cases {
 		if _, err := Parse(c.tok); !errors.Is(err, c.want) {
@@ -151,8 +151,8 @@ func TestPayloadGrammar(t *testing.T) {
 // signRaw signs an arbitrary payload, for the grammar tests.
 func signRaw(payload string) string {
 	b64 := base64.RawURLEncoding.EncodeToString([]byte(payload))
-	sig := ed25519.Sign(testPriv, []byte("DL1."+b64))
-	return "DL1." + b64 + "." + base64.RawURLEncoding.EncodeToString(sig)
+	sig := ed25519.Sign(testPriv, []byte("DP1."+b64))
+	return "DP1." + b64 + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
 func TestCheckInstallAndExpiry(t *testing.T) {

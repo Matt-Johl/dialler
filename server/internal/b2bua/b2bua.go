@@ -32,12 +32,12 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/pbx"
-	"dialler/server/internal/qos"
-	"dialler/server/internal/registry"
-	"dialler/server/internal/routing"
-	"dialler/server/internal/sipauth"
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/pbx"
+	"dialpark/server/internal/qos"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/routing"
+	"dialpark/server/internal/sipauth"
+	"dialpark/server/internal/wire"
 )
 
 // CallIDHeader carries the wake call_id on the callee-leg INVITE so the app
@@ -334,7 +334,7 @@ func New(cfg Config, reg *registry.Registry, router *routing.Router, waker Waker
 	media.ListenConfig.Control = qos.Control(qos.DSCPEF)
 	sipgo.ListenConfig.Control = qos.Control(qos.DSCPCS3)
 
-	uaOpts := []sipgo.UserAgentOption{sipgo.WithUserAgent("dialler"), sipgo.WithUserAgentHostname(cfg.ExternalHost)}
+	uaOpts := []sipgo.UserAgentOption{sipgo.WithUserAgent("dialpark"), sipgo.WithUserAgentHostname(cfg.ExternalHost)}
 	if cfg.TrunkTLS != nil {
 		// What we use when WE dial over TLS — the trust for verifying the
 		// PBX, and our certificate for its mutual TLS.

@@ -48,7 +48,7 @@ func TestCheckPublicHost(t *testing.T) {
 		{"10.18.0.212", true},
 		{"127.0.0.1", true},
 		{"10.18.0.168", false}, // the stale-DHCP case: not ours, apps would time out
-		{"dialler", true},      // hostnames are left to DNS
+		{"dialpark", true},     // hostnames are left to DNS
 		{"pbx.example.com", true},
 	} {
 		err := checkPublicHost(tc.host, addrs)

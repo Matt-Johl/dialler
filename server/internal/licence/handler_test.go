@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 type errBody struct {
@@ -94,12 +94,12 @@ func TestLicencePutRefusals(t *testing.T) {
 		{"not json", `licence`, 400, admin.CodeBadJSON, ""},
 		{"missing field", `{}`, 400, admin.CodeMissing, "licence"},
 		{"unknown field", `{"licence":"x","seats":9}`, 400, admin.CodeUnknownField, ""},
-		{"over 4 KiB", body("DL1." + strings.Repeat("A", 5000) + ".sig"), 413, admin.CodeTooLarge, ""},
-		{"bad prefix", body("DL2." + parts[1] + "." + parts[2]), 400, admin.CodeInvalid, "not a licence token"},
-		{"two parts", body("DL1." + parts[1]), 400, admin.CodeInvalid, "payload and signature"},
+		{"over 4 KiB", body("DP1." + strings.Repeat("A", 5000) + ".sig"), 413, admin.CodeTooLarge, ""},
+		{"bad prefix", body("DP2." + parts[1] + "." + parts[2]), 400, admin.CodeInvalid, "not a licence token"},
+		{"two parts", body("DP1." + parts[1]), 400, admin.CodeInvalid, "payload and signature"},
 		{"four parts", body(tok + ".extra"), 400, admin.CodeInvalid, "payload and signature"},
-		{"bad base64", body("DL1.!!!." + parts[2]), 400, admin.CodeInvalid, "base64"},
-		{"edited payload", body("DL1." + parts[1][:len(parts[1])-2] + "AA." + parts[2]), 400, admin.CodeInvalid, "signature"},
+		{"bad base64", body("DP1.!!!." + parts[2]), 400, admin.CodeInvalid, "base64"},
+		{"edited payload", body("DP1." + parts[1][:len(parts[1])-2] + "AA." + parts[2]), 400, admin.CodeInvalid, "signature"},
 		{"wrong install", body(mustSign(t, wrong)), 400, admin.CodeInvalid, "ffffffffffffffffffffffffffffffff"},
 		{"expired", body(mustSign(t, expired)), 400, admin.CodeInvalid, "expired"},
 		{"unknown payload field", body(signRaw(`{"v":1,"id":"a","customer":"c","install_id":"i","seats":1,"issued_at":"2026-10-03T12:00:00Z","valid_until":"2027-10-03T12:00:00Z","x":1}`)), 400, admin.CodeInvalid, "payload"},

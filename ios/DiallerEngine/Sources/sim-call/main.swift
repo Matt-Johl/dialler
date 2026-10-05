@@ -363,7 +363,7 @@ callKit.onDecline = {
             // And what follows the reset in the app: the welcome's
             // register, which allocates a fresh user agent while the old
             // connection's last packets may still be arriving.
-            controller.setAccount(user: "203@dialler", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
+            controller.setAccount(user: "203@dialpark", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
         }
         if resetDelayMs > 0 {
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(resetDelayMs), execute: fire)
@@ -421,7 +421,7 @@ if noGateway {
     // register the harness account directly. The controller then rings
     // every INVITE as a synthetic "sip-N" call, exactly as the app does
     // when a wake fails to arrive.
-    controller.setAccount(user: "203@dialler", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
+    controller.setAccount(user: "203@dialpark", sip: SIPTarget(host: host, port: 5061, transport: "tls"))
 } else {
     transport.connect(hello: cfg.hello(kind: .app))
 }

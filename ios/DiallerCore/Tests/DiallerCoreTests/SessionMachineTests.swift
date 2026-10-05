@@ -162,9 +162,9 @@ final class SessionMachineTests: XCTestCase {
         var m = SessionMachine(now: { self.t0 }, licence: { seen = $0; return .valid(validUntil: self.t0.addingTimeInterval(3600)) })
         _ = m.didOpen(hello: Hello(deviceID: "d", token: "t", client: .app))
         var w = welcome
-        w.licence = "DL1.payload.sig"
+        w.licence = "DP1.payload.sig"
         XCTAssertEqual(m.received(env(.welcome(w))), [.emit(.connected(w)), .scheduleLivenessCheck(seconds: 25)])
-        XCTAssertEqual(seen, "DL1.payload.sig")
+        XCTAssertEqual(seen, "DP1.payload.sig")
     }
 
     /// The default verifier is the real one: a welcome with no token is

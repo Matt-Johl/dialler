@@ -4,7 +4,7 @@
 // reads; it is applied as this script loads in <head>, before first paint.
 (function () {
   var root = document.documentElement;
-  var KEY = "dialler-admin-theme";
+  var KEY = "dialpark-admin-theme";
   function stored() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
   function system() { return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"; }
   function apply(theme) { root.setAttribute("data-theme", theme); }

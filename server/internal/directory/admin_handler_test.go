@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 func adminDo(h http.Handler, method, path, body string) (*httptest.ResponseRecorder, admin.ErrorBody) {

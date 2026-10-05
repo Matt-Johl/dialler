@@ -9,7 +9,7 @@
 # ANSWER_MODE (auto|manual).
 set -eu
 : "${SIP_USER:=211}"
-: "${SIP_DOMAIN:=dialler}"
+: "${SIP_DOMAIN:=dialpark}"
 : "${REGINT:=300}"
 : "${TRANSPORT:=tls}"
 : "${AUTH_USER:=$SIP_USER}"

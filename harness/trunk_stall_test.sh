@@ -24,20 +24,20 @@
 set -eu
 cd "$(dirname "$0")/.."
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test --profile impair"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 ASTERISK_IP=172.30.0.20
 KEEP="${KEEP:-0}"
 
 # The pooled case needs a connection-oriented trunk: TLS, as trunk_test.sh.
 sh harness/tls/gen_certs.sh
 export ASTERISK_TLS=yes
-export DIALLER_TRUNK="sip:$ASTERISK_IP:5061;transport=tls"
-export DIALLER_TRUNK_ADDR=":5062"
-export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
-export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
-export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
+export DIALPARK_TRUNK="sip:$ASTERISK_IP:5061;transport=tls"
+export DIALPARK_TRUNK_ADDR=":5062"
+export DIALPARK_TRUNK_TLS_CERT=/tls/dialpark.pem
+export DIALPARK_TRUNK_TLS_KEY=/tls/dialpark.key
+export DIALPARK_TRUNK_TLS_CA=/tls/ca.pem
 # The impairment sidecar is only the tool here: no loss, no delay of its own.
 export NETEM_LOSS=0% NETEM_DELAY=0ms NETEM_JITTER=0ms
 
@@ -48,7 +48,7 @@ ctl() { # phone json
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$2'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 $1 4444 >/dev/null"
 }
-logs() { $COMPOSE logs --no-log-prefix --since "$1" dialler 2>&1; }
+logs() { $COMPOSE logs --no-log-prefix --since "$1" dialpark 2>&1; }
 tc_in_server() { $COMPOSE exec -T netem sh -c "$1"; }
 blackhole_on() {
   tc_in_server "tc qdisc replace dev eth0 root handle 1: prio \
@@ -68,15 +68,15 @@ wait_for() {
 }
 warm_call() { # one 211 → 100 call, bridged and ended: the pooled connection now exists
   MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ctl baresip-a '{"command":"dial","params":"100@dialler"}'
-  wait_for 20 "the warm-up call never bridged" sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialler 2>&1 | grep -q 'bridged.*to=100'" || {
+  ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
+  wait_for 20 "the warm-up call never bridged" sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialpark 2>&1 | grep -q 'bridged.*to=100'" || {
     logs "$MARK" | grep -E 'invite|level=(ERROR|WARN)' | tail -5 | sed 's/^/   /'; exit 1; }
   ctl baresip-a '{"command":"hangup"}'
   sleep 2
 }
 
 echo "== up: server (TLS trunk, qualify OFF for phase A), asterisk, app 211, desk phone 100, netem sidecar"
-DIALLER_TRUNK_QUALIFY=0 $COMPOSE up --build -d dialler asterisk netem >/dev/null 2>&1
+DIALPARK_TRUNK_QUALIFY=0 $COMPOSE up --build -d dialpark asterisk netem >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d --no-deps baresip-a baresip-c >/dev/null 2>&1
@@ -91,7 +91,7 @@ echo "== A2: black hole on; 211 dials 100 straight into it"
 blackhole_on
 MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 START=$(date +%s)
-ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
 # 3 s for the dead pooled connection, 3 s for the redial that cannot
 # connect either; 15 s is generous and under half of Timer B.
 wait_for 15 "the caller was not answered within 15 s — the call sat on the dead connection" \
@@ -108,17 +108,17 @@ echo "== A3: black hole lifted; 211 dials 100 again — must bridge on a fresh c
 blackhole_off
 sleep 1
 MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
 wait_for 12 "the call after the black hole did not bridge — the dead connection is still in use" \
-  sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialler 2>&1 | grep -q 'bridged.*to=100'" || {
+  sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialpark 2>&1 | grep -q 'bridged.*to=100'" || {
   logs "$MARK" | grep -E 'invite|trunk|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'; exit 1; }
 ctl baresip-a '{"command":"hangup"}'
 sleep 2
 echo "   PASS A: a dead trunk connection was detected in ~3 s, dropped and redialled; the next call bridged afresh"
 
 echo "== B0: server recreated with the OPTIONS qualify on (10 s); 211 registers afresh"
-DIALLER_TRUNK_QUALIFY=10s $COMPOSE up -d --no-deps --force-recreate dialler netem baresip-a >/dev/null 2>&1
-wait_for 30 "211 never re-registered" sh -c "$COMPOSE logs --no-log-prefix --since 40s dialler 2>&1 | grep -q 'sip register.*user=211'"
+DIALPARK_TRUNK_QUALIFY=10s $COMPOSE up -d --no-deps --force-recreate dialpark netem baresip-a >/dev/null 2>&1
+wait_for 30 "211 never re-registered" sh -c "$COMPOSE logs --no-log-prefix --since 40s dialpark 2>&1 | grep -q 'sip register.*user=211'"
 logs 40s | grep -q "trunk: qualifying with OPTIONS" || { echo "FAIL: the qualify did not start"; exit 1; }
 
 echo "== B1: 211 dials 100 to warm the pooled trunk connection"
@@ -130,16 +130,16 @@ MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 blackhole_on
 # One qualify interval plus its 3 s timeout, with slack.
 wait_for 20 "the qualify did not drop the dead connection within 20 s" \
-  sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialler 2>&1 | grep -q 'not answering OPTIONS; dropping its pooled connection'"
+  sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialpark 2>&1 | grep -q 'not answering OPTIONS; dropping its pooled connection'"
 logs "$MARK" | grep -E 'trunk:' | tail -2 | sed 's/^/   /'
 
 echo "== B3: black hole lifted; 211 dials 100 at once — must ring with no watchdog wait"
 blackhole_off
 MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 START=$(date +%s)
-ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
 wait_for 5 "the call after the qualify did not bridge within 5 s" \
-  sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialler 2>&1 | grep -q 'bridged.*to=100'" || {
+  sh -c "$COMPOSE logs --no-log-prefix --since $MARK dialpark 2>&1 | grep -q 'bridged.*to=100'" || {
   logs "$MARK" | grep -E 'invite|trunk|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'; exit 1; }
 ELAPSED=$(( $(date +%s) - START ))
 if logs "$MARK" | grep -q "no response from the trunk"; then

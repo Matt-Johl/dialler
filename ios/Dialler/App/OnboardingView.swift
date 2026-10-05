@@ -36,11 +36,18 @@ struct OnboardingView: View {
             .accessibilityElement()
             .accessibilityLabel(AppName.display)
             .accessibilityAddTraits(.isImage)
-            Text(AppName.display)
-                .font(.system(size: 30, weight: .regular))
-                .tracking(-0.9)
-                .foregroundStyle(Palette.ink)
-                .accessibilityAddTraits(.isHeader)
+            // The app is Dialler; the system it connects to is Dialpark.
+            VStack(spacing: 4) {
+                Text(AppName.display)
+                    .font(.system(size: 30, weight: .regular))
+                    .tracking(-0.9)
+                    .foregroundStyle(Palette.ink)
+                Text("for Dialpark")
+                    .font(.subheadline)
+                    .foregroundStyle(Palette.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             Spacer(minLength: 24)
             actions
         }

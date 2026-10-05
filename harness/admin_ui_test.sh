@@ -1,5 +1,5 @@
 #!/bin/sh
-# dialler-admin end to end (SPEC §6 item 9c): the real UI binary against
+# dialpark-admin end to end (SPEC §6 item 9c): the real UI binary against
 # the real call server, driven with curl from inside the compose network.
 # Login, the Clients page with the provisioned devices, adding a device and
 # being shown its code and QR, the device page, the server and calls
@@ -8,10 +8,10 @@ set -eu
 cd "$(dirname "$0")/.."
 
 COMPOSE_FILE="${COMPOSE_FILE:-harness/docker-compose.yml}"
-PROJECT="${PROJECT:-dialler-harness}"
+PROJECT="${PROJECT:-dialpark-harness}"
 KEEP="${KEEP:-0}"
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f $COMPOSE_FILE $NOPORTS --profile test"
 NET="${PROJECT}_default"
 
@@ -19,7 +19,7 @@ cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== up"
-$COMPOSE up --build -d dialler >/dev/null 2>&1
+$COMPOSE up --build -d dialpark >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up -d admin >/dev/null 2>&1
@@ -105,8 +105,8 @@ echo "ok: purge and sign out"
 ' || exit 1
 
 # The call server saw only its own API: no panic, no error.
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -qE 'panic:|level=ERROR'; then
+if $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -qE 'panic:|level=ERROR'; then
   echo "FAIL: the call server logged an error during the UI run:"
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'panic:|level=ERROR' | head -5; exit 1
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'panic:|level=ERROR' | head -5; exit 1
 fi
 echo "ADMIN UI PASS"

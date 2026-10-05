@@ -211,7 +211,7 @@ On a branch `feature/app-store-readiness`, merged on approval.
    `<data-dir>/tls`) serves the gateway, the phone API, SIP and the
    internal admin API; phones pin it, so it never needs renewing for them,
    and `<data-dir>/tls` belongs in backups (losing it means re-enrolling
-   every phone). The admin console (`dialler-admin`) has its own
+   every phone). The admin console (`dialpark-admin`) has its own
    certificate, which can be publicly trusted and renewed freely. Two
    server follow-ups: issue #15 (the console stops reaching the server
    when the server's self-signed certificate passes its one-year expiry)
@@ -290,7 +290,7 @@ Every merge to main is a release candidate with its own numbers and a tag
   `tools/bump-version.sh patch|minor|major`, commit), so the commit holds
   exactly the numbers it is tagged with. The app and the extension get the
   same values; the script refuses to run if they disagree.
-- **Tag:** `vX.Y.Z` on that merge commit, annotated "Dialler X.Y.Z
+- **Tag:** `vX.Y.Z` on that merge commit, annotated "Dialpark X.Y.Z
   (build N)", pushed with it. The server binaries take their version from
   the same tags (`git describe --tags --match 'v[0-9]*'` in the Makefile).
 - **Upload only tagged commits of main.** A build from a feature branch

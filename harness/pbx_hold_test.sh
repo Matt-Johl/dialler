@@ -19,25 +19,25 @@
 set -eu
 cd "$(dirname "$0")/.."
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 KEEP="${KEEP:-0}"
 # TRUNK_SRTP=sdes and TRUNK_TLS=1: the same knobs as trunk_test.sh, so the
 # desk phone's hold/resume runs against the trunk the LAN PBX uses (TLS,
 # SDES), where Asterisk's own hold handling may differ from plain RTP.
 if [ -n "${TRUNK_SRTP:-}" ]; then
   export ASTERISK_SRTP=yes
-  export DIALLER_TRUNK_SRTP="$TRUNK_SRTP"
+  export DIALPARK_TRUNK_SRTP="$TRUNK_SRTP"
 fi
 if [ "${TRUNK_TLS:-0}" = 1 ]; then
   sh harness/tls/gen_certs.sh
   export ASTERISK_TLS=yes
-  export DIALLER_TRUNK="sip:172.30.0.20:5061;transport=tls"
-  export DIALLER_TRUNK_ADDR=":5062"
-  export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
-  export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
-  export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
+  export DIALPARK_TRUNK="sip:172.30.0.20:5061;transport=tls"
+  export DIALPARK_TRUNK_ADDR=":5062"
+  export DIALPARK_TRUNK_TLS_CERT=/tls/dialpark.pem
+  export DIALPARK_TRUNK_TLS_KEY=/tls/dialpark.key
+  export DIALPARK_TRUNK_TLS_CA=/tls/ca.pem
 fi
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
@@ -78,19 +78,19 @@ EOPY
 }
 
 echo "== up (app 211 silent; desk phone 100 audible)"
-$COMPOSE up --build -d dialler asterisk >/dev/null 2>&1
+$COMPOSE up --build -d dialpark asterisk >/dev/null 2>&1
 sleep 3
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 AUDIO_SOURCE="aufile,/media/silence.wav" $COMPOSE up --build -d --no-deps --force-recreate baresip-a >/dev/null 2>&1
 AUDIO_SOURCE="aufile,/media/in.wav" $COMPOSE up --build -d --no-deps --force-recreate baresip-c >/dev/null 2>&1
 sleep 8
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=211' || { echo "FAIL: 211 never registered"; exit 1; }
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'sip register.*user=211' || { echo "FAIL: 211 never registered"; exit 1; }
 
 echo "== 211 calls the desk phone; the desk phone holds, then resumes"
 rm -f harness/baresip/media/out-211.wav
-ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
 sleep 6
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'bridged.*to=100' || { echo "FAIL: the call to 100 never bridged"; exit 1; }
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'bridged.*to=100' || { echo "FAIL: the call to 100 never bridged"; exit 1; }
 ctl baresip-c '{"command":"hold"}'
 sleep 6
 ctl baresip-c '{"command":"resume"}'
@@ -99,9 +99,9 @@ ctl baresip-a '{"command":"hangup"}'
 sleep 2
 
 echo "== what the relay saw on the trunk leg (callee→caller is the desk phone's stream)"
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'dir=callee→caller' | tail -3 | sed -E 's/^.*msg=relay //; s/^/   /'
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'source timeline broke'; then
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep 'source timeline broke' | sed -E 's/^.*msg=/   /'
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'dir=callee→caller' | tail -3 | sed -E 's/^.*msg=relay //; s/^/   /'
+if $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'source timeline broke'; then
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep 'source timeline broke' | sed -E 's/^.*msg=/   /'
 else
   echo "   (this PBX's hold did not break the timeline; the relay had nothing to re-base)"
 fi

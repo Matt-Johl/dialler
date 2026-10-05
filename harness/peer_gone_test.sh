@@ -22,15 +22,15 @@ cd "$(dirname "$0")/.."
 # Short enough to test, long enough that an ask (timeout/4) and the kill
 # cannot race. The production default is 60 s.
 TIMEOUT_S="${TIMEOUT_S:-8}"
-export DIALLER_PEER_TIMEOUT="${TIMEOUT_S}s"
+export DIALPARK_PEER_TIMEOUT="${TIMEOUT_S}s"
 KEEP="${KEEP:-0}"
 
 # HARNESS_NOPORTS=1 publishes nothing on the host, so this can run beside a
 # native `make dev-server`. Everything here lives inside the compose network.
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -40,11 +40,11 @@ ctl() {
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
 
-srvlog() { $COMPOSE logs --no-log-prefix dialler 2>&1; }
+srvlog() { $COMPOSE logs --no-log-prefix dialpark 2>&1; }
 ended_calls() { srvlog | grep -c 'msg="call ended"' || true; }
 
-echo "== up (peer-timeout=$DIALLER_PEER_TIMEOUT)"
-$COMPOSE up --build -d dialler >/dev/null 2>&1
+echo "== up (peer-timeout=$DIALPARK_PEER_TIMEOUT)"
+$COMPOSE up --build -d dialpark >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
@@ -52,7 +52,7 @@ sleep 5
 
 # ---- both parties answering: the call must survive ------------------------
 echo "== 211 dials 212; both parties answering"
-ctl '{"command":"dial","params":"212@dialler"}'
+ctl '{"command":"dial","params":"212@dialpark"}'
 sleep 6
 srvlog | grep -q 'msg=bridged' || { echo "FAIL: the call never bridged"; exit 1; }
 before=$(ended_calls)

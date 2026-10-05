@@ -8,7 +8,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 COMPOSE="docker compose -f harness/docker-compose.yml --profile test --profile qos"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 SERVER_IP=172.30.0.10
 KEEP="${KEEP:-0}"
 
@@ -17,7 +17,7 @@ cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== up: server and app 211, then the capture sidecar"
-$COMPOSE up --build -d dialler >/dev/null 2>&1
+$COMPOSE up --build -d dialpark >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a >/dev/null 2>&1
@@ -32,7 +32,7 @@ ctl() {
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
 echo "== app 211 dials echo (server sends RTP back)"
-ctl '{"command":"dial","params":"echo@dialler"}'
+ctl '{"command":"dial","params":"echo@dialpark"}'
 sleep 4
 ctl '{"command":"hangup"}'
 sleep 2

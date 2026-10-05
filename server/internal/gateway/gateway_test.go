@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/wire"
 )
 
 // The gateway is driven over net.Pipe so the suite needs no sockets and runs
@@ -191,7 +191,7 @@ func TestHandshakeAndPing(t *testing.T) {
 	h := start(t, Config{
 		DirectoryVersion: func(d string) int64 { return 7 },
 		SIPAccountFor: func(d string) *wire.SIPAccount {
-			return &wire.SIPAccount{User: "201", Domain: "dialler", Host: "10.0.0.1", Port: 5061, Transport: "tls"}
+			return &wire.SIPAccount{User: "201", Domain: "dialpark", Host: "10.0.0.1", Port: 5061, Transport: "tls"}
 		},
 	})
 	c := h.dial(t)
@@ -279,8 +279,8 @@ func wakeAt(exp time.Time) wire.Wake {
 	return wire.Wake{
 		CallID:    "call1",
 		From:      wire.Party{DisplayName: "Reception", URI: "sip:100@pbx"},
-		To:        wire.Party{URI: "sip:201@dialler"},
-		SIP:       wire.SIPTarget{Host: "dialler", Port: 5061, Transport: "tls"},
+		To:        wire.Party{URI: "sip:201@dialpark"},
+		SIP:       wire.SIPTarget{Host: "dialpark", Port: 5061, Transport: "tls"},
 		ExpiresAt: exp,
 	}
 }

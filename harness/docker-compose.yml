@@ -1,88 +1,88 @@
 # Headless validation harness (SPEC §7.2): the light server, an Asterisk PBX
 # peer, SIPp for protocol conformance, and two headless baresip phones.
 #
-#   docker compose -f harness/docker-compose.yml up --build dialler asterisk
+#   docker compose -f harness/docker-compose.yml up --build dialpark asterisk
 #   docker compose -f harness/docker-compose.yml --profile test run --rm sipp
 #   docker compose -f harness/docker-compose.yml --profile test up baresip-a baresip-b
 #
 # See harness/README.md. This file has not been executed in the environment
 # that wrote it (no Docker socket access); expect first-run fixes.
-name: dialler-harness
+name: dialpark-harness
 
 services:
-  dialler:
+  dialpark:
     build:
       context: ..
-      dockerfile: harness/dialler/Dockerfile
+      dockerfile: harness/dialpark/Dockerfile
     command:
       - -signal-addr=:7443
       - -sip-addr=:5061
       - -http-addr=:8080
       - -admin-addr=:8081
       - -admin-token=harness
-      # The host apps register SIP to. Inside the compose network "dialler"
+      # The host apps register SIP to. Inside the compose network "dialpark"
       # resolves; a phone needs the Mac's LAN address:
-      #   DIALLER_PUBLIC_HOST=$(ipconfig getifaddr en0) make harness-up
-      - -public-host=${DIALLER_PUBLIC_HOST:-dialler}
-      - -local-domain=dialler
+      #   DIALPARK_PUBLIC_HOST=$(ipconfig getifaddr en0) make harness-up
+      - -public-host=${DIALPARK_PUBLIC_HOST:-dialpark}
+      - -local-domain=dialpark
       - -data-dir=/data
       - -ring-timeout=30s
       # End a bridged call when a party stops answering the in-dialog
       # OPTIONS each leg is asked (b2bua qualifyLegs): the backstop for a
       # phone that vanished without a BYE. Shortened by harness-peer-gone
       # so the test need not wait out the production default.
-      - -peer-timeout=${DIALLER_PEER_TIMEOUT:-60s}
+      - -peer-timeout=${DIALPARK_PEER_TIMEOUT:-60s}
       # Host-side ports are overridable so this harness can run next to a
-      # native `make dev-server` (DIALLER_SIGNAL_HOSTPORT / SIP_HOSTPORT /
+      # native `make dev-server` (DIALPARK_SIGNAL_HOSTPORT / SIP_HOSTPORT /
       # HTTP_HOSTPORT / RTP_MIN / RTP_MAX); the RTP range is published 1:1.
-      # Then ALSO set DIALLER_PUBLIC_HOST=dialler: the Makefile defaults it
+      # Then ALSO set DIALPARK_PUBLIC_HOST=dialpark: the Makefile defaults it
       # to the Mac's address, a phone answering an INVITE opens a new TLS
       # connection to that host on 5061 — and with a native server there,
       # its responses land on the wrong server (every callee test fails).
-      - -rtp-min=${DIALLER_RTP_MIN:-20000}
-      - -rtp-max=${DIALLER_RTP_MAX:-20100}
-      - -public-sip-port=${DIALLER_SIP_HOSTPORT:-5061}
-      - -rewrite-contact=${DIALLER_REWRITE_CONTACT:-true} # false only to prove harness-call-nat fails without it
-      - -sip-trace=${DIALLER_SIP_TRACE:-false} # every SIP message in the server log
+      - -rtp-min=${DIALPARK_RTP_MIN:-20000}
+      - -rtp-max=${DIALPARK_RTP_MAX:-20100}
+      - -public-sip-port=${DIALPARK_SIP_HOSTPORT:-5061}
+      - -rewrite-contact=${DIALPARK_REWRITE_CONTACT:-true} # false only to prove harness-call-nat fails without it
+      - -sip-trace=${DIALPARK_SIP_TRACE:-false} # every SIP message in the server log
       # PBX leg (SPEC §4.4 rule 7): Asterisk as a SIP trunk peer over UDP
       # (the SIP default); the server listens for trunk-originated calls
       # on :5060/udp.
-      - -trunk=${DIALLER_TRUNK:-sip:172.30.0.20:5060;transport=udp}
+      - -trunk=${DIALPARK_TRUNK:-sip:172.30.0.20:5060;transport=udp}
       # :5062 for a TLS trunk, not the conventional 5061 — that is the app
       # leg's port and the two cannot share a socket.
-      - -trunk-addr=${DIALLER_TRUNK_ADDR:-:5060}
+      - -trunk-addr=${DIALPARK_TRUNK_ADDR:-:5060}
       # OPTIONS keep-alive on a TCP/TLS trunk connection (b2bua/qualify.go);
       # 0 turns it off so a test can exercise the per-call watchdog alone.
-      - -trunk-qualify=${DIALLER_TRUNK_QUALIFY:-10s}
+      - -trunk-qualify=${DIALPARK_TRUNK_QUALIFY:-10s}
       # What the PBX is offered: G.722 wideband first, G.711 fallback; a
       # narrowband-only PBX gets "pcmu,pcma".
-      - -trunk-codecs=${DIALLER_TRUNK_CODECS:-g722,pcmu,pcma}
+      - -trunk-codecs=${DIALPARK_TRUNK_CODECS:-g722,pcmu,pcma}
       # SDES on the PBX leg: off, offer or require (SPEC §6 item 3a). Off by
       # default, matching production until a PBX is known to accept it.
-      - -trunk-srtp=${DIALLER_TRUNK_SRTP:-off}
+      - -trunk-srtp=${DIALPARK_TRUNK_SRTP:-off}
       # SIP over TLS on the PBX leg (SPEC §6 item 3b). Empty by default:
       # the flags are only read when -trunk says transport=tls, and the
       # certificates under harness/tls are generated, not committed, so a
       # plain-trunk run must not depend on them existing.
-      - -trunk-tls-cert=${DIALLER_TRUNK_TLS_CERT:-}
-      - -trunk-tls-key=${DIALLER_TRUNK_TLS_KEY:-}
-      - -trunk-tls-ca=${DIALLER_TRUNK_TLS_CA:-}
+      - -trunk-tls-cert=${DIALPARK_TRUNK_TLS_CERT:-}
+      - -trunk-tls-key=${DIALPARK_TRUNK_TLS_KEY:-}
+      - -trunk-tls-ca=${DIALPARK_TRUNK_TLS_CA:-}
       # How the PBX leg presents itself (SPEC §6 item 3c): trunk (an
       # IP-trusted peer, the default and what every other harness test
       # uses) or lines (one registered third-party SIP device per
       # configured device, harness/pbx_lines_test.sh). Never both.
-      - -pbx-mode=${DIALLER_PBX_MODE:-trunk}
-      - -pbx-domain=${DIALLER_PBX_DOMAIN:-}
-      - -pbx-register-expiry=${DIALLER_PBX_EXPIRY:-1h}
+      - -pbx-mode=${DIALPARK_PBX_MODE:-trunk}
+      - -pbx-domain=${DIALPARK_PBX_DOMAIN:-}
+      - -pbx-register-expiry=${DIALPARK_PBX_EXPIRY:-1h}
       # Off here on purpose: Docker Desktop's UDP port proxy rewrites a LAN
       # phone's RTP source, and replies to that rewritten source are not
       # delivered, so learning the source (symmetric RTP) silences the phone
       # after its first packet. Phones on this harness are reachable at their
       # SDP address directly. Production default is on (NAT'd phones).
-      - -rtp-symmetric=${DIALLER_RTP_SYMMETRIC:-false}
-      - -log-level=${DIALLER_LOG_LEVEL:-info} # debug shows the relay's RTP source learning
+      - -rtp-symmetric=${DIALPARK_RTP_SYMMETRIC:-false}
+      - -log-level=${DIALPARK_LOG_LEVEL:-info} # debug shows the relay's RTP source learning
     volumes:
-      - dialler-data:/data
+      - dialpark-data:/data
       # The trunk's CA and certificate. Bind-mounted rather than baked in so
       # `make harness-tls-certs` can regenerate them without a rebuild; the
       # directory holds only gen_certs.sh until it is run, which is why the
@@ -92,11 +92,11 @@ services:
       default:
         ipv4_address: 172.30.0.10
     ports:
-      - "${DIALLER_SIGNAL_HOSTPORT:-7443}:7443"
-      - "${DIALLER_SIP_HOSTPORT:-5061}:5061"
-      - "${DIALLER_HTTP_HOSTPORT:-8080}:8080" # device API (directory, diag, enrol); reachable from devices on the LAN
-      - "${DIALLER_ADMIN_HOSTPORT:-8081}:8081" # admin API; loopback-only in production, published here so provisioning runs from the host
-      - "${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}:${DIALLER_RTP_MIN:-20000}-${DIALLER_RTP_MAX:-20100}/udp" # relayed media, so phones (and containers via the host address) reach it
+      - "${DIALPARK_SIGNAL_HOSTPORT:-7443}:7443"
+      - "${DIALPARK_SIP_HOSTPORT:-5061}:5061"
+      - "${DIALPARK_HTTP_HOSTPORT:-8080}:8080" # device API (directory, diag, enrol); reachable from devices on the LAN
+      - "${DIALPARK_ADMIN_HOSTPORT:-8081}:8081" # admin API; loopback-only in production, published here so provisioning runs from the host
+      - "${DIALPARK_RTP_MIN:-20000}-${DIALPARK_RTP_MAX:-20100}:${DIALPARK_RTP_MIN:-20000}-${DIALPARK_RTP_MAX:-20100}/udp" # relayed media, so phones (and containers via the host address) reach it
 
   asterisk:
     build:
@@ -106,7 +106,7 @@ services:
         ASTERISK_SRTP: ${ASTERISK_SRTP:-no}                  # yes = a PBX with a secure trunk profile
         ASTERISK_TLS: ${ASTERISK_TLS:-no}                    # yes = the trunk endpoint moves to SIP/TLS, mutually authenticated
         ASTERISK_LINES: ${ASTERISK_LINES:-no}                # yes = a PBX the server REGISTERs lines to instead of trunking (SPEC §6 item 3c)
-    depends_on: [dialler]
+    depends_on: [dialpark]
     volumes:
       - ./tls:/tls:ro # the PBX's own certificate and the shared CA, when ASTERISK_TLS=yes
     networks:
@@ -143,8 +143,8 @@ services:
   netem:
     build: ./netem
     profiles: [impair]
-    depends_on: [dialler]
-    network_mode: "service:dialler"
+    depends_on: [dialpark]
+    network_mode: "service:dialpark"
     cap_add: [NET_ADMIN]
     environment:
       NETEM_LOSS: "${NETEM_LOSS:-2%}"
@@ -157,22 +157,22 @@ services:
   qos:
     build: ./qos
     profiles: [qos]
-    depends_on: [dialler]
-    network_mode: "service:dialler"
+    depends_on: [dialpark]
+    network_mode: "service:dialpark"
     cap_add: [NET_ADMIN, NET_RAW]
 
-  # dialler-admin, the operator's web UI (SPEC §6 item 9c), from the same
+  # dialpark-admin, the operator's web UI (SPEC §6 item 9c), from the same
   # image, talking to the server's admin API on 8081 inside the network.
   # Operator password: "harness" (harness/admin/password). admin_ui_test.sh
   # drives it with curl; nothing is published on the host.
   admin:
-    image: dialler-harness-dialler
+    image: dialpark-harness-dialpark
     profiles: [test]
-    depends_on: [dialler]
-    entrypoint: ["/dialler-admin"]
+    depends_on: [dialpark]
+    entrypoint: ["/dialpark-admin"]
     command:
       - -listen=:8443
-      - -server=https://dialler:8081
+      - -server=https://dialpark:8081
       - -admin-token=harness
       - -insecure
       - -password-file=/admin-password
@@ -183,22 +183,22 @@ services:
   sipp:
     build: ./sipp
     profiles: [test]
-    depends_on: [dialler]
+    depends_on: [dialpark]
     volumes:
       - ./sipp/scenarios:/scenarios:ro
     environment:
-      DIALLER_HOST: dialler
-      DIALLER_SIP_PORT: "5061"
+      DIALPARK_HOST: dialpark
+      DIALPARK_SIP_PORT: "5061"
 
   baresip-a:
     build:
       context: ..
       dockerfile: harness/baresip/Dockerfile
     profiles: [test]
-    depends_on: [dialler]
+    depends_on: [dialpark]
     environment:
       SIP_USER: "211"
-      SIP_DOMAIN: dialler
+      SIP_DOMAIN: dialpark
       # App-leg SIP Digest: the enrolled device's id and fixed dev token
       # (harness/provision.sh).
       AUTH_USER: dev-ha
@@ -217,22 +217,22 @@ services:
       context: ..
       dockerfile: harness/baresip/Dockerfile
     profiles: [test]
-    depends_on: [dialler]
+    depends_on: [dialpark]
     environment:
       SIP_USER: "212"
-      SIP_DOMAIN: dialler
+      SIP_DOMAIN: dialpark
       AUTH_USER: dev-hb
       AUTH_PASS: tok_dev_hb_harness_fixed
       REGINT: "${BARESIP_B_REGINT:-300}" # 0 → starts unregistered (wake test)
       ANSWER_MODE: "${BARESIP_B_ANSWER_MODE:-auto}" # manual → rings and never answers (cancel_before_answer_test.sh)
       # Set to <mac-ip>:5061 to register with a server running natively on
-      # the Mac instead of the dialler container (harness/ring_native.sh).
+      # the Mac instead of the dialpark container (harness/ring_native.sh).
       OUTBOUND: "${BARESIP_B_OUTBOUND:-}"
     volumes:
       - ./baresip/media:/media
 
 volumes:
-  dialler-data: {}
+  dialpark-data: {}
   admin-data: {}
 
 # Fixed addresses: Asterisk identifies the light server as its trunk peer

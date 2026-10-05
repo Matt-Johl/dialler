@@ -1,11 +1,11 @@
 #!/bin/sh
 # Enrol the real app (201 → dev-a), the two docker harness phones (211 →
 # dev-ha, 212 → dev-hb) and the simulator (203 → dev-s), and seed the
-# directory. Run after `docker compose up dialler`, either from the host
+# directory. Run after `docker compose up dialpark`, either from the host
 # (curl) or inside the compose network via innet.sh (busybox wget):
 #
 #   sh harness/provision.sh
-#   sh harness/innet.sh dialler-harness_default harness/provision.sh
+#   sh harness/innet.sh dialpark-harness_default harness/provision.sh
 #
 # Tokens are FIXED dev fixtures so a re-provisioned harness (every
 # `down -v` / `harness-up`) keeps the same credentials and the app does not
@@ -19,8 +19,8 @@
 # fixed one above.
 set -eu
 # TLS on the server's (self-signed in dev) certificate, hence -k below.
-API="${DIALLER_API:-https://127.0.0.1:8081}"
-TOKEN="${DIALLER_ADMIN_TOKEN:-harness}"
+API="${DIALPARK_API:-https://127.0.0.1:8081}"
+TOKEN="${DIALPARK_ADMIN_TOKEN:-harness}"
 DEV_A_TOKEN="${DEV_A_TOKEN:-tok_dev_a_harness_fixed}"
 DEV_HA_TOKEN="${DEV_HA_TOKEN:-tok_dev_ha_harness_fixed}"
 DEV_HB_TOKEN="${DEV_HB_TOKEN:-tok_dev_hb_harness_fixed}"
@@ -53,22 +53,22 @@ post() {
 # The product licence (SPEC §4.9) comes first: with none installed the
 # server has no seats and every fixture token below would be refused. The
 # dev licence is issued by the vendor for the fixed install id the harness
-# ships (harness/dialler/install.id, baked into the image's /data and seeded
+# ships (harness/dialpark/install.id, baked into the image's /data and seeded
 # into ./data by make dev-server). A data directory that predates licensing
 # holds its own, different install id and refuses this licence; the fix is
 # `make harness-down` (down -v) for the harness, or copying
-# harness/dialler/install.id into the data directory for a native server.
+# harness/dialpark/install.id into the data directory for a native server.
 echo "# licence"
-LICENCE_FILE="${DIALLER_LICENCE_FILE:-harness/dialler/licence}"
+LICENCE_FILE="${DIALPARK_LICENCE_FILE:-harness/dialpark/licence}"
 if [ ! -s "$LICENCE_FILE" ]; then
-  echo "no dev licence at $LICENCE_FILE: the vendor issues one for install id $(cat harness/dialler/install.id 2>/dev/null) with" >&2
-  echo "  bin/dialler-licence issue -key <vendor.key> -customer 'Dialler harness' -install-id $(cat harness/dialler/install.id 2>/dev/null) -seats 25 -valid-until 2036-12-31 > $LICENCE_FILE" >&2
+  echo "no dev licence at $LICENCE_FILE: the vendor issues one for install id $(cat harness/dialpark/install.id 2>/dev/null) with" >&2
+  echo "  bin/dialpark-licence issue -key <vendor.key> -customer 'Dialpark harness' -install-id $(cat harness/dialpark/install.id 2>/dev/null) -seats 25 -valid-until 2036-12-31 > $LICENCE_FILE" >&2
   exit 1
 fi
 if ! post /v1/admin/licence "{\"licence\":\"$(tr -d '\n' < "$LICENCE_FILE")\"}" >/dev/null; then
   echo "the dev licence was refused (see above). If it names another install id, the data directory predates licensing:" >&2
   echo "  harness: make harness-down   (down -v, then up again)" >&2
-  echo "  native:  cp harness/dialler/install.id data/install.id   (and restart the server)" >&2
+  echo "  native:  cp harness/dialpark/install.id data/install.id   (and restart the server)" >&2
   exit 1
 fi
 echo "licence installed"
@@ -122,7 +122,7 @@ if [ "${PBX_LINES:-0}" = 1 ]; then
   # (harness/asterisk-native, installed with LINES=1). Its credentials are
   # the ones in pjsip-lines.conf there.
   post /v1/admin/devices/dev-a/pbx-line \
-    "{\"digest_user\":\"${LINE_A_USER:-line201}\",\"secret\":\"${LINE_A_SECRET:-dialler-line-201}\"}" >/dev/null
+    "{\"digest_user\":\"${LINE_A_USER:-line201}\",\"secret\":\"${LINE_A_SECRET:-dialpark-line-201}\"}" >/dev/null
   # The two docker harness phones, for pbx_lines_test.sh.
   post /v1/admin/devices/dev-ha/pbx-line \
     "{\"digest_user\":\"${LINE_HA_USER:-line211}\",\"secret\":\"${LINE_HA_SECRET:-linepass-211}\"}" >/dev/null
@@ -147,12 +147,12 @@ echo "# directories (one per device, SPEC §6 item 7; the same seed for each)"
 # from duplicating anything.
 for dev in dev-a dev-ha dev-hb dev-s; do
   for c in \
-    '{"display_name":"Matt (201)","uri":"sip:201@dialler","mode":"local","favourite":true}' \
-    '{"display_name":"Harness phone A (211)","uri":"sip:211@dialler","mode":"local"}' \
-    '{"display_name":"Harness phone B (212)","uri":"sip:212@dialler","mode":"local"}' \
+    '{"display_name":"Matt (201)","uri":"sip:201@dialpark","mode":"local","favourite":true}' \
+    '{"display_name":"Harness phone A (211)","uri":"sip:211@dialpark","mode":"local"}' \
+    '{"display_name":"Harness phone B (212)","uri":"sip:212@dialpark","mode":"local"}' \
     '{"display_name":"Desk phone (100)","uri":"sip:100@asterisk","mode":"trunk"}' \
     '{"display_name":"SIP phone (101)","uri":"sip:101@asterisk","mode":"trunk","favourite":true}' \
-    '{"display_name":"Echo test (server)","uri":"sip:echo@dialler","mode":"local"}' \
+    '{"display_name":"Echo test (server)","uri":"sip:echo@dialpark","mode":"local"}' \
     '{"display_name":"Echo test (PBX, 600)","uri":"sip:600@asterisk","mode":"trunk"}'
   do
     post "/v1/admin/devices/$dev/directory" "$c" >/dev/null

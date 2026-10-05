@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"dialler/server/internal/directory"
+	"dialpark/server/internal/directory"
 )
 
 // CSV is the directory's file form (SPEC §4.8): display_name,uri,mode,

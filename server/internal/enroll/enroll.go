@@ -25,8 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"dialler/server/internal/secrets"
-	"dialler/server/internal/sipauth"
+	"dialpark/server/internal/secrets"
+	"dialpark/server/internal/sipauth"
 )
 
 // Device is the public view of an enrolled device.

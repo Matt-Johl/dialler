@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/pbx"
-	"dialler/server/internal/pbxline"
-	"dialler/server/internal/secrets"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/pbx"
+	"dialpark/server/internal/pbxline"
+	"dialpark/server/internal/secrets"
 )
 
 func TestParsePBXMode(t *testing.T) {
@@ -116,7 +116,7 @@ func TestSplitList(t *testing.T) {
 func TestRegisterLineHonoursSeats(t *testing.T) {
 	log := slog.Default()
 	devices, _ := enroll.Open("")
-	devices.Realm = "dialler"
+	devices.Realm = "dialpark"
 	box, _ := secrets.OpenKey(filepath.Join(t.TempDir(), "pbx.key"))
 	devices.Secrets = box
 	mgr := pbxline.New(pbxline.Config{Registrar: okRegistrar{}, Log: log})

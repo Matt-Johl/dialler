@@ -1,159 +1,267 @@
 <!doctype html>
 <html lang="en-GB">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dialpark</title>
-<meta name="description" content="Dialpark is a call server for your network. It connects a SIP PBX to iPhones running the Dialler app and wakes them for incoming calls, so calls ring even when the app is closed.">
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="style.css">
-<script>
-  /* A remembered choice wins over the system's; without one the page follows it. */
-  try { var t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
-</script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dialpark</title>
+  <meta name="description"
+    content="Dialpark is a call server for your network. It connects a SIP PBX to iPhones running the Dialler app and wakes them for incoming calls, so calls ring even when the app is closed.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="style.css">
+  <script>
+    /* A remembered choice wins over the system's; without one the page follows it. */
+    try { var t = localStorage.getItem("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) { }
+  </script>
 </head>
+
 <body>
 
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <symbol id="mark" viewBox="0 0 1024 1024">
-    <g transform="translate(512 512) rotate(-45)">
-      <rect x="-500" y="-35" width="1000" height="70"/>
-      <rect x="-450" y="-140" width="340" height="70"/>
-      <rect x="-390" y="-245" width="200" height="70"/>
-      <rect x="110" y="70" width="340" height="70"/>
-      <rect x="190" y="175" width="200" height="70"/>
-    </g>
-  </symbol>
-</svg>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="mark" viewBox="0 0 1024 1024">
+      <g transform="translate(512 512) rotate(-45)">
+        <rect x="-500" y="-35" width="1000" height="70" />
+        <rect x="-450" y="-140" width="340" height="70" />
+        <rect x="-390" y="-245" width="200" height="70" />
+        <rect x="110" y="70" width="340" height="70" />
+        <rect x="190" y="175" width="200" height="70" />
+      </g>
+    </symbol>
+  </svg>
 
-<header>
-  <div class="wrap">
-    <a class="brand" href="#"><svg class="mark" aria-hidden="true"><use href="#mark"/></svg>Dialpark</a>
-    <nav aria-label="Sections">
-      <a href="#features">Features</a>
-      <a href="#how">How it works</a>
-      <a href="#setup">Setup</a>
-      <a href="#manage">Management</a>
-      <a href="#contact">Contact</a>
-    </nav>
-    <button class="theme" type="button" aria-label="Switch between light and dark">
-      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
-      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>
-    </button>
-  </div>
-</header>
-
-<main>
-
-<section class="hero">
-  <div class="wrap">
-    <div>
-      <h1>PBX extensions on iPhone. <span>Ringing even when the app is closed.</span></h1>
-      <p class="lede">Dialpark is a call server that runs on your network. It connects your SIP PBX to iPhones running the Dialler app, and wakes each phone through Apple's Local Push Connectivity when a call comes in, so calls are answered whether the app is open, in the background or closed.</p>
-      <p class="meta">For Asterisk, Cisco CUCM and other SIP PBXs.</p>
+  <header>
+    <div class="wrap">
+      <a class="brand" href="#"><svg class="mark" aria-hidden="true">
+          <use href="#mark" />
+        </svg>Dialpark</a>
+      <nav aria-label="Sections">
+        <a href="#features">Features</a>
+        <a href="#how">How it works</a>
+        <a href="#setup">Setup</a>
+        <a href="#manage">Management</a>
+        <a href="#contact">Contact</a>
+      </nav>
+      <button class="theme" type="button" aria-label="Switch between light and dark">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />
+        </svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+          stroke-linecap="round">
+          <circle cx="12" cy="12" r="4" />
+          <path
+            d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" />
+        </svg>
+      </button>
     </div>
-    <div class="iphone" aria-hidden="true">
-      <i class="btn action"></i><i class="btn up"></i><i class="btn down"></i><i class="btn side"></i>
-      <div class="bezel"><div class="screen">
-        <div class="status">
-          <span>9:41</span>
-          <span class="icons">
-            <svg width="17" height="11" viewBox="0 0 17 11"><rect x="0" y="7" width="3" height="4" rx=".8"/><rect x="4.7" y="4.7" width="3" height="6.3" rx=".8"/><rect x="9.3" y="2.4" width="3" height="8.6" rx=".8"/><rect x="14" y="0" width="3" height="11" rx=".8"/></svg>
-            <svg width="15" height="11" viewBox="0 0 15 11"><path d="M7.5 2.3c2.2 0 4.2.8 5.7 2.2l1.2-1.2A9.8 9.8 0 0 0 7.5.6 9.8 9.8 0 0 0 .6 3.3l1.2 1.2a8.1 8.1 0 0 1 5.7-2.2zm0 3.3c1.3 0 2.5.5 3.4 1.3l1.2-1.2a6.6 6.6 0 0 0-9.2 0l1.2 1.2c.9-.8 2.1-1.3 3.4-1.3zm0 3.3c.5 0 .9.2 1.2.5L7.5 10.6 6.3 9.4c.3-.3.7-.5 1.2-.5z"/></svg>
-            <svg width="25" height="12" viewBox="0 0 25 12"><rect x=".5" y=".5" width="21" height="11" rx="3.3" fill="none" stroke="currentColor" opacity=".4"/><rect x="2" y="2" width="18" height="8" rx="2"/><path d="M23 4v4c.8-.3 1.3-1.1 1.3-2s-.5-1.7-1.3-2z" opacity=".4"/></svg>
-          </span>
+  </header>
+
+  <main>
+
+    <section class="hero">
+      <div class="wrap">
+        <div>
+          <h1>Mobile SIP Gateway for iOS. <span></span></h1>
+          <p class="lede">Dialpark is a call server that extends a VoIP deployment to iPhone endpoints. It
+            interconnects a SIP PBX with iPhones running the Dialler app and, for incoming calls, acts as the local push
+            server for Apple’s Local Push Connectivity API.</p>
+          <p class="meta">For Asterisk, Cisco CUCM and other SIP PBXs.</p>
         </div>
-        <div class="island"></div>
-          <div class="rings"><i></i><i></i><i></i><div class="monogram">RE</div></div>
-          <div class="who">Reception</div>
-          <div class="time">0:42</div>
-          <div class="controls">
-            <div><span><svg viewBox="0 0 24 24"><path d="M9 5a3 3 0 0 1 6 0v5M15 13.5A3 3 0 0 1 9 11V9"/><path d="M5.5 11a6.5 6.5 0 0 0 11 4.7M18.5 11v.5M12 17.5V21M4 4l16 16"/></svg></span>Mute</div>
-            <div><span><svg viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg></span>Hold</div>
-            <div><span><svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg></span>Speaker</div>
-            <div><span><svg viewBox="0 0 24 24"><path d="M5 18v-3a5 5 0 0 1 5-5h9M15 6l4 4-4 4"/></svg></span>Transfer</div>
+        <div class="iphone" aria-hidden="true">
+          <i class="btn action"></i><i class="btn up"></i><i class="btn down"></i><i class="btn side"></i>
+          <div class="bezel">
+            <div class="screen">
+              <div class="status">
+                <span>9:41</span>
+                <span class="icons">
+                  <svg width="17" height="11" viewBox="0 0 17 11">
+                    <rect x="0" y="7" width="3" height="4" rx=".8" />
+                    <rect x="4.7" y="4.7" width="3" height="6.3" rx=".8" />
+                    <rect x="9.3" y="2.4" width="3" height="8.6" rx=".8" />
+                    <rect x="14" y="0" width="3" height="11" rx=".8" />
+                  </svg>
+                  <svg width="15" height="11" viewBox="0 0 15 11">
+                    <path
+                      d="M7.5 2.3c2.2 0 4.2.8 5.7 2.2l1.2-1.2A9.8 9.8 0 0 0 7.5.6 9.8 9.8 0 0 0 .6 3.3l1.2 1.2a8.1 8.1 0 0 1 5.7-2.2zm0 3.3c1.3 0 2.5.5 3.4 1.3l1.2-1.2a6.6 6.6 0 0 0-9.2 0l1.2 1.2c.9-.8 2.1-1.3 3.4-1.3zm0 3.3c.5 0 .9.2 1.2.5L7.5 10.6 6.3 9.4c.3-.3.7-.5 1.2-.5z" />
+                  </svg>
+                  <svg width="25" height="12" viewBox="0 0 25 12">
+                    <rect x=".5" y=".5" width="21" height="11" rx="3.3" fill="none" stroke="currentColor"
+                      opacity=".4" />
+                    <rect x="2" y="2" width="18" height="8" rx="2" />
+                    <path d="M23 4v4c.8-.3 1.3-1.1 1.3-2s-.5-1.7-1.3-2z" opacity=".4" />
+                  </svg>
+                </span>
+              </div>
+              <div class="island"></div>
+              <div class="rings"><i></i><i></i><i></i>
+                <div class="monogram">RE</div>
+              </div>
+              <div class="who">Reception</div>
+              <div class="time">0:42</div>
+              <div class="controls">
+                <div><span><svg viewBox="0 0 24 24">
+                      <path d="M9 5a3 3 0 0 1 6 0v5M15 13.5A3 3 0 0 1 9 11V9" />
+                      <path d="M5.5 11a6.5 6.5 0 0 0 11 4.7M18.5 11v.5M12 17.5V21M4 4l16 16" />
+                    </svg></span>Mute</div>
+                <div><span><svg viewBox="0 0 24 24">
+                      <path d="M9 6v12M15 6v12" />
+                    </svg></span>Hold</div>
+                <div><span><svg viewBox="0 0 24 24">
+                      <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+                      <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+                    </svg></span>Speaker</div>
+                <div><span><svg viewBox="0 0 24 24">
+                      <path d="M5 18v-3a5 5 0 0 1 5-5h9M15 6l4 4-4 4" />
+                    </svg></span>Transfer</div>
+              </div>
+              <div class="end"><svg viewBox="0 0 24 24">
+                  <path
+                    d="M12 9c-3.6 0-6.9 1-9 2.8-.6.5-.7 1.4-.2 2l1.3 1.6c.5.6 1.3.7 1.9.3l2.3-1.4c.5-.3.7-.8.6-1.3l-.3-1.5c2.2-.7 4.6-.7 6.8 0l-.3 1.5c-.1.5.1 1 .6 1.3l2.3 1.4c.6.4 1.4.3 1.9-.3l1.3-1.6c.5-.6.4-1.5-.2-2C18.9 10 15.6 9 12 9z" />
+                </svg></div>
+              <div class="home"></div>
+            </div>
           </div>
-          <div class="end"><svg viewBox="0 0 24 24"><path d="M12 9c-3.6 0-6.9 1-9 2.8-.6.5-.7 1.4-.2 2l1.3 1.6c.5.6 1.3.7 1.9.3l2.3-1.4c.5-.3.7-.8.6-1.3l-.3-1.5c2.2-.7 4.6-.7 6.8 0l-.3 1.5c-.1.5.1 1 .6 1.3l2.3 1.4c.6.4 1.4.3 1.9-.3l1.3-1.6c.5-.6.4-1.5-.2-2C18.9 10 15.6 9 12 9z"/></svg></div>
-        <div class="home"></div>
-      </div></div>
-    </div>
-  </div>
-</section>
-
-<section id="features">
-  <div class="wrap">
-    <div class="intro">
-      <p class="label">Features</p>
-      <h2>At a glance</h2>
-    </div>
-    <table class="spec">
-      <tr><td>Incoming calls</td><td>Open, in the background, or closed</td></tr>
-      <tr><td>PBX</td><td>Asterisk, Cisco CUCM or another SIP PBX, as a SIP trunk or one registered line per phone</td></tr>
-      <tr><td>Wake-ups</td><td>Apple Local Push Connectivity, on the Wi-Fi networks assigned to each phone</td></tr>
-      <tr><td>Encryption</td><td>TLS signalling, SRTP audio</td></tr>
-      <tr><td>Codecs</td><td>G.722, G.711</td></tr>
-      <tr><td>Directory</td><td>One per phone, set in the console or by CSV, editable on the phone</td></tr>
-      <tr><td>Call controls</td><td>Hold, transfer, mute, speaker, keypad, recents</td></tr>
-      <tr><td>Requirements</td><td>iOS 17 or later with the Dialler app, a SIP PBX, and a Dialpark server reachable from the phones' Wi-Fi on the <a href="#setup">listed ports</a></td></tr>
-    </table>
-  </div>
-</section>
-
-<section id="how">
-  <div class="wrap">
-    <div class="intro">
-      <p class="label">How it works</p>
-      <h2>The PBX calls the server. The server wakes the phone.</h2>
-      <p class="muted">The Dialpark server sits between your PBX and the phones. It sends the wake-up when a call comes in, and provides the web console for enrolment, directories and status.</p>
-    </div>
-
-    <table class="spec">
-      <tr><td>Dialpark</td><td>The system: the call server and its web console, installed on a machine on your network. Licensed per phone.</td></tr>
-      <tr><td>Dialler</td><td>The iOS app, from the App Store. Each phone is enrolled to one Dialpark server and receives its calls from it.</td></tr>
-    </table>
-
-    <div class="diagram" role="img" aria-label="Your PBX connects over SIP to the Dialpark server, which reaches the Dialler app on each phone over Wi-Fi.">
-      <div class="node">
-        <div class="circle"><svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="17" height="6" rx="1.5"/><rect x="3.5" y="14" width="17" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg></div>
-        <h3>PBX</h3>
+        </div>
       </div>
-      <div class="link"><b>SIP</b></div>
-      <div class="node core">
-        <div class="circle"><svg class="mark" aria-hidden="true"><use href="#mark"/></svg></div>
-        <h3>Dialpark server</h3>
+    </section>
+
+    <section id="features">
+      <div class="wrap">
+        <div class="intro">
+          <p class="label">Features</p>
+          <h2>At a glance</h2>
+        </div>
+        <table class="spec">
+          <tr>
+            <td>Incoming calls</td>
+            <td>Open, in the background, or closed</td>
+          </tr>
+          <tr>
+            <td>PBX</td>
+            <td>Asterisk, Cisco CUCM or another SIP PBX, as a SIP trunk or one registered line per phone</td>
+          </tr>
+          <tr>
+            <td>Wake-ups</td>
+            <td>Apple Local Push Connectivity, on the Wi-Fi networks assigned to each phone</td>
+          </tr>
+          <tr>
+            <td>Encryption</td>
+            <td>TLS signalling, SRTP audio, always encrypted between Dialler app and Dialpark server</td>
+          </tr>
+          <tr>
+            <td>Codecs</td>
+            <td>G.722, G.711</td>
+          </tr>
+          <tr>
+            <td>Directory</td>
+            <td>Customizable per phone or bulk deployed, set in the console or by CSV, editable on the phone</td>
+          </tr>
+          <tr>
+            <td>Call controls</td>
+            <td>Hold, transfer, mute, speaker</td>
+          </tr>
+          <tr>
+            <td>Requirements</td>
+            <td>iOS 17 or later with the Dialler app, a SIP PBX, and a Dialpark server reachable from the phones' Wi-Fi
+              on the <a href="#setup">listed ports</a></td>
+          </tr>
+        </table>
       </div>
-      <div class="link"><b>Wi-Fi</b></div>
-      <div class="node">
-        <div class="circle"><svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M10.5 18.5h3"/></svg></div>
-        <h3>Dialler app</h3>
+    </section>
+
+    <section id="how">
+      <div class="wrap">
+        <div class="intro">
+          <p class="label">How it works</p>
+          <h2>The PBX calls the server. The server wakes the phone.</h2>
+          <p class="muted">The Dialpark server sits between your PBX and the phones. It sends the wake-up when a call
+            comes in, and provides the web console for enrolment, directories and status.</p>
+        </div>
+
+        <table class="spec">
+          <tr>
+            <td>Dialpark</td>
+            <td>The system: the call server and its web console, installed on a machine on your network. Licensed per
+              phone.</td>
+          </tr>
+          <tr>
+            <td>Dialler</td>
+            <td>The iOS app, from the App Store. Each phone is enrolled to one Dialpark server and receives its calls
+              from it.</td>
+          </tr>
+        </table>
+
+        <div class="diagram" role="img"
+          aria-label="Your PBX connects over SIP to the Dialpark server, which reaches the Dialler app on each phone over Wi-Fi.">
+          <div class="node">
+            <div class="circle"><svg viewBox="0 0 24 24">
+                <rect x="3.5" y="4" width="17" height="6" rx="1.5" />
+                <rect x="3.5" y="14" width="17" height="6" rx="1.5" />
+                <path d="M7 7h.01M7 17h.01" />
+              </svg></div>
+            <h3>PBX</h3>
+          </div>
+          <div class="link"><b>SIP</b></div>
+          <div class="node core">
+            <div class="circle"><svg class="mark" aria-hidden="true">
+                <use href="#mark" />
+              </svg></div>
+            <h3>Dialpark server</h3>
+          </div>
+          <div class="link"><b>Wi-Fi</b></div>
+          <div class="node">
+            <div class="circle"><svg viewBox="0 0 24 24">
+                <rect x="7" y="2.5" width="10" height="19" rx="2.5" />
+                <path d="M10.5 18.5h3" />
+              </svg></div>
+            <h3>Dialler app</h3>
+          </div>
+        </div>
+
+        <ol class="steps">
+          <li>
+            <p>The PBX sends the call to the Dialpark server.</p>
+          </li>
+          <li>
+            <p>The server wakes Dialler through Local Push Connectivity, and iOS shows the incoming call.</p>
+          </li>
+          <li>
+            <p>When answered, the app connects and the server bridges the call to the PBX.</p>
+          </li>
+        </ol>
+
+        <p class="note">Phones receive calls only on the Wi-Fi networks assigned to them.</p>
       </div>
-    </div>
+    </section>
 
-    <ol class="steps">
-      <li><p>The PBX sends the call to the Dialpark server.</p></li>
-      <li><p>The server wakes Dialler through Local Push Connectivity, and iOS shows the incoming call.</p></li>
-      <li><p>When answered, the app connects and the server bridges the call to the PBX.</p></li>
-    </ol>
-
-    <p class="note">Phones receive calls only on the Wi-Fi networks assigned to them.</p>
-  </div>
-</section>
-
-<section id="setup">
-  <div class="wrap split">
-    <div>
-      <p class="label">Setup</p>
-      <h2>Two binaries, one machine</h2>
-      <p class="muted"><code>dialpark-server</code> handles calls and wake-ups. <code>dialpark-admin</code> is the web console. Both are single binaries, usually run on the same machine.</p>
-      <table>
-        <tr><td><code>7443</code> TCP</td><td>Wake-ups and signalling</td></tr>
-        <tr><td><code>5061</code> TCP</td><td>SIP over TLS</td></tr>
-        <tr><td><code>8080</code> TCP</td><td>Enrolment and directory</td></tr>
-        <tr><td><code>20000–20100</code> UDP</td><td>Call audio</td></tr>
-      </table>
-    </div>
-    <div>
-<pre><code>dialpark-server \
+    <section id="setup">
+      <div class="wrap split">
+        <div>
+          <p class="label">Setup</p>
+          <h2>Two binaries, one machine</h2>
+          <p class="muted"><code>dialpark-server</code> handles calls and wake-ups. <code>dialpark-admin</code> is the
+            web console. Both are single binaries, usually run on the same machine.</p>
+          <table>
+            <tr>
+              <td><code>7443</code> TCP</td>
+              <td>Wake-ups and signalling</td>
+            </tr>
+            <tr>
+              <td><code>5061</code> TCP</td>
+              <td>SIP over TLS</td>
+            </tr>
+            <tr>
+              <td><code>8080</code> TCP</td>
+              <td>Enrolment and directory</td>
+            </tr>
+            <tr>
+              <td><code>20000–20100</code> UDP</td>
+              <td>Call audio</td>
+            </tr>
+          </table>
+        </div>
+        <div>
+          <pre><code>dialpark-server \
   -trunk "sip:pbx.example:5060;transport=tcp" \
   -public-host 10.0.0.10 \
   -local-domain site \
@@ -166,53 +274,78 @@ dialpark-admin \
   -server-ca server.pem \
   -admin-token-file admin-token \
   -password-file password</code></pre>
-      <p class="caption">For one registered line per phone instead of a trunk, add <code>-pbx-mode lines</code>.</p>
+          <p class="caption">For one registered line per phone instead of a trunk, add <code>-pbx-mode lines</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="manage">
+      <div class="wrap">
+        <div class="intro">
+          <p class="label">Management</p>
+          <h2>One console for every phone</h2>
+        </div>
+        <table class="spec">
+          <tr>
+            <td>Add a phone</td>
+            <td>Enter an extension and a label; the console shows a QR code</td>
+          </tr>
+          <tr>
+            <td>Enrol</td>
+            <td>Install Dialler on the phone, then scan the QR code with the camera or type the code in the app. Codes
+              are single-use and expire after 15 minutes</td>
+          </tr>
+          <tr>
+            <td>Configure</td>
+            <td>Wi-Fi networks and directory, per phone</td>
+          </tr>
+          <tr>
+            <td>Replace or revoke</td>
+            <td>Revoke a phone, or issue a new code for a replacement</td>
+          </tr>
+          <tr>
+            <td>Status</td>
+            <td>Phones online, PBX line registration, calls in progress</td>
+          </tr>
+        </table>
+      </div>
+    </section>
+
+    <section id="contact">
+      <div class="wrap">
+        <div class="intro">
+          <p class="label">Contact</p>
+          <h2>Get in touch</h2>
+        </div>
+        <table class="spec">
+          <tr>
+            <td>Sales</td>
+            <td><a href="mailto:sales@eccentricbadger.com">sales@eccentricbadger.com</a></td>
+          </tr>
+          <tr>
+            <td>Support</td>
+            <td><a href="mailto:support@eccentricbadger.com">support@eccentricbadger.com</a></td>
+          </tr>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <svg class="mark" aria-hidden="true">
+        <use href="#mark" />
+      </svg>
+      <span>Dialpark</span>
+      <div class="right">
+        <a href="privacy.html">Privacy policy</a>
+        <span>© 2026 Eccentric Badger (Pty) Ltd</span>
+      </div>
     </div>
-  </div>
-</section>
+  </footer>
 
-<section id="manage">
-  <div class="wrap">
-    <div class="intro">
-      <p class="label">Management</p>
-      <h2>One console for every phone</h2>
-    </div>
-    <table class="spec">
-      <tr><td>Add a phone</td><td>Enter an extension and a label; the console shows a QR code</td></tr>
-      <tr><td>Enrol</td><td>Install Dialler on the phone, then scan the QR code with the camera or type the code in the app. Codes are single-use and expire after 15 minutes</td></tr>
-      <tr><td>Configure</td><td>Wi-Fi networks and directory, per phone</td></tr>
-      <tr><td>Replace or revoke</td><td>Revoke a phone, or issue a new code for a replacement</td></tr>
-      <tr><td>Status</td><td>Phones online, PBX line registration, calls in progress</td></tr>
-    </table>
-  </div>
-</section>
-
-<section id="contact">
-  <div class="wrap">
-    <div class="intro">
-      <p class="label">Contact</p>
-      <h2>Get in touch</h2>
-    </div>
-    <table class="spec">
-      <tr><td>Sales</td><td><a href="mailto:sales@eccentricbadger.com">sales@eccentricbadger.com</a></td></tr>
-      <tr><td>Support</td><td><a href="mailto:support@eccentricbadger.com">support@eccentricbadger.com</a></td></tr>
-    </table>
-  </div>
-</section>
-
-</main>
-
-<footer>
-  <div class="wrap">
-    <svg class="mark" aria-hidden="true"><use href="#mark"/></svg>
-    <span>Dialpark</span>
-    <div class="right">
-      <a href="privacy.html">Privacy policy</a>
-      <span>© 2026 Eccentric Badger (Pty) Ltd</span>
-    </div>
-  </div>
-</footer>
-
-<script src="site.js"></script>
+  <script src="site.js"></script>
 </body>
+
 </html>

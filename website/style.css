@@ -222,7 +222,7 @@ table.spec tr:last-child td { border-bottom: 1px solid var(--hairline); }
 .steps p { color: var(--secondary); margin: 0; }
 @media (max-width: 760px) { .steps { grid-template-columns: 1fr; gap: 28px; } }
 
-/* ---- set-up ---- */
+/* ---- setup ---- */
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: start; }
 .split > * { min-width: 0; }
 @media (max-width: 860px) { .split { grid-template-columns: 1fr; gap: 36px; } }

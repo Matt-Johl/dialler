@@ -311,7 +311,7 @@ also hangs up after 30 seconds with no audio arriving.
 Dialling the word "echo" is answered by the server itself, which plays the caller's own voice back
 through the relay after a short delay. It tests the whole path from microphone to server to speaker.
 Because the keypad types digits only, "echo" is normally reached from a directory entry. A PBX may
-offer its own echo extension (600 in the test set-up), which tests the PBX path as well.
+offer its own echo extension (600 in the test setup), which tests the PBX path as well.
 
 ## 7. Audio and encryption between phone and server
 
@@ -463,7 +463,7 @@ pending diagnostics are kept in the app's shared storage so the extension can re
 ### Permissions
 
 The app asks for the camera only when the scanner opens ("Dialler uses the camera to scan the
-enrolment code your administrator shows you"), for local network access during set-up (it opens a test
+enrolment code your administrator shows you"), for local network access during setup (it opens a test
 connection and waits for the answer, so the first attempt does not fail), and for the microphone once
 the phone is set up. If local network access is refused the app says so and offers an Open Settings
 button.

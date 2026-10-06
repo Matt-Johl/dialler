@@ -1,5 +1,5 @@
-// Command dialler-admin is the operator's web UI for a Dialler site (SPEC
-// §6 item 9c): a second process that speaks only to dialler-server's admin
+// Command dialpark-admin is the operator's web UI for a Dialpark site (SPEC
+// §6 item 9c): a second process that speaks only to dialpark-server's admin
 // API, behind one operator password. It never touches SIP, media or the
 // wake gateway, and can crash, restart or be redeployed with no effect on
 // a call.
@@ -22,10 +22,10 @@ import (
 	"syscall"
 	"time"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/adminui"
-	"dialler/server/internal/qr"
-	"dialler/server/internal/tlsutil"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/adminui"
+	"dialpark/server/internal/qr"
+	"dialpark/server/internal/tlsutil"
 )
 
 // version is stamped by the Makefile (-X main.version=…); "dev" otherwise.
@@ -34,11 +34,11 @@ var version = "dev"
 func main() {
 	var (
 		listen       = flag.String("listen", "127.0.0.1:8443", "HTTPS listen address for the UI")
-		server       = flag.String("server", "https://127.0.0.1:8081", "dialler-server's admin API")
-		tokenFile    = flag.String("admin-token-file", "", "file holding the admin bearer token dialler-server was started with (-admin-token-file there); whitespace trimmed")
+		server       = flag.String("server", "https://127.0.0.1:8081", "dialpark-server's admin API")
+		tokenFile    = flag.String("admin-token-file", "", "file holding the admin bearer token dialpark-server was started with (-admin-token-file there); whitespace trimmed")
 		adminToken   = flag.String("admin-token", "", "the token itself, for development only (visible in ps)")
-		serverCA     = flag.String("server-ca", "", "CA PEM that dialler-server's certificate is verified against (its self-signed certificate file works)")
-		insecure     = flag.Bool("insecure", false, "accept any certificate from dialler-server (the self-signed dev certificate)")
+		serverCA     = flag.String("server-ca", "", "CA PEM that dialpark-server's certificate is verified against (its self-signed certificate file works)")
+		insecure     = flag.Bool("insecure", false, "accept any certificate from dialpark-server (the self-signed dev certificate)")
 		passwordFile = flag.String("password-file", "", "file holding the operator password; whitespace trimmed (required)")
 		certFile     = flag.String("tls-cert", "", "TLS certificate PEM for the UI (empty → self-signed, kept in -data-dir)")
 		keyFile      = flag.String("tls-key", "", "TLS private key PEM for the UI")
@@ -105,7 +105,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 		}
 		token = t
 	case token == "":
-		return errors.New("-admin-token-file is required (the token dialler-server was started with)")
+		return errors.New("-admin-token-file is required (the token dialpark-server was started with)")
 	}
 	if o.passwordFile == "" {
 		return errors.New("-password-file is required")
@@ -124,9 +124,9 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	if err := client.Whoami(ctx); err != nil {
 		switch {
 		case errors.Is(err, adminui.ErrUnauthorized):
-			return fmt.Errorf("dialler-server at %s refused the admin token", o.server)
+			return fmt.Errorf("dialpark-server at %s refused the admin token", o.server)
 		case adminui.Unreachable(err):
-			log.Warn("dialler-server is not answering yet; the UI will show that until it does", "server", o.server, "err", err)
+			log.Warn("dialpark-server is not answering yet; the UI will show that until it does", "server", o.server, "err", err)
 		default:
 			log.Warn("whoami", "err", err)
 		}
@@ -170,7 +170,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	}
 	srv := &http.Server{Handler: ui}
 	admin.ConfigureServer(srv)
-	log.Info("dialler-admin starting", "listen", ln.Addr(), "server", o.server, "version", version)
+	log.Info("dialpark-admin starting", "listen", ln.Addr(), "server", o.server, "version", version)
 
 	errc := make(chan error, 1)
 	go func() {

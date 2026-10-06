@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // bodyLimit bounds a licence PUT: the token's own cap plus the JSON around

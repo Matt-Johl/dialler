@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // fixed returns a ring whose clock is a counter, so At is deterministic.

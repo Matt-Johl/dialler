@@ -8,8 +8,8 @@
 #
 #   docker compose … run --rm --entrypoint /work/probe.sh sipp COUNT INTERVAL
 set -u
-HOST="${DIALLER_HOST:-dialler}"
-PORT="${DIALLER_SIP_PORT:-5061}"
+HOST="${DIALPARK_HOST:-dialpark}"
+PORT="${DIALPARK_SIP_PORT:-5061}"
 COUNT="${1:-6}"
 INTERVAL="${2:-1}"
 cd /work

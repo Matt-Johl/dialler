@@ -8,8 +8,8 @@ import (
 
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/registry"
-	"dialler/server/internal/routing"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/routing"
 )
 
 // The SIP/media paths need real sockets and are exercised by the docker
@@ -17,7 +17,7 @@ import (
 
 func TestRegisterExpires(t *testing.T) {
 	mk := func(contact, expiresHdr string) (*sip.Request, *sip.ContactHeader) {
-		req := sip.NewRequest(sip.REGISTER, sip.Uri{Host: "dialler"})
+		req := sip.NewRequest(sip.REGISTER, sip.Uri{Host: "dialpark"})
 		var c sip.ContactHeader
 		if _, err := sip.ParseAddressValue(contact, &c.Address, &c.Params); err != nil {
 			t.Fatal(err)
@@ -67,13 +67,13 @@ func TestRewriteContactRoutesToSourceOverTLS(t *testing.T) {
 }
 
 func TestServesDomain(t *testing.T) {
-	s := &Server{cfg: Config{Domains: []string{"dialler.example.local"}, ExternalHost: "10.0.0.1"}}
+	s := &Server{cfg: Config{Domains: []string{"dialpark.example.local"}, ExternalHost: "10.0.0.1"}}
 	cases := map[string]bool{
-		"dialler.example.local":      true,
-		"DIALLER.example.local:5061": true,
-		"10.0.0.1":                   true,
-		"evil.example":               false,
-		"":                           true,
+		"dialpark.example.local":      true,
+		"DIALPARK.example.local:5061": true,
+		"10.0.0.1":                    true,
+		"evil.example":                false,
+		"":                            true,
 	}
 	for host, want := range cases {
 		if got := s.servesDomain(host); got != want {

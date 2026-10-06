@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // MaxForSeconds is the longest a debug level or SIP trace may be held.

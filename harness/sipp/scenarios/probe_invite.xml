@@ -9,11 +9,11 @@
 <scenario name="probe_invite">
   <send>
     <![CDATA[
-      INVITE sip:214@dialler SIP/2.0
+      INVITE sip:214@dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:214@dialler>
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag02[call_number]
+      To: <sip:214@dialpark>
       Call-ID: [call_id]
       CSeq: 1 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
@@ -32,11 +32,11 @@
   <recv response="401" auth="true" timeout="5000"/>
   <send>
     <![CDATA[
-      ACK sip:214@dialler SIP/2.0
+      ACK sip:214@dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:214@dialler>[peer_tag_param]
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag02[call_number]
+      To: <sip:214@dialpark>[peer_tag_param]
       Call-ID: [call_id]
       CSeq: 1 ACK
       Content-Length: 0
@@ -44,11 +44,11 @@
   </send>
   <send start_rtd="1">
     <![CDATA[
-      INVITE sip:214@dialler SIP/2.0
+      INVITE sip:214@dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:214@dialler>
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag02[call_number]
+      To: <sip:214@dialpark>
       Call-ID: [call_id]
       CSeq: 2 INVITE
       Contact: <sip:[service]@[local_ip]:[local_port];transport=[transport]>
@@ -70,11 +70,11 @@
   <recv response="480" timeout="5000" rtd="1"/>
   <send>
     <![CDATA[
-      ACK sip:214@dialler SIP/2.0
+      ACK sip:214@dialpark SIP/2.0
       Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch];rport
       Max-Forwards: 70
-      From: <sip:[service]@dialler>;tag=[pid]SIPpTag02[call_number]
-      To: <sip:214@dialler>[peer_tag_param]
+      From: <sip:[service]@dialpark>;tag=[pid]SIPpTag02[call_number]
+      To: <sip:214@dialpark>[peer_tag_param]
       Call-ID: [call_id]
       CSeq: 2 ACK
       Content-Length: 0

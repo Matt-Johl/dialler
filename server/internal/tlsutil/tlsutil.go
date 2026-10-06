@@ -159,7 +159,7 @@ func SelfSigned(hosts []string) (tls.Certificate, error) {
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "dialler-dev"},
+		Subject:      pkix.Name{CommonName: "dialpark-dev"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

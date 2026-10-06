@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // Event kinds, exactly as §5.9 lists them. Detail keys are per kind and

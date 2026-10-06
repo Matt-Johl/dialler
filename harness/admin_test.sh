@@ -28,18 +28,18 @@ set -eu
 cd "$(dirname "$0")/.."
 
 COMPOSE_FILE="${COMPOSE_FILE:-harness/docker-compose.yml}"
-PROJECT="${PROJECT:-dialler-harness}"
+PROJECT="${PROJECT:-dialpark-harness}"
 MEDIA_DIR="${MEDIA_DIR:-harness/baresip/media}"
 LOAD_SECONDS="${LOAD_SECONDS:-60}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-5}"
 PROBE_FLOOR_MS="${PROBE_FLOOR_MS:-10}"
 LIMIT_RSS_MB="${LIMIT_RSS_MB:-64}"
 KEEP="${KEEP:-0}"
-TOKEN="${DIALLER_ADMIN_TOKEN:-harness}"
-API="https://dialler:8081"
+TOKEN="${DIALPARK_ADMIN_TOKEN:-harness}"
+API="https://dialpark:8081"
 
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f $COMPOSE_FILE $NOPORTS --profile test"
 NET="${PROJECT}_default"
 
@@ -74,11 +74,11 @@ median() {
   awk -v c="$2" '$c ~ /^[0-9]+$/ {print $c}' "$1" | sort -n | awk '{v[NR]=$1} END {if (!NR) print "?"; else print v[int((NR+1)/2)]}'
 }
 rss_mb() {
-  docker stats --no-stream --format '{{.MemUsage}}' "${PROJECT}-dialler-1" 2>/dev/null | awk '{v=$1; if (v ~ /GiB/) {sub(/GiB/,"",v); v*=1024} else {sub(/MiB/,"",v)} printf "%d", v}'
+  docker stats --no-stream --format '{{.MemUsage}}' "${PROJECT}-dialpark-1" 2>/dev/null | awk '{v=$1; if (v ~ /GiB/) {sub(/GiB/,"",v); v*=1024} else {sub(/MiB/,"",v)} printf "%d", v}'
 }
 
 echo "== up"
-$COMPOSE up --build -d dialler >/dev/null 2>&1
+$COMPOSE up --build -d dialpark >/dev/null 2>&1
 # The probe lives in the sipp image; build it now so `compose run` finds it.
 $COMPOSE build sipp >/dev/null 2>&1
 sleep 2
@@ -87,9 +87,9 @@ $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
 sleep 5
 
 echo "== dial 211 -> 212 and let it settle"
-ctl '{"command":"dial","params":"212@dialler"}'
+ctl '{"command":"dial","params":"212@dialpark"}'
 sleep 4
-if ! $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'msg=bridged'; then
+if ! $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'msg=bridged'; then
   echo "FAIL: the call did not bridge"; exit 1
 fi
 LOGS_BEFORE_A="$($COMPOSE logs --no-log-prefix baresip-a 2>&1 | wc -l | tr -d ' ')"
@@ -114,12 +114,12 @@ expect() { # expect STATUS METHOD PATH [BODY]
   esac
 }
 expect 204 DELETE /v1/admin/devices/dev-s
-expect 200 PUT /v1/admin/devices/dev-a/directory '{"contacts":[{"display_name":"Replaced","uri":"sip:900@dialler","mode":"local"}]}'
+expect 200 PUT /v1/admin/devices/dev-a/directory '{"contacts":[{"display_name":"Replaced","uri":"sip:900@dialpark","mode":"local"}]}'
 expect 200 POST /v1/admin/devices/dev-a/enrol-code
 # A PBX line set while the server is in trunk mode: stored for a later
 # switch, nothing to register, and the request must be answered (it
 # panicked the handler on 2026-09-26; the connection just closed).
-expect 200 PUT /v1/admin/devices/dev-a/pbx-line '{"digest_user":"line201","secret":"dialler-line-201"}'
+expect 200 PUT /v1/admin/devices/dev-a/pbx-line '{"digest_user":"line201","secret":"dialpark-line-201"}'
 expect 204 DELETE /v1/admin/devices/dev-a/pbx-line
 expect 200 PUT /v1/admin/log '{"level":"debug","for_seconds":30}'
 expect 200 PUT /v1/admin/log '{"level":"info"}'
@@ -148,9 +148,9 @@ for i in 1 2 3 4 5 6 7 8; do
   flood "read$i" "while [ \$(date +%s) -lt \$end ]; do for j in 1 2 3 4 5 6 7 8; do curl -sk -o /dev/null -H 'Authorization: Bearer $TOKEN' $API/v1/admin/status & curl -sk -o /dev/null -H 'Authorization: Bearer $TOKEN' $API/v1/admin/devices & done; wait; done"
 done
 # One source replacing dev-a's directory with a body at the 4 MiB limit.
-flood "big" "awk 'BEGIN{printf \"{\\\"contacts\\\":[\"; for(i=0;i<4900;i++){if(i)printf \",\"; printf \"{\\\"display_name\\\":\\\"%s\\\",\\\"uri\\\":\\\"sip:%d@dialler\\\",\\\"mode\\\":\\\"local\\\"}\", sprintf(\"%700s\",\"x\"), 10000+i} printf \"]}\"}' > /tmp/big.json; while [ \$(date +%s) -lt \$end ]; do curl -sk -o /dev/null -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -X PUT $API/v1/admin/devices/dev-a/directory --data-binary @/tmp/big.json; done"
+flood "big" "awk 'BEGIN{printf \"{\\\"contacts\\\":[\"; for(i=0;i<4900;i++){if(i)printf \",\"; printf \"{\\\"display_name\\\":\\\"%s\\\",\\\"uri\\\":\\\"sip:%d@dialpark\\\",\\\"mode\\\":\\\"local\\\"}\", sprintf(\"%700s\",\"x\"), 10000+i} printf \"]}\"}' > /tmp/big.json; while [ \$(date +%s) -lt \$end ]; do curl -sk -o /dev/null -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -X PUT $API/v1/admin/devices/dev-a/directory --data-binary @/tmp/big.json; done"
 # One source holding idle connections open.
-flood "idle" "while [ \$(date +%s) -lt \$end ]; do for j in \$(seq 1 200); do (sleep 20 | nc dialler 8081 >/dev/null 2>&1) & done; sleep 20; done"
+flood "idle" "while [ \$(date +%s) -lt \$end ]; do for j in \$(seq 1 200); do (sleep 20 | nc dialpark 8081 >/dev/null 2>&1) & done; sleep 20; done"
 # One source sending the adversarial bodies to every write route.
 flood "adv" "while [ \$(date +%s) -lt \$end ]; do for body in '{' '[]' '{\"user\":\"201\",\"user\":\"202\"}' '{\"ssids\":[\"a\\u0000b\"]}' '{\"contacts\":[{\"uri\":\"../../etc\",\"mode\":\"local\"}]}' \"\$(head -c 70000 /dev/zero | tr '\\0' '[')\" '{\"digest_user\":\"u\",\"secret\":\"s\",\"dn\":\"../x\"}'; do for p in /v1/admin/devices /v1/admin/devices/dev-a/config /v1/admin/devices/dev-a/pbx-line /v1/admin/devices/dev-a/directory /v1/admin/devices/../pbx.key/config; do curl -sk -o /dev/null -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -X PUT \"$API\$p\" -d \"\$body\"; done; done; done"
 LOADED="$(mktemp)"
@@ -183,11 +183,11 @@ if ! printf '%s\n' "$SERVER_JSON" | grep -q '"rejected_rate":[1-9]'; then
 fi
 
 echo "== the call (checked before it is hung up, so the hangup's own lines do not count)"
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'panic:'; then
-  echo "FAIL: the server panicked"; $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -A5 'panic:' | head -20; exit 1
+if $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'panic:'; then
+  echo "FAIL: the server panicked"; $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -A5 'panic:' | head -20; exit 1
 fi
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'msg="call ended"'; then
-  echo "FAIL: the call ended during the load:"; $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'call ended|hangup|BYE|gone|timed out' | tail -5; exit 1
+if $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'msg="call ended"'; then
+  echo "FAIL: the call ended during the load:"; $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'call ended|hangup|BYE|gone|timed out' | tail -5; exit 1
 fi
 for phone in baresip-a baresip-b; do
   eval "before=\$LOGS_BEFORE_$( [ $phone = baresip-a ] && echo A || echo B )"

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"regexp"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/events"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/events"
 )
 
 // Body limits per route (ADMIN-API.md §5).

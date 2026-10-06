@@ -5,7 +5,7 @@ import (
 
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/pbx"
+	"dialpark/server/internal/pbx"
 )
 
 // fakeLines is a line registry with no SIP behind it.
@@ -30,7 +30,7 @@ func (f fakeLines) Credentials(user string) (string, string, bool) {
 func linesServer(t *testing.T, lines Lines, defaultLine string) *Server {
 	t.Helper()
 	return &Server{cfg: Config{
-		ExternalHost: "dialler.example",
+		ExternalHost: "dialpark.example",
 		Trunk:        &pbx.Trunk{Host: "cucm.example", Port: 5060, Transport: "tcp"},
 		Lines:        lines,
 		DefaultLine:  defaultLine,
@@ -137,17 +137,17 @@ func TestPBXDomainFallsBackToTheTrunkPeer(t *testing.T) {
 	}
 	// No trunk at all (standalone): the server's own host, so nothing
 	// produces an empty domain.
-	s = &Server{cfg: Config{ExternalHost: "dialler.example"}}
-	if got := s.pbxDomain(); got != "dialler.example" {
+	s = &Server{cfg: Config{ExternalHost: "dialpark.example"}}
+	if got := s.pbxDomain(); got != "dialpark.example" {
 		t.Errorf("pbxDomain with no trunk = %q", got)
 	}
 }
 
 func TestUriUser(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"sip:201@dialler.example", "201"},
-		{"sip:201@dialler.example;transport=tls", "201"},
-		{`"Matt" <sip:201@dialler.example>`, "201"},
+		{"sip:201@dialpark.example", "201"},
+		{"sip:201@dialpark.example;transport=tls", "201"},
+		{`"Matt" <sip:201@dialpark.example>`, "201"},
 		{"", ""},
 	} {
 		if got := uriUser(tc.in); got != tc.want {

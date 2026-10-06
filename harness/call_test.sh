@@ -7,17 +7,17 @@
 # talks to baresip's ctrl_tcp), so it works from sandboxes that cannot
 # connect to published localhost ports.
 #
-# Defaults target the main harness (the real dialler-server). The engine
+# Defaults target the main harness (the real dialpark-server). The engine
 # spike uses the same script with its own compose file and service names.
 set -eu
 cd "$(dirname "$0")/.."
 
 COMPOSE_FILE="${COMPOSE_FILE:-harness/docker-compose.yml}"
-PROJECT="${PROJECT:-dialler-harness}"
-SERVER="${SERVER:-dialler}"
+PROJECT="${PROJECT:-dialpark-harness}"
+SERVER="${SERVER:-dialpark}"
 PHONE_A="${PHONE_A:-baresip-a}"
 PHONE_B="${PHONE_B:-baresip-b}"
-DOMAIN="${DOMAIN:-dialler}"
+DOMAIN="${DOMAIN:-dialpark}"
 MEDIA_DIR="${MEDIA_DIR:-harness/baresip/media}"
 PROFILE="${PROFILE:---profile test}"
 PROVISION="${PROVISION:-1}"
@@ -29,7 +29,7 @@ KEEP="${KEEP:-0}"
 # test that lives entirely inside the compose network; NOT for ones a
 # simulator or a real phone has to reach (sim_call.sh, ring_*.sh, probe_*).
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f $COMPOSE_FILE $NOPORTS $PROFILE"
 NET="${PROJECT}_default"
 

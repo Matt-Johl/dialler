@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/registry"
+	"dialpark/server/internal/registry"
 )
 
-const register = "REGISTER sip:dialler.example.local SIP/2.0\r\n" +
+const register = "REGISTER sip:dialpark.example.local SIP/2.0\r\n" +
 	"Via: SIP/2.0/TLS 10.0.0.5:5061;branch=z9hG4bK776asdhds;rport\r\n" +
 	"Max-Forwards: 70\r\n" +
-	"To: \"Matt\" <sip:201@dialler.example.local>\r\n" +
-	"From: \"Matt\" <sip:201@dialler.example.local>;tag=456248\r\n" +
+	"To: \"Matt\" <sip:201@dialpark.example.local>\r\n" +
+	"From: \"Matt\" <sip:201@dialpark.example.local>;tag=456248\r\n" +
 	"Call-ID: 843817637684230@10.0.0.5\r\n" +
 	"CSeq: 1826 REGISTER\r\n" +
 	"Contact: <sip:201@10.0.0.5:5061;transport=tls>;expires=300\r\n" +
@@ -30,7 +30,7 @@ func TestParseAndSerialise(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.IsRequest || m.Method != "REGISTER" || m.RequestURI != "sip:dialler.example.local" {
+	if !m.IsRequest || m.Method != "REGISTER" || m.RequestURI != "sip:dialpark.example.local" {
 		t.Fatalf("start line: %+v", m)
 	}
 	if got := m.Get("call-id"); got != "843817637684230@10.0.0.5" {
@@ -42,7 +42,7 @@ func TestParseAndSerialise(t *testing.T) {
 	if ContactExpires(m, 60) != 300 {
 		t.Fatal("Contact expires param should win over Expires header")
 	}
-	if URIUser(m.Get("To")) != "201" || URIHost(m.Get("To")) != "dialler.example.local" {
+	if URIUser(m.Get("To")) != "201" || URIHost(m.Get("To")) != "dialpark.example.local" {
 		t.Fatalf("URI parsing: %q %q", URIUser(m.Get("To")), URIHost(m.Get("To")))
 	}
 	// Round trip preserves header order and body length.
@@ -118,7 +118,7 @@ func TestSetAddDel(t *testing.T) {
 // suite runs in any sandbox. Serve() is a thin accept loop over HandleConn.
 func startRegistrar(t *testing.T, reg *registry.Registry) (*Registrar, net.Conn) {
 	t.Helper()
-	r := &Registrar{Registry: reg, Domain: "dialler.example.local", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	r := &Registrar{Registry: reg, Domain: "dialpark.example.local", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	ctx, cancel := context.WithCancel(context.Background())
 	cs, ss := net.Pipe()
 	done := make(chan struct{})
@@ -173,7 +173,7 @@ func TestRegistrarFlow(t *testing.T) {
 	if resp := roundTrip(t, c, br, unknown); resp.StatusCode != 404 {
 		t.Fatalf("unknown user: %d", resp.StatusCode)
 	}
-	foreign := strings.Replace(register, "<sip:201@dialler.example.local>", "<sip:201@evil.example>", 1)
+	foreign := strings.Replace(register, "<sip:201@dialpark.example.local>", "<sip:201@evil.example>", 1)
 	if resp := roundTrip(t, c, br, foreign); resp.StatusCode != 403 {
 		t.Fatalf("foreign domain: %d", resp.StatusCode)
 	}

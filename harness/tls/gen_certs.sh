@@ -4,7 +4,7 @@
 # script).
 #
 #   <OUT>/ca.pem              the CA both sides verify against
-#   <OUT>/dialler.{pem,key}   the light server's trunk certificate
+#   <OUT>/dialpark.{pem,key}   the light server's trunk certificate
 #   <OUT>/asterisk.{pem,key}  the PBX's
 #
 # The default set is for the docker harness, whose addresses are fixed by
@@ -12,7 +12,7 @@
 # have to be the addresses each side is really dialled by — keep it out of
 # the way of the harness's:
 #
-#   OUT=lan DIALLER_IP=<mac> ASTERISK_IP=<pbx> sh harness/tls/gen_certs.sh
+#   OUT=lan DIALPARK_IP=<mac> ASTERISK_IP=<pbx> sh harness/tls/gen_certs.sh
 #
 # This is the shape a real deployment has: a private CA, not the system
 # roots (no public authority will sign an internal PBX), and certificates
@@ -36,23 +36,23 @@ cd "$OUT"
 WHERE="harness/tls${OUT:+/$OUT}"
 [ "$OUT" = "." ] && WHERE="harness/tls"
 
-DIALLER_IP="${DIALLER_IP:-172.30.0.10}"
+DIALPARK_IP="${DIALPARK_IP:-172.30.0.10}"
 ASTERISK_IP="${ASTERISK_IP:-172.30.0.20}"
 DAYS="${DAYS:-825}" # the browser-era cap; nothing here enforces it, but a
                     # harness certificate that outlives the harness is a
                     # certificate nobody notices has expired.
 
-if [ "${FORCE:-0}" != 1 ] && [ -f ca.pem ] && [ -f dialler.pem ] && [ -f asterisk.pem ]; then
+if [ "${FORCE:-0}" != 1 ] && [ -f ca.pem ] && [ -f dialpark.pem ] && [ -f asterisk.pem ]; then
   echo "$WHERE: certificates already present (FORCE=1 to regenerate)"
   exit 0
 fi
 
-rm -f ca.pem ca.key ca.srl dialler.pem dialler.key asterisk.pem asterisk.key
+rm -f ca.pem ca.key ca.srl dialpark.pem dialpark.key asterisk.pem asterisk.key
 
 echo "== CA"
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
   -keyout ca.key -out ca.pem -days "$DAYS" \
-  -subj "/CN=dialler-harness-ca" \
+  -subj "/CN=dialpark-harness-ca" \
   -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
   -addext "keyUsage=critical,keyCertSign,cRLSign" 2>/dev/null
 
@@ -77,10 +77,10 @@ EOF
   rm -f "$name.csr"
 }
 
-peer dialler "$DIALLER_IP" dialler
+peer dialpark "$DIALPARK_IP" dialpark
 peer asterisk "$ASTERISK_IP" asterisk
 
 # Asterisk runs as its own user and reads these from a read-only mount.
-chmod 644 ca.pem dialler.pem asterisk.pem
-chmod 644 dialler.key asterisk.key
-echo "$WHERE: wrote ca.pem, dialler.{pem,key}, asterisk.{pem,key} (server $DIALLER_IP, PBX $ASTERISK_IP)"
+chmod 644 ca.pem dialpark.pem asterisk.pem
+chmod 644 dialpark.key asterisk.key
+echo "$WHERE: wrote ca.pem, dialpark.{pem,key}, asterisk.{pem,key} (server $DIALPARK_IP, PBX $ASTERISK_IP)"

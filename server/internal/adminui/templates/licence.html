@@ -27,7 +27,7 @@
   <h2>Install a licence</h2>
   <form method="post" action="/licence" class="stack">
     <input type="hidden" name="csrf" value="{{$.CSRF}}">
-    <label>Licence <textarea name="licence" rows="5" spellcheck="false" placeholder="DL1.…" {{if $ro}}disabled{{end}}>{{with .Form}}{{index . "licence"}}{{end}}</textarea></label>
+    <label>Licence <textarea name="licence" rows="5" spellcheck="false" placeholder="DP1.…" {{if $ro}}disabled{{end}}>{{with .Form}}{{index . "licence"}}{{end}}</textarea></label>
     <div><button {{if $ro}}disabled{{end}}>Install</button></div>
   </form>
   <p class="hint">Paste the whole token the vendor sent. It replaces the installed licence at once: clients beyond the new seat count are suspended, clients within it carry on, and a call in progress is never interrupted.</p>

@@ -1,4 +1,4 @@
-// Command dialler-server is the on-prem light server: signal gateway (wire
+// Command dialpark-server is the on-prem light server: signal gateway (wire
 // protocol over TLS), SIP registrar on the app leg, media relay, directory
 // and enrolment APIs. See SPEC.md §4.
 package main
@@ -25,25 +25,25 @@ import (
 	"syscall"
 	"time"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/b2bua"
-	"dialler/server/internal/diag"
-	"dialler/server/internal/directory"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/events"
-	"dialler/server/internal/gateway"
-	"dialler/server/internal/licence"
-	"dialler/server/internal/loglevel"
-	"dialler/server/internal/pbx"
-	"dialler/server/internal/pbxline"
-	"dialler/server/internal/qos"
-	"dialler/server/internal/registry"
-	"dialler/server/internal/routing"
-	"dialler/server/internal/secrets"
-	"dialler/server/internal/sipauth"
-	"dialler/server/internal/status"
-	"dialler/server/internal/tlsutil"
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/b2bua"
+	"dialpark/server/internal/diag"
+	"dialpark/server/internal/directory"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/events"
+	"dialpark/server/internal/gateway"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/loglevel"
+	"dialpark/server/internal/pbx"
+	"dialpark/server/internal/pbxline"
+	"dialpark/server/internal/qos"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/routing"
+	"dialpark/server/internal/secrets"
+	"dialpark/server/internal/sipauth"
+	"dialpark/server/internal/status"
+	"dialpark/server/internal/tlsutil"
+	"dialpark/server/internal/wire"
 
 	"github.com/emiago/diago/media"
 	"github.com/emiago/sipgo/sip"
@@ -54,7 +54,7 @@ func main() {
 		signalAddr   = flag.String("signal-addr", ":7443", "wire-protocol TLS listen address")
 		sipAddr      = flag.String("sip-addr", ":5061", "app-leg SIP/TLS listen address")
 		httpAddr     = flag.String("http-addr", "127.0.0.1:8080", "device API listen address (directory, diag, enrol); phones reach it, so a deployment binds it on the LAN")
-		adminAddr    = flag.String("admin-addr", "127.0.0.1:8081", "admin API listen address (/v1/admin/); loopback by default because dialler-admin runs on this host. Bind it wider only for testing across machines — the token over TLS protects it either way")
+		adminAddr    = flag.String("admin-addr", "127.0.0.1:8081", "admin API listen address (/v1/admin/); loopback by default because dialpark-admin runs on this host. Bind it wider only for testing across machines — the token over TLS protects it either way")
 		adminTokFile = flag.String("admin-token-file", "", "file holding the admin bearer token (whitespace trimmed); the production form of -admin-token, which is visible to every local user in ps")
 		certFile     = flag.String("tls-cert", "", "TLS certificate PEM (empty → self-signed dev cert)")
 		keyFile      = flag.String("tls-key", "", "TLS private key PEM")
@@ -617,7 +617,7 @@ func run(ctx context.Context, log *slog.Logger, o options) error {
 	adminSrv := &http.Server{Handler: adminRoot}
 	admin.ConfigureServer(adminSrv)
 
-	log.Info("dialler-server starting",
+	log.Info("dialpark-server starting",
 		"signal", signalLn.Addr(), "sip", o.sipAddr, "https", httpLn.Addr(), "admin", adminLn.Addr(),
 		"public_host", o.publicHost, "local_domain", o.localDomain,
 		"ring_timeout", o.ringTimeout, "rtp_range", fmt.Sprintf("%d-%d", o.rtpMin, o.rtpMax), "data_dir", o.dataDir)

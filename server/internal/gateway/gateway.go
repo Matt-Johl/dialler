@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/wire"
 )
 
 // Authenticator validates a device credential presented in Hello.

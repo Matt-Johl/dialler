@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/registry"
+	"dialpark/server/internal/registry"
 )
 
 func TestResolve(t *testing.T) {
@@ -14,20 +14,20 @@ func TestResolve(t *testing.T) {
 	_, _ = reg.Register("202", "<sip:202@10.0.0.6:5061;transport=tls>", time.Minute)
 
 	trunk := false
-	r := New(reg, []string{"dialler.example.local"}, func() bool { return trunk })
+	r := New(reg, []string{"dialpark.example.local"}, func() bool { return trunk })
 
 	cases := []struct {
 		dest       string
 		target     Target
 		registered bool
 	}{
-		{"sip:201@dialler.example.local", Local, false},
-		{"<sip:202@dialler.example.local:5061>", Local, true},
+		{"sip:201@dialpark.example.local", Local, false},
+		{"<sip:202@dialpark.example.local:5061>", Local, true},
 		{"201", Local, false},
-		{"sip:201@DIALLER.example.local", Local, false},
+		{"sip:201@DIALPARK.example.local", Local, false},
 		{"sip:201@pbx.example.local", Unknown, false}, // foreign domain never local
-		{"sip:0123456789@dialler.example.local", Unknown, false},
-		{"sip:dialler.example.local", Unknown, false}, // no user part
+		{"sip:0123456789@dialpark.example.local", Unknown, false},
+		{"sip:dialpark.example.local", Unknown, false}, // no user part
 	}
 	for _, c := range cases {
 		d := r.Resolve(c.dest)
@@ -36,7 +36,7 @@ func TestResolve(t *testing.T) {
 		}
 	}
 
-	for _, dest := range []string{"echo", "sip:echo@dialler.example.local", "sip:ECHO@DIALLER.example.local"} {
+	for _, dest := range []string{"echo", "sip:echo@dialpark.example.local", "sip:ECHO@DIALPARK.example.local"} {
 		if d := r.Resolve(dest); d.Target != Echo {
 			t.Errorf("%s → %s, want echo", dest, d.Target)
 		}
@@ -46,13 +46,13 @@ func TestResolve(t *testing.T) {
 	}
 
 	trunk = true
-	if d := r.Resolve("sip:0123456789@dialler.example.local"); d.Target != Trunk {
+	if d := r.Resolve("sip:0123456789@dialpark.example.local"); d.Target != Trunk {
 		t.Errorf("with trunk, external number → %s", d.Target)
 	}
 	if d := r.Resolve("sip:201@pbx.example.local"); d.Target != Trunk {
 		t.Errorf("with trunk, foreign domain → %s", d.Target)
 	}
-	if d := r.Resolve("sip:201@dialler.example.local"); d.Target != Local {
+	if d := r.Resolve("sip:201@dialpark.example.local"); d.Target != Local {
 		t.Errorf("trunk must not shadow a local user: %s", d.Target)
 	}
 }

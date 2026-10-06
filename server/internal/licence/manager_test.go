@@ -133,7 +133,7 @@ func TestInstallRefusals(t *testing.T) {
 		tok  string
 		want error
 	}{
-		"garbage":       {"DL1.zzz.zzz", ErrFormat},
+		"garbage":       {"DP1.zzz.zzz", ErrFormat},
 		"wrong install": {mustSign(t, wrong), ErrWrongInstall},
 		"expired":       {mustSign(t, expired), ErrExpired},
 	}

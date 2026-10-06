@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // MaxList bounds one listing (ADMIN-API.md §5.11).

@@ -9,10 +9,10 @@ import (
 
 func TestReferTarget(t *testing.T) {
 	cases := map[string]string{
-		"sip:100@dialler":               "sip:100@dialler",
-		"sip:202@dialler;transport=tls": "sip:202@dialler",
-		"sip:echo@dialler":              "sip:echo@dialler",
-		"sip:0123@pbx.example.com":      "sip:0123@pbx.example.com",
+		"sip:100@dialpark":               "sip:100@dialpark",
+		"sip:202@dialpark;transport=tls": "sip:202@dialpark",
+		"sip:echo@dialpark":              "sip:echo@dialpark",
+		"sip:0123@pbx.example.com":       "sip:0123@pbx.example.com",
 	}
 	for in, want := range cases {
 		var u sip.Uri

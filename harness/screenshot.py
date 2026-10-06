@@ -1,4 +1,4 @@
-"""Screenshot every dialler-admin page, light and dark, into /out.
+"""Screenshot every dialpark-admin page, light and dark, into /out.
 
 Runs inside the Playwright container that harness/screenshot.sh starts on
 the compose network; the UI is at https://admin:8443 with the harness

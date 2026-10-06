@@ -1,10 +1,10 @@
-# Dialler admin contract — v1 (SPEC §6 item 9a)
+# Dialpark admin contract — v1 (SPEC §6 item 9a)
 
 *Written 2026-09-25 on `feature/admin-api`; approved 2026-09-25.* This is the
 deliverable of item 9a: the configurables an operator needs to run and
-maintain a Dialler site, and the call server's admin API that follows from
+maintain a Dialpark site, and the call server's admin API that follows from
 them. Item 9b builds and hardens exactly this API; item 9c builds
-`dialler-admin` against it, and nothing else. The UI is deliberately not
+`dialpark-admin` against it, and nothing else. The UI is deliberately not
 designed here — someone may run a CLI or their own provisioning against
 the same API — beyond §9, which records what 9c must do with the answers
 the API gives it.
@@ -21,8 +21,8 @@ marks what does not exist yet.
 
 ## 1. Rules
 
-1. **One process holds the truth.** `dialler-server` owns every device
-   record, directory, credential and setting. `dialler-admin` holds nothing
+1. **One process holds the truth.** `dialpark-server` owns every device
+   record, directory, credential and setting. `dialpark-admin` holds nothing
    but its own operator password and session table; it can be destroyed
    and re-deployed without loss. Nothing in this contract puts state in
    the admin process that the API cannot re-read.
@@ -199,7 +199,7 @@ existing memory.
 - `GET /healthz` on the admin listener is unauthenticated and answers
   `200 ok`.
 - `GET /v1/admin/whoami` *(9b)* is the cheapest authenticated call:
-  `200 {"ok":true}`. It is how `dialler-admin` checks its token at start
+  `200 {"ok":true}`. It is how `dialpark-admin` checks its token at start
   and how the UI tells "wrong token" from "server down".
 
 ### 4.2 Content
@@ -586,8 +586,8 @@ hold in memory. It takes no store lock and never blocks a call.
   "version": "0.9.3+g1a2b3c4", "go": "go1.25", "started_at": "…", "uptime_seconds": 86400,
   "mode": "lines",
   "listeners": {"signal": ":7443", "sip": ":5061", "http": "10.18.0.10:8080", "admin": "127.0.0.1:8081", "trunk": ":5062"},
-  "public_host": "10.18.0.10", "local_domain": "dialler", "public_sip_port": 5061, "public_http_port": 8080,
-  "tls": {"self_signed": false, "subject": "CN=dialler.example", "not_before": "…", "not_after": "…", "fingerprint_sha256": "…"},
+  "public_host": "10.18.0.10", "local_domain": "dialpark", "public_sip_port": 5061, "public_http_port": 8080,
+  "tls": {"self_signed": false, "subject": "CN=dialpark.example", "not_before": "…", "not_after": "…", "fingerprint_sha256": "…"},
   "trunk": {
     "uri": "sip:asterisk:5062;transport=tls", "transport": "tls", "srtp": "sdes", "codecs": ["g722","pcmu","pcma"],
     "qualify_interval_seconds": 10, "qualify": "up", "qualify_since": "…", "qualify_last_error": "",
@@ -596,7 +596,7 @@ hold in memory. It takes no store lock and never blocks a call.
   "pbx": {"registrar": "asterisk:5062", "domain": "asterisk", "peers": [], "register_expiry_seconds": 3600, "default_line": ""},
   "ring_timeout_seconds": 30, "peer_timeout_seconds": 60,
   "rtp": {"min": 20000, "max": 20100, "symmetric": true},
-  "data_dir": "/var/lib/dialler", "diag_retain_seconds": 2592000,
+  "data_dir": "/var/lib/dialpark", "diag_retain_seconds": 2592000,
   "counts": {"devices": 42, "enrolled": 40, "revoked": 2, "app_online": 31, "extension_online": 38, "sip_registered": 30, "lines_registered": 38, "lines_failed": 1, "calls": 3},
   "licence": {"state": "active", "install_id": "0123456789abcdef0123456789abcdef", "id": "lic_7Q3M8K2A", "customer": "Example Ltd", "seats": 50, "seats_used": 40, "issued_at": "…", "valid_until": "…", "days_left": 212},
   "admin": {"in_flight": 1, "rejected_busy": 0, "rejected_rate": 0, "events_dropped": 0}
@@ -615,7 +615,7 @@ admin token, the trunk key, or file paths of keys.
 ```json
 {
   "call_id": "…", "state": "bridged", "since": "…", "held_by": "",
-  "a": {"leg": "app", "device_id": "dev-a", "user": "201", "party": {"display_name": "Matt", "uri": "sip:201@dialler"}, "codec": "opus", "srtp": true},
+  "a": {"leg": "app", "device_id": "dev-a", "user": "201", "party": {"display_name": "Matt", "uri": "sip:201@dialpark"}, "codec": "opus", "srtp": true},
   "b": {"leg": "trunk", "party": {"display_name": "", "uri": "sip:100@asterisk"}, "codec": "g722", "srtp": true},
   "stats": {"a_to_b": {"packets": 12034, "lost": 3, "reordered": 0, "jitter_ms": 4.1, "last_packet_at": "…"},
             "b_to_a": {"packets": 12030, "lost": 0, "reordered": 0, "jitter_ms": 1.2, "last_packet_at": "…"}}
@@ -752,7 +752,7 @@ by the time they took a seat are licensed and the rest are suspended
 (`licensed: false` on the device). `install_id` is minted at first start
 and kept at `<data-dir>/install.id`; the operator gives it to the vendor.
 
-**`PUT /v1/admin/licence`** `{"licence": "DL1.…"}` (POST accepted too) →
+**`PUT /v1/admin/licence`** `{"licence": "DP1.…"}` (POST accepted too) →
 `200` with the summary. The token is verified (signature, grammar, this
 install id, not expired) and stored at `<data-dir>/licence` by temp file
 and rename; the devices whose seat changes are cut off or let back in at
@@ -811,10 +811,10 @@ What 9b changes so `make harness-test` keeps passing and gains the
 checks SPEC 9b names:
 
 - `docker-compose.yml`: add `-admin-addr=:8081` and publish it
-  (`${DIALLER_ADMIN_HOSTPORT:-8081}:8081`); the device listener stays on
+  (`${DIALPARK_ADMIN_HOSTPORT:-8081}:8081`); the device listener stays on
   8080 and no longer serves `/v1/admin/`.
 - `provision.sh`, `set_pbx_line.sh`, `wake_test.sh`, the README and
-  `asterisk-native/README.md`: `DIALLER_API` for admin calls becomes the
+  `asterisk-native/README.md`: `DIALPARK_API` for admin calls becomes the
   admin port. `provision.sh` line 73 (re-POST of an enrolled dev-a) becomes
   `POST /v1/admin/devices/dev-a/enrol-code`, which is what it wanted.
 - Log strings the harness greps (`sip register`, `pbx line: registered`,
@@ -877,7 +877,7 @@ are recorded so 9c does not reopen them.
 - **Concurrency.** Every edit form carries the version it was loaded
   with and sends `If-Match`; a 412 is shown as "changed by someone else
   since you opened this" with a reload, never a silent overwrite.
-- **CSV** (SPEC §4.8 format) is parsed and produced by `dialler-admin`,
+- **CSV** (SPEC §4.8 format) is parsed and produced by `dialpark-admin`,
   previewed through `?dry_run=1`, and applied as one replace-all.
 - **Pages are not fixed at three.** The API supports at least: a fleet
   view (status merged with devices), a device view (record, settings,
@@ -893,13 +893,13 @@ are recorded so 9c does not reopen them.
    (advertising the next fingerprint in `config` ahead of the switch) is
    a wire addition and a separate item. Until then the runbook is:
    deploy a long-lived `-tls-cert` before the first phone enrols.
-2. **Mutual TLS** between `dialler-admin` and the call server: an option
+2. **Mutual TLS** between `dialpark-admin` and the call server: an option
    (SPEC 9b), not work.
 3. **Live changes to trunk codecs and SRTP** are possible per call but are
    a site's security posture, so they stay flags. If a deployment ever
    needs them live, they become fields of a `PUT /v1/admin/trunk` with the
    same non-persisted, revert-on-restart semantics as the log level.
-4. **A `dialler-server` `-config-file`** as an alternative to a long flag
+4. **A `dialpark-server` `-config-file`** as an alternative to a long flag
    line is a convenience, not a contract change; the API would show the
    same effective values.
 5. **Custom hold music** is a build.

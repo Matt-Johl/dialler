@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/secrets"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/secrets"
 )
 
 // seatStore is a memory store on a hand-driven clock with the given seat
@@ -29,7 +29,7 @@ func seatStore(t *testing.T, seats int) (*Store, *time.Time) {
 		t.Fatal(err)
 	}
 	s.Secrets = box
-	s.Realm = "dialler"
+	s.Realm = "dialpark"
 	s.SetSeats(seats)
 	return s, &now
 }
@@ -414,7 +414,7 @@ func TestSeatInvariantProperty(t *testing.T) {
 func TestEnrolHandlerRefusesWithNoSeats(t *testing.T) {
 	s, now := seatStore(t, 1)
 	issue(t, s, "dev-a", "201")
-	h := NewEnrolHandler(s, EnrolInfo{SignalPort: 7443, SIPDomain: "dialler", Now: func() time.Time { return *now }}, Hooks{})
+	h := NewEnrolHandler(s, EnrolInfo{SignalPort: 7443, SIPDomain: "dialpark", Now: func() time.Time { return *now }}, Hooks{})
 	do := func(body string) (*http.Response, []byte) {
 		req := httptest.NewRequest("POST", "/v1/enrol", strings.NewReader(body))
 		req.RemoteAddr = "10.0.0.9:5555"

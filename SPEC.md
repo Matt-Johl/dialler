@@ -1,8 +1,16 @@
-# Dialler — Project Specification & Architecture
+# Dialpark — Project Specification & Architecture
 
 > Status: planning / feasibility draft. Native iOS softphone with on-prem
 > wakeups via Local Push Connectivity (no APNS), designed for test-first,
 > component-by-component development.
+
+> **Names.** *Dialpark* is the system: the call server (`dialpark-server`), the
+> operator console (`dialpark-admin`), the licence and the harness in its
+> server role. *Dialler* is the iOS app that enrols to a Dialpark server. The
+> app keeps its name, bundle identifiers, URL scheme (`dialler://`) and SIP
+> headers (`X-Dialler-Call-ID`); everything that acts as or describes the
+> server is Dialpark. Renamed 2026-10-05; older narrative below may still say
+> "the light server" or "the call server" for Dialpark.
 
 ## 1. Goal
 
@@ -104,7 +112,7 @@ lets ~everything be validated with no device (see §7).
 | Coverage | **Wi-Fi-only (LPC).** Remote app users (cellular / home Wi-Fi) are **unscheduled** (§6 "Much later"). The wake transport stays abstracted so an APNS sibling could be added without a rework, but none is planned |
 | Distribution | **Public App Store**; the LPC configuration (the office SSIDs) is **set by the administrator per device and pushed to the app** (§6 item 8b), no longer typed into it |
 | Directory ownership | **One directory per device.** The server is the source of truth for contacts; the admin (CSV) and the user (in-app) edit the same list, favourites included. No shared or global list (§6 item 7) |
-| Management plane | **Separate process, `dialler-admin`** (Go, stdlib, server-rendered HTML, embedded assets) speaking only to the call server's admin API. The call server gains additive JSON endpoints and nothing else; an admin action never interrupts a call and affects only the device it names (§4.8). Call history is device-local — the server keeps no call records |
+| Management plane | **Separate process, `dialpark-admin`** (Go, stdlib, server-rendered HTML, embedded assets) speaking only to the call server's admin API. The call server gains additive JSON endpoints and nothing else; an admin action never interrupts a call and affects only the device it names (§4.8). Call history is device-local — the server keeps no call records |
 | Device onboarding | **Short-lived enrolment code**, delivered as a QR (`dialler://enrol…`) or typed with the server address; the claim rotates the device credential and pins the server certificate (§4.8, §6 item 8) |
 | Video / IM | **Not scheduled** (§6 "Much later") |
 | Product licence | **Vendor-signed, offline, bound to the server's install id, verified on the server and on the phone** (§4.9, decided 2026-10-03): X devices until a date; enrolment refused past X; a device that loses its seat is suspended; expiry is a hard stop; no licence is 0 seats. A one-off online check-in at application is a later, optional addition; there are no regular check-ins |
@@ -550,7 +558,7 @@ real LPC, or a real PBX. Built and verified in dependency order:
 | 10 | **Device enrolment / auth** (server + Swift) | issue / verify / revoke device credential | HTTP-level + keychain tests |
 | 11 | **`RecentsStore`** (Swift, DiallerCore) | append / list / delete / fold the extension's pending records; outcome classification | persistence tests against a temp App Group directory, a classification table test, no CallKit |
 | 12 | **Enrolment code** (server) + **`EnrolmentClient`** (Swift) | mint / claim / expire / rotate | `ServeHTTP` tests (expiry, single use, rate limit, rotation revokes the old token, other devices untouched); the Swift client against a stubbed `URLProtocol` |
-| 13 | **`dialler-admin`** | handlers over an in-process fake of the admin API; CSV ↔ contact list; QR encoder | handler tests, CSV round-trip incl. quoting and UTF-8, QR golden vectors (decoded on a phone once) |
+| 13 | **`dialpark-admin`** | handlers over an in-process fake of the admin API; CSV ↔ contact list; QR encoder | handler tests, CSV round-trip incl. quoting and UTF-8, QR golden vectors (decoded on a phone once) |
 
 Key abstractions to keep future-proofing cheap (see §7 for how each is tested
 without a device):
@@ -905,7 +913,7 @@ on by config — see §7.4.
      goes out as `sip:<extension>@<our SIP domain>`, with our domain as
      the host rather than the PBX's. A **transfer** dialled towards the
      trunk has no originator and falls back to the user agent's own name,
-     `sip:dialler@<external host>`. Lines mode replaces both with the
+     `sip:dialpark@<external host>`. Lines mode replaces both with the
      line's DN at the PBX domain, because the exchange will not accept
      anything else. Trunk mode keeps both, because they work and four
      harness gates cover them; making the trunk's identity configurable
@@ -1086,7 +1094,7 @@ on by config — see §7.4.
   would otherwise ship without anywhere to set one. Decisions behind them are in §3 (directory ownership, management
   plane, device onboarding) and the mechanism in §4.8. The governing rule
   throughout: **the existing call server stays stable** — everything that
-  can live outside `dialler-server` does, and what must go in is additive.
+  can live outside `dialpark-server` does, and what must go in is additive.
 
   6. **Recents (app only; no server change).** A list of the device's
      calls: answered ones with their duration, missed ones, and dialled
@@ -1395,13 +1403,13 @@ on by config — see §7.4.
      write failed is worse than one that says so.
      — **Who "the admin" is — settled 2026-09-23, and recorded so it is
      not reopened.** There are two authentications here and they are easy
-     to conflate: the operator's password into `dialler-admin` (human →
-     UI, §4.8's `-password-file`), and the credential `dialler-admin`
+     to conflate: the operator's password into `dialpark-admin` (human →
+     UI, §4.8's `-password-file`), and the credential `dialpark-admin`
      presents to the call server (machine → machine, 9b). **No operator
      identity is passed to the call server, and the admin API keeps no
      audit trail.** Its job is to keep unauthorised callers out, not to
      record who did what. If an audit trail is ever wanted it belongs in
-     `dialler-admin`, which is the only process that knows a human was
+     `dialpark-admin`, which is the only process that knows a human was
      involved.
      — **Session lifetime**, and what expiry does to a half-filled form.
      — **A half-applied bulk action.** A CSV upload is one replace-all on
@@ -1418,11 +1426,11 @@ on by config — see §7.4.
      is already written, unit-tested and has no caller) and **purge**
      (`DELETE /v1/admin/devices/{id}?purge=1`, deleting record and
      directory where a plain delete revokes).
-     *How `dialler-admin` authenticates.* **What it is for is settled
+     *How `dialpark-admin` authenticates.* **What it is for is settled
      (2026-09-23): keep unauthorised callers out of the admin API, and
      nothing more.** The call server authenticates the *caller*, not the
      person — no operator identity crosses this boundary and there is no
-     audit trail through it. Who pressed the button is `dialler-admin`'s
+     audit trail through it. Who pressed the button is `dialpark-admin`'s
      own business, behind its operator password.
      The mechanism stays what it already is, a **bearer token over TLS**.
      The weakness is not the token: it is that the admin API shares a
@@ -1444,7 +1452,7 @@ on by config — see §7.4.
      `-admin-token` is readable by every local user in `ps`, and
      `make dev-server` passes it literally.
      Rate-limit the admin listener as `/v1/enrol` is rate-limited.
-     *Deliberately not decided:* mutual TLS, where `dialler-admin` also
+     *Deliberately not decided:* mutual TLS, where `dialpark-admin` also
      presents a certificate the call server verifies, so no shared secret
      crosses the wire. `tlsutil.PeerConfig` already does this on the
      trunk leg, so it is cheap to add later; it is recorded as an option
@@ -1560,7 +1568,7 @@ on by config — see §7.4.
         adversarial suite run against the live server rather than a
         test mux. Then the README's admin examples move to 8081.
      *Not in 9b:* mutual TLS, certificate rollover, live trunk settings
-     (contract §10). *After 9b:* 9c builds `dialler-admin` against this
+     (contract §10). *After 9b:* 9c builds `dialpark-admin` against this
      API and nothing else.
      *Built 2026-09-25 (this branch, awaiting approval):* steps 1–9 as
      planned, one commit each (steps 6–9 together), `go test ./...`
@@ -1601,8 +1609,8 @@ on by config — see §7.4.
      is debug or the trace is on, so "extend" is `{"for_seconds": N}`
      and "turn off" is `{"level": "info"}`.
 
-  9c. **`dialler-admin`, the web UI (needs 9a and 9b).**
-     `server/cmd/dialler-admin`, the same Go module, standard library
+  9c. **`dialpark-admin`, the web UI (needs 9a and 9b).**
+     `server/cmd/dialpark-admin`, the same Go module, standard library
      only, templates and CSS through `embed`. Flags: `-listen`,
      `-server`, `-admin-token-file`, `-server-ca` or `-insecure`,
      `-password-file`, `-tls-cert`/`-tls-key` (self-signed when absent);
@@ -1624,7 +1632,7 @@ on by config — see §7.4.
      independent decoder in its own tests run on every length 0–213, and
      by a one-off oracle: fifteen codes through zbar in Docker, every one
      decoded byte-exact; those matrices are the goldens. The fallback was
-     not needed. Then `dialler-admin` as specified: the typed client over
+     not needed. Then `dialpark-admin` as specified: the typed client over
      the server's own types, one password, a twelve-hour session refreshed
      on use, CSRF on every form, and the contract's §9 answers built in
      (a form submitted on an expired session is stashed and applied after
@@ -1708,12 +1716,12 @@ on by config — see §7.4.
      `feature/licence` in this order, each phase tests first and green
      under the race detector before the next, nothing in the admin UI or
      the app until the server is proven: (A) `internal/licence` and the
-     `dialler-licence` tool; (B) seats in the device store with
+     `dialpark-licence` tool; (B) seats in the device store with
      `seat_since`; (C) gateway refusal with the reason, welcome `licence`,
      seat-loss reconcile (gateway disconnect, SIP unregister, line drop);
      (D1) `GET`/`PUT /v1/admin/licence`; (E) the harness licence and
      `harness/licence_test.sh` in `make harness-test`; (D2) the
-     `dialler-admin` Licence page and seat counts; (F) the app's verifier,
+     `dialpark-admin` Licence page and seat counts; (F) the app's verifier,
      refusal copy, 7-day banner and the enrolment 403 copy; (G) PROTOCOL,
      ADMIN-API, README. Every API call and every condition in §4.9 has a
      test before D2 or F starts. The one-off online check-in is a later
@@ -1940,9 +1948,9 @@ ever looks worth revisiting, price it against that.
 
 ### 4.8 Management plane and enrolment (decided 2026-09-21)
 
-Two processes. `dialler-server` is the call element and keeps exactly the
+Two processes. `dialpark-server` is the call element and keeps exactly the
 responsibilities it has: gateway, registrar, B2BUA, relay, directory store,
-device credentials. `dialler-admin` is the operator's web UI: a second Go
+device credentials. `dialpark-admin` is the operator's web UI: a second Go
 binary in the same module (stdlib only, templates and CSS embedded), holding
 the admin token and a login of its own, speaking to the call server's admin
 API over HTTPS and to nothing else. It never touches SIP, media or the wake
@@ -2048,7 +2056,7 @@ handlers; nothing that exists changes shape:
   to the device, and no read returns it. 404 for an unknown device or
   until set; a write re-registers that one line and touches no other.
 
-CSV lives in `dialler-admin`, not in the call server:
+CSV lives in `dialpark-admin`, not in the call server:
 `display_name,uri,mode,favourite` with a header row, UTF-8, RFC 4180
 quoting; `uri` may be a bare number, which the server normalises to
 `sip:<n>@<domain>`; `favourite` is `true`/`false`, and a missing column means
@@ -2062,13 +2070,13 @@ The server runs on the customer's hardware and must enforce a licence for
 **X app devices until a date D** without any internet dependency.
 
 **The licence.** A vendor-signed Ed25519 document,
-`DL1.<base64url payload>.<base64url signature>`, payload
+`DP1.<base64url payload>.<base64url signature>`, payload
 `{v, id, customer, install_id, seats, issued_at, valid_until}`. The vendor
 private key stays offline with the vendor; the public key is compiled into
-both `dialler-server` and the app. The payload is readable, not encrypted:
+both `dialpark-server` and the app. The payload is readable, not encrypted:
 what makes it a licence is that nobody without the private key can produce
 a signature over it, and changing one character of it breaks the signature.
-`server/cmd/dialler-licence` (`keygen`, `issue`, `inspect`) is the vendor's
+`server/cmd/dialpark-licence` (`keygen`, `issue`, `inspect`) is the vendor's
 tool; `server/internal/licence` parses, verifies and holds the licence.
 
 **Binding.** At first start the server mints a random install id and keeps
@@ -2242,7 +2250,7 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
    give **one** ring-back, not two.
 
 7. Enrolment (§6 item 8; plan 2026-09-21): enrol a fresh install from the
-   QR `dialler-admin` shows — once through the iOS Camera app, once through
+   QR `dialpark-admin` shows — once through the iOS Camera app, once through
    the in-app scanner, once by typing host and code — and confirm the pin
    holds: swap the server certificate and the app must refuse to connect
    with a message that says why.
@@ -2266,7 +2274,7 @@ suite once on-device. Switching siblings changes delivery, not behaviour.
     (a) the line reaches **Registered** on the CUCM device page, and
     survives a re-registration cycle; (b) a CUCM phone calls it — the app
     rings through the wake, with the caller's name from CUCM; (c) the app
-    calls that phone — it arrives as the DN, not as "dialler", and CUCM's
+    calls that phone — it arrives as the DN, not as "dialpark", and CUCM's
     INVITE challenge is answered; (d) **DTMF both ways** (the digits reach
     an IVR or a phone's display), noting whether CUCM inserted an MTP;
     (e) hold and blind transfer to a CUCM extension — if REFER is refused,
@@ -2834,7 +2842,7 @@ it is neither linked nor redistributed.
     error that ends the pump with `RELAY STOPPED`; the reader stayed
     alive and simply received nothing), the timeline re-base (item 11;
     it never fired here). *Not reproduced:* `TRUNK_TLS=1 TRUNK_SRTP=sdes
-    DIALLER_SIP_TRACE=true make harness-pbx-hold` — docker Asterisk keeps
+    DIALPARK_SIP_TRACE=true make harness-pbx-hold` — docker Asterisk keeps
     RTP flowing straight through the desk phone's hold/resume and audio
     after the resume passes. So it is specific to the LAN PBX or the 101
     phone's unhold: Asterisk stopped sending to us 1.5 s after the resume
@@ -2865,7 +2873,7 @@ it is neither linked nor redistributed.
     admin verb stays behind the admin token, on a separate process.
     Residual: someone on the LAN who sees the QR before the phone does;
     the expiry and single use bound it, and the operator sees the device
-    come online under the wrong address in `dialler-admin`. Validate the
+    come online under the wrong address in `dialpark-admin`. Validate the
     rate limit and the "other devices untouched" property in the
     `ServeHTTP` tests before the route ships.
 15. **Licence circumvention (accepted residual, §4.9).** The server binary

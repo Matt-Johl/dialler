@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"dialler/server/internal/registry"
+	"dialpark/server/internal/registry"
 )
 
 // Registrar answers REGISTER and OPTIONS on the app leg and keeps the
@@ -22,7 +22,7 @@ import (
 // this one has no authentication and is not on the call path.
 type Registrar struct {
 	Registry   *registry.Registry
-	Domain     string        // served domain, e.g. "dialler.example.local"
+	Domain     string        // served domain, e.g. "dialpark.example.local"
 	MinExpires int           // seconds; default 60
 	MaxExpires int           // seconds; default 3600
 	Logger     *slog.Logger  // default slog.Default()

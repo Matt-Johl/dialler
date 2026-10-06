@@ -15,7 +15,7 @@ import (
 // session, and a stash for a form that was submitted after the session
 // had expired, so nothing typed is lost across the re-login.
 //
-// It is memory only. dialler-admin keeps no state the API cannot
+// It is memory only. dialpark-admin keeps no state the API cannot
 // re-read (rule 1 of the contract); a restart logs everyone out, which
 // is the correct consequence.
 type Sessions struct {
@@ -44,7 +44,7 @@ const (
 	SessionLife = 12 * time.Hour
 	// PendingLife is how long a stashed form waits for its login.
 	PendingLife = 15 * time.Minute
-	cookieName  = "dialler_admin"
+	cookieName  = "dialpark_admin"
 )
 
 // NewSessions builds the store with the operator's password.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"dialler/server/internal/licence"
+	"dialpark/server/internal/licence"
 )
 
 func TestKeygenIssueInspect(t *testing.T) {
@@ -37,7 +37,7 @@ func TestKeygenIssueInspect(t *testing.T) {
 		t.Fatalf("issue exit %d: %s", code, errb.String())
 	}
 	tok := strings.TrimSpace(out.String())
-	if !strings.HasPrefix(tok, "DL1.") {
+	if !strings.HasPrefix(tok, "DP1.") {
 		t.Fatalf("issue printed %q", tok)
 	}
 

@@ -29,20 +29,20 @@ cd "$(dirname "$0")/.."
 # No published host ports: everything here happens inside the compose
 # network, so this is safe to run beside a native `make dev-server`.
 COMPOSE="docker compose -f harness/docker-compose.yml -f harness/docker-compose.noports.yml --profile test"
-export DIALLER_PUBLIC_HOST=dialler
+export DIALPARK_PUBLIC_HOST=dialpark
 
 # The PBX becomes a registrar for our lines, and the server presents them.
 export ASTERISK_LINES=yes
-export DIALLER_PBX_MODE=lines
+export DIALPARK_PBX_MODE=lines
 # The host part of each line's address of record. An exchange matches the
 # registration by the user part, but sending a bare address where a domain
 # belongs is the kind of thing a real one rejects.
-export DIALLER_PBX_DOMAIN=asterisk
+export DIALPARK_PBX_DOMAIN=asterisk
 # Short enough that a refresh happens inside a test run, long enough not to
 # be a storm: the refresh is at three quarters of what the PBX grants.
-export DIALLER_PBX_EXPIRY=120s
+export DIALPARK_PBX_EXPIRY=120s
 
-NET=dialler-harness_default
+NET=dialpark-harness_default
 MEDIA_DIR=harness/baresip/media
 SCENARIO="${SCENARIO:-all}"
 CALL_SECONDS="${CALL_SECONDS:-8}"
@@ -55,14 +55,14 @@ cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== up: server in lines mode, asterisk as a registrar, apps 211/212, desk phone 100"
-$COMPOSE up --build -d dialler asterisk >/dev/null 2>&1
+$COMPOSE up --build -d dialpark asterisk >/dev/null 2>&1
 sleep 2
 # PBX_LINES=1 seeds the two line credentials the PBX config expects.
 PBX_LINES=1 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 # The server reads its lines at start-up, so it has to come back to pick up
 # credentials provisioned after it. (An admin write to a running server
 # registers that line at once — that is what the badpass scenario uses.)
-$COMPOSE restart dialler >/dev/null 2>&1
+$COMPOSE restart dialpark >/dev/null 2>&1
 sleep 3
 $COMPOSE up --build -d baresip-a baresip-b baresip-c >/dev/null 2>&1
 sleep 6
@@ -85,13 +85,13 @@ fail=0
 if [ "$SCENARIO" = register ] || [ "$SCENARIO" = all ]; then
   echo "== register: both lines registered to the PBX"
   i=0
-  until [ "$($COMPOSE logs --no-log-prefix dialler 2>&1 | grep -c 'pbx line: registered')" -ge 2 ]; do
+  until [ "$($COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -c 'pbx line: registered')" -ge 2 ]; do
     i=$((i+1)); [ $i -le 40 ] || break
     sleep 1
   done
   ok=1
   for line in 211 212; do
-    if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "pbx line: registered.*dn=$line"; then
+    if $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q "pbx line: registered.*dn=$line"; then
       echo "   the server registered line $line"
     else
       echo "   FAIL: the server never registered line $line"; ok=0
@@ -124,7 +124,7 @@ if [ "$SCENARIO" = in ] || [ "$SCENARIO" = all ]; then
   sleep "$CALL_SECONDS"
   ctl baresip-c '{"command":"hangup"}'
   sleep 2
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
   if python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-211.wav" --reference "$MEDIA_DIR/in.wav" \
        --max-gap-ms "${MAX_GAP_MS:-0}" --max-gaps "${MAX_GAPS:-0}"; then
     echo "PASS in: the app heard the desk phone through its registered line"
@@ -143,11 +143,11 @@ if [ "$SCENARIO" = out ] || [ "$SCENARIO" = all ]; then
   echo "== out: app 211 dials 100 — the INVITE is challenged and must arrive as line 211"
   rm -f "$MEDIA_DIR/out-100.wav"
   MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+  ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
   sleep "$CALL_SECONDS"
   ctl baresip-a '{"command":"hangup"}'
   sleep 2
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'invite|callee answered|bridged|call ended|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
   ok=1
   if python3 harness/spike/assert_audio.py "$MEDIA_DIR/out-100.wav" --reference "$MEDIA_DIR/in.wav" \
        --max-gap-ms "${MAX_GAP_MS:-0}" --max-gaps "${MAX_GAPS:-0}"; then
@@ -174,7 +174,7 @@ if [ "$SCENARIO" = badpass ] || [ "$SCENARIO" = all ]; then
   MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   set_line dev-ha line211 wrong-on-purpose
   sleep 8
-  blog="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+  blog="$($COMPOSE logs --no-log-prefix --since "$MARK" dialpark 2>&1)"
   ok=1
   if printf '%s' "$blog" | grep -q "pbx line: refused"; then
     echo "   line 211 latched refused"
@@ -198,7 +198,7 @@ if [ "$SCENARIO" = badpass ] || [ "$SCENARIO" = all ]; then
   echo "   outbound from 211 must now be refused by the PBX"
   rm -f "$MEDIA_DIR/out-100.wav"
   IMARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+  ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
   sleep 6
   ctl baresip-a '{"command":"hangup"}'
   sleep 2
@@ -233,11 +233,11 @@ if [ "$SCENARIO" = badpass ] || [ "$SCENARIO" = all ]; then
   RMARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   set_line dev-ha line211 linepass-211
   sleep 5
-  if $COMPOSE logs --no-log-prefix --since "$RMARK" dialler 2>&1 | grep -q "pbx line: registered.*dn=211"; then
+  if $COMPOSE logs --no-log-prefix --since "$RMARK" dialpark 2>&1 | grep -q "pbx line: registered.*dn=211"; then
     echo "   the corrected credential registered line 211 again"
   else
     echo "   FAIL: line 211 did not come back after the credential was fixed"
-    $COMPOSE logs --no-log-prefix --since "$RMARK" dialler 2>&1 | grep -i "pbx line" | tail -4 | sed 's/^/   /'; ok=0
+    $COMPOSE logs --no-log-prefix --since "$RMARK" dialpark 2>&1 | grep -i "pbx line" | tail -4 | sed 's/^/   /'; ok=0
   fi
   [ "$ok" = 1 ] && echo "PASS badpass" || { echo "FAIL badpass"; fail=1; }
 fi

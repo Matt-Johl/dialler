@@ -16,8 +16,8 @@ import (
 	"time"
 	"unicode"
 
-	"dialler/server/internal/licence"
-	"dialler/server/internal/status"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/status"
 )
 
 //go:embed templates/*.html static/*
@@ -349,11 +349,19 @@ func (u *UI) fetched(key string, data any, err error) (any, time.Time, string) {
 	}
 	if Unreachable(err) {
 		if l, ok := u.last[key]; ok {
-			return l.data, l.at, ErrUnreachable.Error()
+			return l.data, l.at, sentence(ErrUnreachable.Error())
 		}
-		return nil, time.Time{}, ErrUnreachable.Error()
+		return nil, time.Time{}, sentence(ErrUnreachable.Error())
 	}
 	return nil, time.Time{}, ""
+}
+
+// sentence makes an error's text the start of a sentence the operator reads.
+func sentence(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // describe turns an API error into the line the operator sees.
@@ -363,9 +371,9 @@ func describe(err error) string {
 	case err == nil:
 		return ""
 	case Unreachable(err):
-		return ErrUnreachable.Error() + "; nothing was changed."
+		return sentence(ErrUnreachable.Error()) + "; nothing was changed."
 	case errors.Is(err, ErrUnauthorized):
-		return "The call server refused dialler-admin's token; check -admin-token-file on both sides."
+		return "The call server refused dialpark-admin's token; check -admin-token-file on both sides."
 	case errors.As(err, &ae):
 		switch ae.Status {
 		case http.StatusPreconditionFailed:

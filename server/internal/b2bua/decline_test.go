@@ -13,9 +13,9 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/registry"
-	"dialler/server/internal/routing"
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/routing"
+	"dialpark/server/internal/wire"
 )
 
 // What the caller hears when the callee refuses or cannot be reached.

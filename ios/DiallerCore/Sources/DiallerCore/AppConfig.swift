@@ -12,7 +12,18 @@ public struct AppConfig: Equatable, Codable, Sendable {
     public var token: String
     public var appVersion: String
 
-    public init(gateway: GatewayEndpoint, deviceID: String, token: String, appVersion: String = "0.1.0") {
+    /// The version this build reports in `hello` (shown on the console's
+    /// Clients page): CFBundleShortVersionString and CFBundleVersion, as
+    /// Settings › Version shows them. The extension has the same numbers, so
+    /// both sessions report the same thing.
+    public static var bundleVersion: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let short = info["CFBundleShortVersionString"] as? String ?? "0"
+        let build = info["CFBundleVersion"] as? String ?? "0"
+        return "\(short) (\(build))"
+    }
+
+    public init(gateway: GatewayEndpoint, deviceID: String, token: String, appVersion: String = AppConfig.bundleVersion) {
         self.gateway = gateway
         self.deviceID = deviceID
         self.token = token

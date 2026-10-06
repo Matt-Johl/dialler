@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"dialler/server/internal/directory"
+	"dialpark/server/internal/directory"
 )
 
 var bareNumber = regexp.MustCompile(`^[0-9+*#]{1,32}$`)

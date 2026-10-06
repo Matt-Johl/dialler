@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 # HARNESS_NOPORTS=1 publishes nothing on the host, so this can run beside a
 # native `make dev-server`.
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
 # TRUNK_SRTP=sdes and TRUNK_TLS=1: the same knobs as trunk_test.sh, so the
 # clips the server writes into a trunk leg — hold music, ring-back, busy —
@@ -27,18 +27,18 @@ COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
 # no audio either way after a server-bridged transfer on the LAN PBX).
 if [ -n "${TRUNK_SRTP:-}" ]; then
   export ASTERISK_SRTP=yes
-  export DIALLER_TRUNK_SRTP="$TRUNK_SRTP"
+  export DIALPARK_TRUNK_SRTP="$TRUNK_SRTP"
 fi
 if [ "${TRUNK_TLS:-0}" = 1 ]; then
   sh harness/tls/gen_certs.sh
   export ASTERISK_TLS=yes
-  export DIALLER_TRUNK="sip:172.30.0.20:5061;transport=tls"
-  export DIALLER_TRUNK_ADDR=":5062"
-  export DIALLER_TRUNK_TLS_CERT=/tls/dialler.pem
-  export DIALLER_TRUNK_TLS_KEY=/tls/dialler.key
-  export DIALLER_TRUNK_TLS_CA=/tls/ca.pem
+  export DIALPARK_TRUNK="sip:172.30.0.20:5061;transport=tls"
+  export DIALPARK_TRUNK_ADDR=":5062"
+  export DIALPARK_TRUNK_TLS_CERT=/tls/dialpark.pem
+  export DIALPARK_TRUNK_TLS_KEY=/tls/dialpark.key
+  export DIALPARK_TRUNK_TLS_CA=/tls/ca.pem
 fi
-NET=dialler-harness_default
+NET=dialpark-harness_default
 KEEP="${KEEP:-0}"
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
@@ -129,28 +129,28 @@ EOPY
 # hold_call <target> <expect-codec> <recording> <who>
 hold_call() {
   rm -f "$3"
-  ctl baresip-a "{\"command\":\"dial\",\"params\":\"$1@dialler\"}"
+  ctl baresip-a "{\"command\":\"dial\",\"params\":\"$1@dialpark\"}"
   sleep 6
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "bridged.*to=$1" || { echo "FAIL: the call to $1 never bridged"; exit 1; }
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q "bridged.*to=$1" || { echo "FAIL: the call to $1 never bridged"; exit 1; }
   ctl baresip-a '{"command":"hold"}'
   sleep 8
   ctl baresip-a '{"command":"resume"}'
   sleep 2
   ctl baresip-a '{"command":"hangup"}'
   sleep 2
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep 'playing to the waiting party' | tail -1 | sed 's/^/   /'
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "playing to the waiting party.*codec=$2" || {
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep 'playing to the waiting party' | tail -1 | sed 's/^/   /'
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q "playing to the waiting party.*codec=$2" || {
     echo "FAIL: no $2 hold music for the call to $1"; exit 1; }
   heard "$3" "$4"
 }
 
 echo "== up (the app-leg caller is silent for the whole call)"
-$COMPOSE up --build -d dialler asterisk >/dev/null 2>&1
+$COMPOSE up --build -d dialpark asterisk >/dev/null 2>&1
 sleep 3
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 AUDIO_SOURCE="aufile,/media/silence.wav" $COMPOSE up --build -d --no-deps --force-recreate baresip-a baresip-b baresip-c >/dev/null 2>&1
 sleep 8
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=211' || { echo "FAIL: 211 never registered"; exit 1; }
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'sip register.*user=211' || { echo "FAIL: 211 never registered"; exit 1; }
 
 echo "== trunk call: 211 holds the desk phone (G.722, Asterisk in the middle)"
 hold_call 100 G722 harness/baresip/media/out-100.wav "the desk phone"
@@ -167,9 +167,9 @@ echo "== resume: 211 (now audible) holds the desk phone, resumes, and must be he
 AUDIO_SOURCE="aufile,/media/in.wav" $COMPOSE up --build -d --no-deps --force-recreate baresip-a >/dev/null 2>&1
 sleep 8
 rm -f harness/baresip/media/out-100.wav
-ctl baresip-a '{"command":"dial","params":"100@dialler"}'
+ctl baresip-a '{"command":"dial","params":"100@dialpark"}'
 sleep 5
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'bridged.*to=100' || { echo "FAIL: the call never bridged"; exit 1; }
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'bridged.*to=100' || { echo "FAIL: the call never bridged"; exit 1; }
 ctl baresip-a '{"command":"hold"}'
 sleep 5
 ctl baresip-a '{"command":"resume"}'
@@ -187,17 +187,17 @@ resume_heard harness/baresip/media/out-100.wav "the desk phone"
 # gets busy and the call ends. Nobody is left listening to silence.
 echo "== transfer to a target that rings, then fails: referrer released, then busy"
 rm -f harness/baresip/media/out-212.wav
-ctl baresip-a '{"command":"dial","params":"212@dialler"}'
+ctl baresip-a '{"command":"dial","params":"212@dialpark"}'
 sleep 5
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'bridged.*to=212' || { echo "FAIL: the app-to-app call never bridged"; exit 1; }
-ctl baresip-a '{"command":"transfer","params":"700@dialler"}'
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'bridged.*to=212' || { echo "FAIL: the app-to-app call never bridged"; exit 1; }
+ctl baresip-a '{"command":"transfer","params":"700@dialpark"}'
 sleep 16
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'playing to the waiting party|transfer: target is ringing|transfer: failed after' | tail -4 | sed 's/^/   /'
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'playing to the waiting party|transfer: target is ringing|transfer: failed after' | tail -4 | sed 's/^/   /'
 for want in 'clip=ringback' 'transfer: target is ringing; releasing the referrer' 'clip=busy'; do
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q "$want" || { echo "FAIL: expected '$want' during the transfer"; exit 1; }
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q "$want" || { echo "FAIL: expected '$want' during the transfer"; exit 1; }
 done
 # The referrer must actually be gone — that is the whole point.
-$COMPOSE logs --no-log-prefix baresip-a 2>&1 | grep -q 'Call with sip:212@dialler.*terminated' || {
+$COMPOSE logs --no-log-prefix baresip-a 2>&1 | grep -q 'Call with sip:212@dialpark.*terminated' || {
   echo "FAIL: the referrer was not released; it is still tied to the call"; exit 1; }
 echo "   PASS: ring-back on alerting, referrer released, busy when nobody answered"
 tail_audible harness/baresip/media/out-212.wav 3 "app 212 (transferred to a target that never answered)"
@@ -206,12 +206,12 @@ tail_audible harness/baresip/media/out-212.wav 3 "app 212 (transferred to a targ
 # keeps the call and is told. 701 rejects with busy immediately.
 echo "== transfer to a target that rejects at once: the call stays with the referrer"
 rm -f harness/baresip/media/out-212.wav
-ctl baresip-a '{"command":"dial","params":"212@dialler"}'
+ctl baresip-a '{"command":"dial","params":"212@dialpark"}'
 sleep 5
-ctl baresip-a '{"command":"transfer","params":"701@dialler"}'
+ctl baresip-a '{"command":"transfer","params":"701@dialpark"}'
 sleep 6
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'transfer: refused before it rang' | tail -1 | sed 's/^/   /'
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'transfer: refused before it rang' || {
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'transfer: refused before it rang' | tail -1 | sed 's/^/   /'
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'transfer: refused before it rang' || {
   echo "FAIL: an immediate rejection should not release the referrer"; exit 1; }
 $COMPOSE logs --no-log-prefix baresip-a 2>&1 | grep -q 'transfer failed: 486' || {
   echo "FAIL: the referrer was not told why the transfer failed"; exit 1; }
@@ -221,6 +221,6 @@ sleep 2
 resume_heard harness/baresip/media/out-212.wav "app 212 (transfer rejected outright)" 3
 
 echo "== hold released cleanly both times"
-[ "$($COMPOSE logs --no-log-prefix dialler 2>&1 | grep -c 'hold released')" -ge 3 ] || {
+[ "$($COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -c 'hold released')" -ge 3 ] || {
   echo "FAIL: a hold was never released; the music would outlive the hold"; exit 1; }
 echo "   PASS"

@@ -109,7 +109,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ua, err := sipgo.NewUA(sipgo.WithUserAgent("dialler-spike"), sipgo.WithUserAgentHostname(*extHost))
+	ua, err := sipgo.NewUA(sipgo.WithUserAgent("dialpark-spike"), sipgo.WithUserAgentHostname(*extHost))
 	if err != nil {
 		log.Error("ua", "err", err)
 		os.Exit(1)
@@ -216,7 +216,7 @@ func selfSigned(host string) (*tls.Config, error) {
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "dialler-spike"},
+		Subject:      pkix.Name{CommonName: "dialpark-spike"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

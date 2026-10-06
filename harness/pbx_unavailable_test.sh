@@ -19,9 +19,9 @@ cd "$(dirname "$0")/.."
 # No published host ports: this test is safe to run beside a native
 # `make dev-server` (harness/docker-compose.noports.yml).
 COMPOSE="docker compose -f harness/docker-compose.yml -f harness/docker-compose.noports.yml --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 KEEP="${KEEP:-0}"
-export DIALLER_PUBLIC_HOST=dialler
+export DIALPARK_PUBLIC_HOST=dialpark
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -31,20 +31,20 @@ ctl() {
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
 
-echo "== up (dialler + asterisk; desk phone 100 deliberately NOT started)"
-$COMPOSE up --build -d dialler asterisk >/dev/null 2>&1
+echo "== up (dialpark + asterisk; desk phone 100 deliberately NOT started)"
+$COMPOSE up --build -d dialpark asterisk >/dev/null 2>&1
 sleep 3
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 $COMPOSE up --build -d baresip-a >/dev/null 2>&1
 sleep 5
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=211' || { echo "FAIL: 211 never registered"; exit 1; }
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'sip register.*user=211' || { echo "FAIL: 211 never registered"; exit 1; }
 
 echo "== 211 dials 100, which has never registered to the PBX"
-ctl '{"command":"dial","params":"100@dialler"}'
+ctl '{"command":"dial","params":"100@dialpark"}'
 sleep 6
 ctl '{"command":"hangup"}' 2>/dev/null || true
 
-line="$($COMPOSE logs --no-log-prefix dialler 2>&1 | grep 'invite callee.*to=100' | tail -1)"
+line="$($COMPOSE logs --no-log-prefix dialpark 2>&1 | grep 'invite callee.*to=100' | tail -1)"
 echo "   $line"
 case "$line" in
   *"480 Temporarily Unavailable"*) ;;
@@ -55,8 +55,8 @@ esac
 
 # It must be a refusal, not a 30 s ring that happened to end in 480: the
 # INVITE and the failure are logged with timestamps, so compare them.
-sent="$($COMPOSE logs -t --no-log-prefix dialler 2>&1 | grep 'invite: to trunk.*to=100' | tail -1 | cut -c12-19)"
-failed="$($COMPOSE logs -t --no-log-prefix dialler 2>&1 | grep 'invite callee.*to=100' | tail -1 | cut -c12-19)"
+sent="$($COMPOSE logs -t --no-log-prefix dialpark 2>&1 | grep 'invite: to trunk.*to=100' | tail -1 | cut -c12-19)"
+failed="$($COMPOSE logs -t --no-log-prefix dialpark 2>&1 | grep 'invite callee.*to=100' | tail -1 | cut -c12-19)"
 secs() { echo "$1" | awk -F: '{print $1*3600 + $2*60 + $3}'; }
 took=$(( $(secs "$failed") - $(secs "$sent") ))
 [ "$took" -le 5 ] || { echo "FAIL: the 480 took ${took}s — the PBX rang it first instead of refusing at once"; exit 1; }
@@ -74,9 +74,9 @@ echo "   PASS: the caller saw 100 Trying then 480 — never a 180"
 echo "== now start the desk phone and dial it again: it must connect"
 $COMPOSE up --build -d baresip-c >/dev/null 2>&1
 sleep 8
-ctl '{"command":"dial","params":"100@dialler"}'
+ctl '{"command":"dial","params":"100@dialpark"}'
 sleep 6
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'bridged.*to=100' || {
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'bridged.*to=100' || {
   echo "FAIL: a registered desk phone no longer connects"; exit 1; }
 ctl '{"command":"hangup"}' 2>/dev/null || true
 echo "   PASS: registered desk phone still answers and bridges"
@@ -100,12 +100,12 @@ fi
 # qualify_frequency=5 + qualify_timeout=3 on the harness AOR: the dead
 # contact is noticed within about ten seconds.
 sleep 14
-before="$($COMPOSE logs --no-log-prefix dialler 2>&1 | grep -c 'invite callee.*to=100' || true)"
-ctl '{"command":"dial","params":"100@dialler"}'
+before="$($COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -c 'invite callee.*to=100' || true)"
+ctl '{"command":"dial","params":"100@dialpark"}'
 sleep 6
 ctl '{"command":"hangup"}' 2>/dev/null || true
-line="$($COMPOSE logs --no-log-prefix dialler 2>&1 | grep 'invite callee.*to=100' | tail -1)"
-after="$($COMPOSE logs --no-log-prefix dialler 2>&1 | grep -c 'invite callee.*to=100' || true)"
+line="$($COMPOSE logs --no-log-prefix dialpark 2>&1 | grep 'invite callee.*to=100' | tail -1)"
+after="$($COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -c 'invite callee.*to=100' || true)"
 [ "$after" -gt "$before" ] || { echo "FAIL: the call to the switched-off phone never failed — it is still ringing"; exit 1; }
 echo "   $line"
 case "$line" in

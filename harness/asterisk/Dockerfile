@@ -43,7 +43,7 @@ RUN allow="$(printf 'allow=%s\n' $(echo "$ASTERISK_CODECS" | tr ',' ' '))" \
 # thing our default -trunk-srtp=off has to keep working with.
 ARG ASTERISK_SRTP=no
 RUN if [ "$ASTERISK_SRTP" = yes ]; then \
-      awk '/^\[dialler\]$/ { d=1 } /^\[/ && !/^\[dialler\]$/ { d=0 } { print } \
+      awk '/^\[dialpark\]$/ { d=1 } /^\[/ && !/^\[dialpark\]$/ { d=0 } { print } \
            d && /^type=endpoint$/ { print "media_encryption=sdes" }' \
         /etc/asterisk/pjsip.conf > /etc/asterisk/pjsip.conf.new \
    && mv /etc/asterisk/pjsip.conf.new /etc/asterisk/pjsip.conf \
@@ -56,7 +56,7 @@ RUN if [ "$ASTERISK_SRTP" = yes ]; then \
 ARG ASTERISK_TLS=no
 RUN if [ "$ASTERISK_TLS" = yes ]; then \
       cat /etc/asterisk/pjsip-tls.conf >> /etc/asterisk/pjsip.conf \
-   && awk '/^\[dialler\]$/ { d=1 } /^\[/ && !/^\[dialler\]$/ { d=0 } \
+   && awk '/^\[dialpark\]$/ { d=1 } /^\[/ && !/^\[dialpark\]$/ { d=0 } \
            d && /^contact=sip:/ { print "contact=sip:172.30.0.10:5062\\;transport=tls"; next } \
            { print } \
            d && /^type=endpoint$/ { print "transport=transport-tls" }' \

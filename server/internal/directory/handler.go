@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"dialler/server/internal/admin"
+	"dialpark/server/internal/admin"
 )
 
 // SyncResponse is the body of GET /v1/directory.

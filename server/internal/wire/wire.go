@@ -1,4 +1,4 @@
-// Package wire implements the frozen v1 Dialler wire protocol: the JSON
+// Package wire implements the frozen v1 Dialpark wire protocol: the JSON
 // envelope, typed message bodies, and the length-prefixed TLS framing.
 // See protocol/PROTOCOL.md. This package has no dependencies beyond the
 // standard library and no knowledge of SIP, TLS, or the gateway.

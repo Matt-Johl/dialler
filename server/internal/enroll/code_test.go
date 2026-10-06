@@ -19,7 +19,7 @@ func TestMintClaimRotateAndExpire(t *testing.T) {
 	s, _ := Open(path)
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
-	s.Realm = "dialler"
+	s.Realm = "dialpark"
 
 	// A device created by the admin has no credential until it claims.
 	id, err := s.Create("", "201", "Matt's iPhone")
@@ -162,7 +162,7 @@ func TestEnrolHandler(t *testing.T) {
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 	var claimed []string
-	h := NewEnrolHandler(s, EnrolInfo{SignalPort: 7443, SIPDomain: "dialler", CertSHA256: "abc", Now: func() time.Time { return now }},
+	h := NewEnrolHandler(s, EnrolInfo{SignalPort: 7443, SIPDomain: "dialpark", CertSHA256: "abc", Now: func() time.Time { return now }},
 		Hooks{OnClaim: func(d, u string) { claimed = append(claimed, d+"/"+u) }})
 	do := func(body, from string) (*http.Response, []byte) {
 		req := httptest.NewRequest("POST", "/v1/enrol", strings.NewReader(body))
@@ -188,7 +188,7 @@ func TestEnrolHandler(t *testing.T) {
 	var out ClaimResponse
 	_ = json.Unmarshal(body, &out)
 	if out.DeviceID != "dev-a" || out.User != "201" || !strings.HasPrefix(out.Token, "tok_") ||
-		out.SignalPort != 7443 || out.SIPDomain != "dialler" || out.CertSHA256 != "abc" {
+		out.SignalPort != 7443 || out.SIPDomain != "dialpark" || out.CertSHA256 != "abc" {
 		t.Fatalf("claim response: %+v", out)
 	}
 	if len(claimed) != 1 || claimed[0] != "dev-a/201" {

@@ -9,10 +9,10 @@ import (
 
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/b2bua"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/pbx"
-	"dialler/server/internal/pbxline"
+	"dialpark/server/internal/b2bua"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/pbx"
+	"dialpark/server/internal/pbxline"
 )
 
 // -pbx-mode: how this server presents itself to the PBX (SPEC §6 item 3c).
@@ -106,7 +106,7 @@ func startPBXLines(log *slog.Logger, o options, trunk *pbx.Trunk, calls *b2bua.S
 		Registrar: target,
 		Domain:    domain,
 		Contact:   contact,
-		UserAgent: "dialler",
+		UserAgent: "dialpark",
 	})
 	if err != nil {
 		return nil, err

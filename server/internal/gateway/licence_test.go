@@ -3,7 +3,7 @@ package gateway
 import (
 	"testing"
 
-	"dialler/server/internal/wire"
+	"dialpark/server/internal/wire"
 )
 
 // errorMessage reads the next frame as an error and returns its body.
@@ -55,9 +55,9 @@ func TestLicenceGateRefusesBeforeTheWelcome(t *testing.T) {
 }
 
 func TestWelcomeCarriesTheLicence(t *testing.T) {
-	h := start(t, Config{LicenceFor: func() string { return "DL1.eyJ2IjoxfQ.c2ln" }})
+	h := start(t, Config{LicenceFor: func() string { return "DP1.eyJ2IjoxfQ.c2ln" }})
 	w := h.dial(t).hello(wire.ClientApp)
-	if w.Licence != "DL1.eyJ2IjoxfQ.c2ln" {
+	if w.Licence != "DP1.eyJ2IjoxfQ.c2ln" {
 		t.Fatalf("welcome.licence = %q", w.Licence)
 	}
 	// Without a source there is no field at all, as for every other

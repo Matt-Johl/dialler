@@ -1,4 +1,4 @@
-/* Dialler admin. Minimal, flat and dense: one background, hairlines, small
+/* Dialpark admin. Minimal, flat and dense: one background, hairlines, small
    type, rectangular controls, colour only where it carries state. Dark mode
    is the same sheet inverted (data-theme on <html>, set by app.js; Shift-D
    flips it). Motion is limited to hover and focus. */

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"dialler/server/internal/secrets"
+	"dialpark/server/internal/secrets"
 )
 
 func testStore(t *testing.T, path string) *Store {

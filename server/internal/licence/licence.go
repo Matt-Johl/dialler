@@ -28,7 +28,7 @@ import (
 )
 
 // Prefix names the token format; a future format gets a new one.
-const Prefix = "DL1."
+const Prefix = "DP1."
 
 // MaxLen bounds a token a caller will look at: a licence is a few hundred
 // bytes, and nothing legitimate is anywhere near this.

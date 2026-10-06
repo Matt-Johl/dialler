@@ -203,12 +203,12 @@ holds them). Everything below follows from that.
   `audiounit` error in the log.
 
 For a device call the server must advertise an address the phone can reach.
-`make harness-up` now defaults `DIALLER_PUBLIC_HOST` to this Mac's en0
-address and prints it; override with `DIALLER_PUBLIC_HOST=... make harness-up`.
+`make harness-up` now defaults `DIALPARK_PUBLIC_HOST` to this Mac's en0
+address and prints it; override with `DIALPARK_PUBLIC_HOST=... make harness-up`.
 The server's media ports (UDP 20000–20100) are published on the host, so both
 the phone and the docker phones reach the relay at that address. The wake's
-SIP target must show that address in the app log ("registering 201@dialler
-to 10.x.x.x:5061"); if it says `dialler`, the server was started without it.
+SIP target must show that address in the app log ("registering 201@dialpark
+to 10.x.x.x:5061"); if it says `dialpark`, the server was started without it.
 
 ### Before shipping: export compliance and attribution
 
@@ -238,7 +238,7 @@ and answers a call if one arrives, printing baresip's own log.
 
 ```sh
 make ios-vendor                                            # once; includes the macOS slice
-DIALLER_PUBLIC_HOST=$(ipconfig getifaddr en0) make harness-up
+DIALPARK_PUBLIC_HOST=$(ipconfig getifaddr en0) make harness-up
 make engine-probe HOST=$(ipconfig getifaddr en0)           # expect "probe: REGISTERED"
 make harness-ring-sim                                      # in another shell: the probe answers, media flows
 ```
@@ -296,7 +296,7 @@ interfaces. The device must be on the same Wi-Fi, and iOS will ask for Local
 Network permission the first time. Set `DEVELOPMENT_TEAM` (Signing tab) on
 both targets. For the later SIP step, start the server with
 `-public-host <mac-ip>` so the wake's SIP target is something the device can
-resolve; today it is `dialler`, which only matters once the engine exists.
+resolve; today it is `dialpark`, which only matters once the engine exists.
 
 ## Local Push Connectivity (device only)
 

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/events"
-	"dialler/server/internal/gateway"
-	"dialler/server/internal/pbxline"
-	"dialler/server/internal/registry"
-	"dialler/server/internal/secrets"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/events"
+	"dialpark/server/internal/gateway"
+	"dialpark/server/internal/pbxline"
+	"dialpark/server/internal/registry"
+	"dialpark/server/internal/secrets"
 )
 
 // okRegistrar is a PBX that accepts every registration, so a line manager
@@ -42,7 +42,7 @@ func TestSeatHooksSuspendAndReinstate(t *testing.T) {
 	ring := events.New(64)
 	reg := registry.New(nil)
 	devices, _ := enroll.Open("")
-	devices.Realm = "dialler"
+	devices.Realm = "dialpark"
 	box, _ := secrets.OpenKey(filepath.Join(t.TempDir(), "pbx.key"))
 	devices.Secrets = box
 	gw := gateway.New(gateway.Config{Logger: log}, devices)

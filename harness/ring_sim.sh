@@ -10,21 +10,21 @@
 set -eu
 cd "$(dirname "$0")/.."
 C="docker compose -f harness/docker-compose.yml --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 CALL_SECONDS="${CALL_SECONDS:-20}"
 
-$C up -d dialler baresip-b >/dev/null 2>&1
+$C up -d dialpark baresip-b >/dev/null 2>&1
 sleep 3
 ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-b 4444 >/dev/null"
 }
 echo "== phone-b (212) dials 201 → server wakes dev-a (the app)"
-ctl '{"command":"dial","params":"201@dialler"}'
+ctl '{"command":"dial","params":"201@dialpark"}'
 sleep 1
-$C logs --no-log-prefix --since 5s dialler 2>&1 | grep -E 'invite|woke|480|404' | sed 's/^/   /' || true
+$C logs --no-log-prefix --since 5s dialpark 2>&1 | grep -E 'invite|woke|480|404' | sed 's/^/   /' || true
 echo "   ringing for ${CALL_SECONDS}s — answer or decline in the app"
 sleep "$CALL_SECONDS"
 ctl '{"command":"hangup"}'
 echo "== server"
-$C logs --no-log-prefix --since 60s dialler 2>&1 | grep -E 'invite|woke|wake_ack|register|bridged|ended|480' | sed 's/^/   /' || true
+$C logs --no-log-prefix --since 60s dialpark 2>&1 | grep -E 'invite|woke|wake_ack|register|bridged|ended|480' | sed 's/^/   /' || true

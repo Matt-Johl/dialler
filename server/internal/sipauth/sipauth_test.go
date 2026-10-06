@@ -18,7 +18,7 @@ func (s secrets) DigestSecret(id string) (string, string, bool) {
 }
 
 const (
-	realm = "dialler"
+	realm = "dialpark"
 	dev   = "dev-a"
 	tok   = "tok_dev_a_harness_fixed"
 )
@@ -116,7 +116,7 @@ func TestStaleAndForgedNoncesAreChallengedAgain(t *testing.T) {
 
 	forged := register()
 	forged.AppendHeader(sip.NewHeader("Authorization",
-		`Digest username="dev-a", realm="dialler", nonce="0000", uri="sip:dialler", response="00", qop=auth, nc=00000001, cnonce="x"`))
+		`Digest username="dev-a", realm="dialpark", nonce="0000", uri="sip:dialpark", response="00", qop=auth, nc=00000001, cnonce="x"`))
 	if _, err := a.Verify(forged); !errors.Is(err, ErrStale) {
 		t.Fatalf("nonce we never issued: %v, want ErrStale", err)
 	}
@@ -129,7 +129,7 @@ func TestOtherRealmOrAlgorithmIsRefused(t *testing.T) {
 	answer(t, req, res, "REGISTER", "sip:"+realm, dev, tok)
 	v := req.GetHeader("Authorization").Value()
 	req.RemoveHeader("Authorization")
-	req.AppendHeader(sip.NewHeader("Authorization", replace(v, `realm="dialler"`, `realm="other"`)))
+	req.AppendHeader(sip.NewHeader("Authorization", replace(v, `realm="dialpark"`, `realm="other"`)))
 	if _, err := a.Verify(req); !errors.Is(err, ErrBadCredentials) {
 		t.Fatalf("other realm: %v, want ErrBadCredentials", err)
 	}

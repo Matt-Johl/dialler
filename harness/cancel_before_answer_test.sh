@@ -20,23 +20,23 @@ cd "$(dirname "$0")/.."
 # test that lives entirely inside the compose network; NOT for ones a
 # simulator or a real phone has to reach (sim_call.sh, ring_*.sh, probe_*).
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 KEEP="${KEEP:-0}"
 RING_SECONDS="${RING_SECONDS:-3}"
 
 cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-logs() { $COMPOSE logs --no-log-prefix dialler 2>&1; }
+logs() { $COMPOSE logs --no-log-prefix dialpark 2>&1; }
 ctl() {
   docker run --rm --network "$NET" alpine:3.20 sh -c \
     "p='$1'; len=\$(printf %s \"\$p\" | wc -c | tr -d ' '); printf '%s:%s,' \"\$len\" \"\$p\" | nc -w2 baresip-a 4444 >/dev/null"
 }
 
 echo "== up: server, 211 (caller), 212 (rings, never answers)"
-$COMPOSE up --build -d dialler >/dev/null 2>&1
+$COMPOSE up --build -d dialpark >/dev/null 2>&1
 sleep 2
 sh harness/innet.sh "$NET" harness/provision.sh >/dev/null
 BARESIP_B_ANSWER_MODE=manual $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
@@ -45,7 +45,7 @@ logs | grep -q 'sip register.*user=212' || { echo "FAIL: 212 never registered"; 
 [ "$(logs | grep -c 'sip register.*user=212')" = 1 ] || { echo "FAIL: 212 registered more than once before the test began"; exit 1; }
 
 echo "== call 1: 211 dials 212, hangs up after ${RING_SECONDS}s of ringing"
-ctl '{"command":"dial","params":"212@dialler"}'
+ctl '{"command":"dial","params":"212@dialpark"}'
 sleep "$RING_SECONDS"
 ctl '{"command":"hangup"}'
 sleep 3
@@ -58,11 +58,11 @@ echo "   call 1 cancelled while 212 was ringing"
 
 echo "== call 2: 211 dials 212 again — must ring it through the same registration"
 MARK="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-ctl '{"command":"dial","params":"212@dialler"}'
+ctl '{"command":"dial","params":"212@dialpark"}'
 sleep "$RING_SECONDS"
 ctl '{"command":"hangup"}'
 sleep 3
-after="$($COMPOSE logs --no-log-prefix --since "$MARK" dialler 2>&1)"
+after="$($COMPOSE logs --no-log-prefix --since "$MARK" dialpark 2>&1)"
 echo "$after" | grep -E 'invite|callee|call ended|flow gone|woke|level=(ERROR|WARN)' | tail -6 | sed 's/^/   /'
 fail=0
 if echo "$after" | grep -q 'registration flow gone'; then

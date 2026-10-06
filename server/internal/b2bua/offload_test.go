@@ -8,7 +8,7 @@ import (
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 
-	"dialler/server/internal/routing"
+	"dialpark/server/internal/routing"
 )
 
 // A transfer is handed to the PBX only when this server would otherwise be

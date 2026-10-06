@@ -26,7 +26,7 @@ func TestDeltaSyncAndPersistencePerDevice(t *testing.T) {
 	s.OnChange(func(d string, v int64) { notified = append(notified, change{d, v}) })
 
 	a, _ := s.Upsert("dev-a", Contact{DisplayName: "Reception", URI: "sip:100@pbx", Mode: ModeTrunk})
-	b, _ := s.Upsert("dev-a", Contact{DisplayName: "Matt", URI: "sip:201@dialler", Mode: ModeLocal, Favourite: true})
+	b, _ := s.Upsert("dev-a", Contact{DisplayName: "Matt", URI: "sip:201@dialpark", Mode: ModeLocal, Favourite: true})
 	if a.Version != 1 || b.Version != 2 || !strings.HasPrefix(a.ID, "ct_") || !b.Favourite {
 		t.Fatalf("versions/ids: %+v %+v", a, b)
 	}
@@ -204,7 +204,7 @@ func TestMigrateLegacyGlobalDirectory(t *testing.T) {
 	const fixture = `{
   "version": 702,
   "contacts": {
-    "ct_0a1b": {"id": "ct_0a1b", "display_name": "Matt (201)", "uri": "sip:201@dialler", "mode": "local", "version": 700, "updated_at": "2026-09-05T10:00:00Z"},
+    "ct_0a1b": {"id": "ct_0a1b", "display_name": "Matt (201)", "uri": "sip:201@dialpark", "mode": "local", "version": 700, "updated_at": "2026-09-05T10:00:00Z"},
     "ct_2c3d": {"id": "ct_2c3d", "display_name": "Desk phone (100)", "uri": "sip:100@asterisk", "mode": "trunk", "version": 701, "updated_at": "2026-09-05T10:00:01Z"},
     "ct_dead": {"id": "ct_dead", "display_name": "Gone", "uri": "sip:999@asterisk", "mode": "trunk", "version": 702, "updated_at": "2026-09-05T10:00:02Z", "deleted": true}
   }
@@ -218,7 +218,7 @@ func TestMigrateLegacyGlobalDirectory(t *testing.T) {
 	}
 	// dev-b already has one of the contacts (under another name): the
 	// migration updates it by URI rather than duplicating it.
-	s.Upsert("dev-b", Contact{DisplayName: "My Matt", URI: "sip:201@dialler", Mode: ModeLocal, Favourite: true})
+	s.Upsert("dev-b", Contact{DisplayName: "My Matt", URI: "sip:201@dialpark", Mode: ModeLocal, Favourite: true})
 
 	n, m, err := s.Migrate(legacy, []string{"dev-a", "dev-b"})
 	if err != nil {
@@ -233,7 +233,7 @@ func TestMigrateLegacyGlobalDirectory(t *testing.T) {
 			t.Fatalf("%s: %d live contacts, want 2 (the tombstone stays dead): %+v", dev, len(live), live)
 		}
 	}
-	if live, _ := s.Contacts("dev-b"); live[0].URI != "sip:201@dialler" || live[0].DisplayName != "Matt (201)" || !live[0].Favourite {
+	if live, _ := s.Contacts("dev-b"); live[0].URI != "sip:201@dialpark" || live[0].DisplayName != "Matt (201)" || !live[0].Favourite {
 		t.Fatalf("dev-b's existing contact should be updated in place, keeping its favourite: %+v", live[0])
 	}
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {

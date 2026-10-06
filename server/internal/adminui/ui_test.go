@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/b2bua"
-	"dialler/server/internal/diag"
-	"dialler/server/internal/directory"
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/events"
-	"dialler/server/internal/licence"
-	"dialler/server/internal/loglevel"
-	"dialler/server/internal/status"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/b2bua"
+	"dialpark/server/internal/diag"
+	"dialpark/server/internal/directory"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/events"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/loglevel"
+	"dialpark/server/internal/status"
 )
 
 // fakeAPI is the call server's admin API in memory, reached through an
@@ -82,7 +82,9 @@ func (f *fakeAPI) RoundTrip(r *http.Request) (*http.Response, error) {
 	case p == "/v1/admin/server":
 		lic := f.licence
 		v := status.ServerView{Counts: status.Counts{Devices: len(f.devices)}, Licence: &lic}
-		v.Version, v.Mode, v.LocalDomain, v.StartedAt = "test", "trunk", "dialler", time.Now().Add(-time.Hour)
+		v.Version, v.Mode, v.LocalDomain, v.StartedAt = "test", "trunk", "dialpark", time.Now().Add(-time.Hour)
+		// A UDP trunk: never qualified, so the page must say so rather than "off".
+		v.Trunk = &status.TrunkView{TrunkInfo: status.TrunkInfo{URI: "sip:pbx.example:5060;transport=udp", Transport: "udp", SRTP: "off", Codecs: []string{"g722", "pcmu"}}, Qualify: "off"}
 		return jsonResp(200, v), nil
 	case p == "/v1/admin/status":
 		lic := f.licence
@@ -97,7 +99,7 @@ func (f *fakeAPI) RoundTrip(r *http.Request) (*http.Response, error) {
 			Licence string `json:"licence"`
 		}
 		_ = json.Unmarshal(body, &in)
-		if !strings.HasPrefix(in.Licence, "DL1.good") {
+		if !strings.HasPrefix(in.Licence, "DP1.good") {
 			return jsonResp(400, admin.ErrorBody{Error: "invalid", Message: "not a licence token: expected payload and signature", Field: "licence"}), nil
 		}
 		f.licence.ID, f.licence.Seats = "lic_NEW00001", 25
@@ -487,12 +489,12 @@ func TestUnreachableServerBannerAndLastData(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("fleet while down: %d", rec.Code)
 	}
-	mustContain(t, rec, "not answering", "last read at", "dev-a", "disabled")
+	mustContain(t, rec, "The call server is not answering", "last read at", "dev-a", "disabled")
 	if !strings.Contains(rec.Body.String(), `aria-disabled="true"`) {
 		t.Fatal("writes must be disabled while the server is down")
 	}
 	rec = h.post("/clients/dev-a/revoke")
-	mustContain(t, rec, "not answering", "nothing was changed")
+	mustContain(t, rec, "The call server is not answering; nothing was changed")
 	// A page never fetched shows the banner with no data.
 	rec = h.get("/calls")
 	mustContain(t, rec, "not answering")
@@ -550,7 +552,7 @@ func TestDirectoryCSVUploadPreviewThenApply(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("apply: %d %s", rec.Code, rec.Body)
 	}
-	if h.api.lastIfMatch != "5" || !strings.Contains(h.api.lastBody, `"uri":"sip:201@dialler"`) {
+	if h.api.lastIfMatch != "5" || !strings.Contains(h.api.lastBody, `"uri":"sip:201@dialpark"`) {
 		t.Fatalf("apply: if-match %q body %s", h.api.lastIfMatch, h.api.lastBody)
 	}
 	// A stale confirm is refused and explained.
@@ -576,7 +578,10 @@ func TestServerAndDiagnosticsPages(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("server: %d", rec.Code)
 	}
-	mustContain(t, rec, "<h1>Server</h1>", "Identity", "<h2>Clients</h2>")
+	mustContain(t, rec, "<h1>Server</h1>", "Identity", "<h2>Clients</h2>", "not probed (UDP trunk)", "not TLS (udp)")
+	if strings.Contains(rec.Body.String(), ">off<") {
+		t.Fatal("a UDP trunk must not be shown as State: off")
+	}
 	if strings.Contains(rec.Body.String(), "Fleet") || strings.Contains(rec.Body.String(), "Recent events") {
 		t.Fatal("the server page must not say Fleet nor carry the events (those are Diagnostics)")
 	}
@@ -657,11 +662,11 @@ func TestLicencePageAndPaste(t *testing.T) {
 	}
 
 	// A refused paste: the reason, and the text still in the box.
-	rec = h.post("/licence", "licence", "DL1.not.alicence")
+	rec = h.post("/licence", "licence", "DP1.not.alicence")
 	if rec.Code != 200 {
 		t.Fatalf("bad paste: %d", rec.Code)
 	}
-	mustContain(t, rec, "not a licence token", "DL1.not.alicence")
+	mustContain(t, rec, "not a licence token", "DP1.not.alicence")
 	if h.api.licence.Seats != 10 {
 		t.Fatal("a refused paste changed the fake's licence")
 	}
@@ -676,11 +681,11 @@ func TestLicencePageAndPaste(t *testing.T) {
 	}
 	// A good paste: sent whole (surrounding whitespace trimmed), then a
 	// redirect with the news.
-	rec = h.post("/licence", "licence", "  DL1.good.token\n")
+	rec = h.post("/licence", "licence", "  DP1.good.token\n")
 	if rec.Code != http.StatusSeeOther || !strings.HasPrefix(rec.Header().Get("Location"), "/licence") {
 		t.Fatalf("good paste: %d %s", rec.Code, rec.Header().Get("Location"))
 	}
-	if !strings.Contains(h.api.lastBody, `"licence":"DL1.good.token"`) {
+	if !strings.Contains(h.api.lastBody, `"licence":"DP1.good.token"`) {
 		t.Fatalf("paste body: %s", h.api.lastBody)
 	}
 	rec = h.get(rec.Header().Get("Location"))

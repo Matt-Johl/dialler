@@ -15,14 +15,14 @@ cd "$(dirname "$0")/.."
 # test that lives entirely inside the compose network; NOT for ones a
 # simulator or a real phone has to reach (sim_call.sh, ring_*.sh, probe_*).
 NOPORTS=""
-[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALLER_PUBLIC_HOST=dialler; }
+[ "${HARNESS_NOPORTS:-0}" = 1 ] && { NOPORTS="-f harness/docker-compose.noports.yml"; export DIALPARK_PUBLIC_HOST=dialpark; }
 COMPOSE="docker compose -f harness/docker-compose.yml $NOPORTS --profile test"
-NET=dialler-harness_default
+NET=dialpark-harness_default
 MEDIA_DIR=harness/baresip/media
 CALL_SECONDS="${CALL_SECONDS:-8}"
 # On wake the fake app creates phone-b's user agent, which registers at once
 # (a UA started with regint=0 has no registration objects, so uareg is a no-op).
-ACCOUNT_B='<sip:212@dialler;transport=tls>;auth_user=dev-hb;auth_pass=tok_dev_hb_harness_fixed;regint=300;answermode=auto;mediaenc=srtp-mand;audio_codecs=opus/48000/1,PCMU/8000/1'
+ACCOUNT_B='<sip:212@dialpark;transport=tls>;auth_user=dev-hb;auth_pass=tok_dev_hb_harness_fixed;regint=300;answermode=auto;mediaenc=srtp-mand;audio_codecs=opus/48000/1,PCMU/8000/1'
 WAKE_CMD="${WAKE_CMD:-{\"command\":\"uanew\",\"params\":\"$ACCOUNT_B\"}}"
 KEEP="${KEEP:-0}"
 
@@ -33,7 +33,7 @@ cleanup() { [ "$KEEP" = 1 ] || $COMPOSE down -v >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 echo "== up"
-$COMPOSE up --build -d dialler >/dev/null 2>&1
+$COMPOSE up --build -d dialpark >/dev/null 2>&1
 sleep 2
 PROV="$(sh harness/innet.sh "$NET" harness/provision.sh)"
 TOKEN_B="$(printf '%s\n' "$PROV" | sed -n 's/.*"device_id":"dev-hb".*"token":"\([^"]*\)".*/\1/p' | head -n1)"
@@ -41,13 +41,13 @@ TOKEN_B="$(printf '%s\n' "$PROV" | sed -n 's/.*"device_id":"dev-hb".*"token":"\(
 
 BARESIP_B_REGINT=0 $COMPOSE up --build -d baresip-a baresip-b >/dev/null 2>&1
 sleep 4
-if $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -q 'sip register.*user=212'; then
+if $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -q 'sip register.*user=212'; then
   echo "FAIL: phone-b registered at startup; the wake path would not be exercised"; exit 1
 fi
 
 echo "== fake-app connects as dev-hb and waits for a wake"
 WAKE_OUT="$(mktemp)"
-# The dialler service pins its address on the compose network (Asterisk's
+# The dialpark service pins its address on the compose network (Asterisk's
 # resolver needs a fixed one), so a second container of that service
 # (`compose run`) cannot start: run the fake app from the same image
 # directly on the network instead.
@@ -55,10 +55,10 @@ WAKE_OUT="$(mktemp)"
 # sha256 id from `compose images -q` or the container's .Image is not
 # resolvable by `docker run` under Docker Desktop's containerd image store
 # (seen 2026-09-25 after a Docker restart), while the tag always is.
-IMG="dialler-harness-dialler"
-docker image inspect "$IMG" >/dev/null 2>&1 || IMG="$($COMPOSE images -q dialler 2>/dev/null | head -n1)"
+IMG="dialpark-harness-dialpark"
+docker image inspect "$IMG" >/dev/null 2>&1 || IMG="$($COMPOSE images -q dialpark 2>/dev/null | head -n1)"
 docker run --rm --network "$NET" --entrypoint /fake-app "$IMG" \
-    -server dialler:7443 -device dev-hb -token "$TOKEN_B" -kind extension \
+    -server dialpark:7443 -device dev-hb -token "$TOKEN_B" -kind extension \
     -phone-ctl baresip-b:4444 -wake-cmd "$WAKE_CMD" -timeout 40s -hold 20s \
     > "$WAKE_OUT" 2>"$WAKE_OUT.err" &
 FAKE_PID=$!
@@ -70,7 +70,7 @@ ctl() {
 }
 
 echo "== dial 211 -> 212 (212 is asleep)"
-ctl '{"command":"dial","params":"212@dialler"}'
+ctl '{"command":"dial","params":"212@dialpark"}'
 sleep "$CALL_SECONDS"
 ctl '{"command":"hangup"}'
 sleep 2
@@ -86,9 +86,9 @@ fi
 echo "   wake: $(cat "$WAKE_OUT")"
 
 echo "== server"
-$COMPOSE logs --no-log-prefix dialler 2>&1 | grep -E 'invite|woke|wake_ack|sip register.*212|bridged|call ended|level=(ERROR|WARN)' | tail -12 | sed 's/^/   /'
+$COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -E 'invite|woke|wake_ack|sip register.*212|bridged|call ended|level=(ERROR|WARN)' | tail -12 | sed 's/^/   /'
 for want in 'woke callee device' 'wake_ack' 'sip register.*user=212' 'msg=bridged'; do
-  $COMPOSE logs --no-log-prefix dialler 2>&1 | grep -qE "$want" || { echo "FAIL: server log lacks: $want"; exit 1; }
+  $COMPOSE logs --no-log-prefix dialpark 2>&1 | grep -qE "$want" || { echo "FAIL: server log lacks: $want"; exit 1; }
 done
 
 echo "== media"

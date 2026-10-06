@@ -5,12 +5,12 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"dialler/server/internal/enroll"
-	"dialler/server/internal/events"
-	"dialler/server/internal/gateway"
-	"dialler/server/internal/licence"
-	"dialler/server/internal/pbxline"
-	"dialler/server/internal/registry"
+	"dialpark/server/internal/enroll"
+	"dialpark/server/internal/events"
+	"dialpark/server/internal/gateway"
+	"dialpark/server/internal/licence"
+	"dialpark/server/internal/pbxline"
+	"dialpark/server/internal/registry"
 )
 
 // startLicence reads the installation's identity and its licence (SPEC

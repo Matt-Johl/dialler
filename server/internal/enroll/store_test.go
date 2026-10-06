@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"dialler/server/internal/secrets"
+	"dialpark/server/internal/secrets"
 )
 
 // A pre-9b devices.json (a bare map with "label") is read, its label
@@ -219,7 +219,7 @@ func TestFailedPersistRestoresMemory(t *testing.T) {
 func TestRoundTripProperty(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "devices.json")
 	s, _ := Open(path)
-	s.Realm = "dialler"
+	s.Realm = "dialpark"
 	s.Secrets, _ = secrets.OpenKey(filepath.Join(t.TempDir(), "pbx.key"))
 	rng := rand.New(rand.NewSource(1))
 	ids := []string{"dev-a", "dev-b", "dev-c", "dev-d"}
@@ -274,7 +274,7 @@ func TestDigestReadNeverWaitsOnDisk(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "devices.json")
 	s, _ := Open(path)
-	s.Realm = "dialler"
+	s.Realm = "dialpark"
 	for i := 0; i < 200; i++ {
 		s.IssueToken("dev-"+string(rune('a'+i%26))+string(rune('a'+i/26)), "u"+string(rune('a'+i%26))+string(rune('a'+i/26)), "tok_fixed_0123456789_"+string(rune('a'+i%26)))
 	}

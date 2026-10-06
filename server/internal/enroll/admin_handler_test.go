@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"dialler/server/internal/admin"
-	"dialler/server/internal/secrets"
+	"dialpark/server/internal/admin"
+	"dialpark/server/internal/secrets"
 )
 
 func adminDo(h http.Handler, method, path, body string) (*httptest.ResponseRecorder, admin.ErrorBody) {

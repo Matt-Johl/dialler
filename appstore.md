@@ -163,7 +163,8 @@ calls are simulated on the phone and nothing leaves it.
 - **Metadata:** description, keywords, support URL, **privacy policy URL**
   (required), category (Business), age rating, copyright, review contact
   and notes.
-- **Screenshots:** **Done** (2026-09-29), six screens in upload order
+- **Screenshots:** **Done** (2026-09-29; retaken 2026-10-06 for the
+  Dialpark rename and version 1.1.2), six screens in upload order
   (call, directory, recents, keypad, settings, welcome), opaque RGB (App
   Store Connect refuses an alpha channel):
   - `appstore/screenshots/6.5-inch/`: 1284 × 2778, the size App Store
@@ -172,8 +173,9 @@ calls are simulated on the phone and nothing leaves it.
     Max simulator, in case the larger size is wanted too.
 
   The app's own views on iOS 26 in UK English, release build (no "Debug"),
-  status bar 9:41 with full signal and battery, server 10.0.0.10, sample
-  data that is fictitious (Ofcom drama numbers for outside lines).
+  status bar 9:41 with full signal and battery, server 10.0.0.10, Wi-Fi
+  networks "Staff, Staff-5G", sample data that is fictitious (Ofcom drama
+  numbers for outside lines).
 - **App Privacy label:** diagnostics and logs go to the customer's own
   server, not to us, so "Data Not Collected" is defensible; the privacy
   policy still says what the app sends and where.

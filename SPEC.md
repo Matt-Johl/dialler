@@ -1726,6 +1726,18 @@ on by config — see §7.4.
      ADMIN-API, README. Every API call and every condition in §4.9 has a
      test before D2 or F starts. The one-off online check-in is a later
      item of its own.
+   13. **No "office" wording in the app (noted 2026-10-06).** The app
+     still says "office" in its own copy, which shows in the App Store
+     screenshots (Settings, 05):
+     - `SettingsView.swift`: the "Office Wi-Fi" row and its three
+       footers ("on office Wi-Fi", "only on office Wi-Fi", "hasn’t set up
+       office Wi-Fi");
+     - `StatusView.swift` (Debug only): "The office Wi-Fi networks…";
+     - `DirectoryView.swift`, the contact editor: "your office’s phone
+       system (PBX)";
+     - `Info.plist`, the Local Network prompt: "on the office network".
+     New wording for each, then Matt's Xcode build, then screenshot 05
+     retaken at both sizes.
 
 ### Much later (not scheduled)
 

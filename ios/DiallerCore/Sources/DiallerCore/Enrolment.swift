@@ -71,7 +71,7 @@ public struct EnrolmentResult: Codable, Equatable, Sendable {
 
     /// The configuration the app runs on from here: pinned to the
     /// certificate the server named, never "accept any".
-    public func config(host: String, appVersion: String = "0.1.0") -> AppConfig {
+    public func config(host: String, appVersion: String = AppConfig.bundleVersion) -> AppConfig {
         AppConfig(gateway: GatewayEndpoint(host: host, port: UInt16(clamping: signalPort), acceptAnyCertificate: false, certSHA256: certSHA256),
                   deviceID: deviceID, token: token, appVersion: appVersion)
     }

@@ -83,6 +83,8 @@ func (f *fakeAPI) RoundTrip(r *http.Request) (*http.Response, error) {
 		lic := f.licence
 		v := status.ServerView{Counts: status.Counts{Devices: len(f.devices)}, Licence: &lic}
 		v.Version, v.Mode, v.LocalDomain, v.StartedAt = "test", "trunk", "dialpark", time.Now().Add(-time.Hour)
+		// A UDP trunk: never qualified, so the page must say so rather than "off".
+		v.Trunk = &status.TrunkView{TrunkInfo: status.TrunkInfo{URI: "sip:pbx.example:5060;transport=udp", Transport: "udp", SRTP: "off", Codecs: []string{"g722", "pcmu"}}, Qualify: "off"}
 		return jsonResp(200, v), nil
 	case p == "/v1/admin/status":
 		lic := f.licence
@@ -487,12 +489,12 @@ func TestUnreachableServerBannerAndLastData(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("fleet while down: %d", rec.Code)
 	}
-	mustContain(t, rec, "not answering", "last read at", "dev-a", "disabled")
+	mustContain(t, rec, "The call server is not answering", "last read at", "dev-a", "disabled")
 	if !strings.Contains(rec.Body.String(), `aria-disabled="true"`) {
 		t.Fatal("writes must be disabled while the server is down")
 	}
 	rec = h.post("/clients/dev-a/revoke")
-	mustContain(t, rec, "not answering", "nothing was changed")
+	mustContain(t, rec, "The call server is not answering; nothing was changed")
 	// A page never fetched shows the banner with no data.
 	rec = h.get("/calls")
 	mustContain(t, rec, "not answering")
@@ -576,7 +578,10 @@ func TestServerAndDiagnosticsPages(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("server: %d", rec.Code)
 	}
-	mustContain(t, rec, "<h1>Server</h1>", "Identity", "<h2>Clients</h2>")
+	mustContain(t, rec, "<h1>Server</h1>", "Identity", "<h2>Clients</h2>", "not probed (UDP trunk)", "not TLS (udp)")
+	if strings.Contains(rec.Body.String(), ">off<") {
+		t.Fatal("a UDP trunk must not be shown as State: off")
+	}
 	if strings.Contains(rec.Body.String(), "Fleet") || strings.Contains(rec.Body.String(), "Recent events") {
 		t.Fatal("the server page must not say Fleet nor carry the events (those are Diagnostics)")
 	}

@@ -379,9 +379,9 @@ treat another exchange or a carrier.
   because the audio keys travel in the signalling.
 - On a TCP or TLS trunk the server probes the PBX every 10 seconds. A probe unanswered for 3 seconds
   drops the pooled connection so that the next call dials afresh instead of hitting a dead socket. This
-  probe does not run over UDP, which has no connection to go dead; the console then shows the trunk's
-  probe state as "off". The server also answers the PBX's own probes, which CUCM requires to keep a
-  trunk marked up.
+  probe does not run over UDP, which has no connection to go dead; the console then shows the trunk
+  as "not probed (UDP trunk)". The server also answers the PBX's own probes, which CUCM requires to
+  keep a trunk marked up.
 - Codecs offered to the PBX are configurable; the default is G.722 then G.711. The server never
   transcodes, so the phone gets whatever the PBX chose. Incoming calls follow the PBX's offer order.
 - Any number that is not one of the server's own phones is sent to the trunk, including numbers that
@@ -581,7 +581,7 @@ from a file at start. A session lasts 12 hours from last use; restarting the con
 out. A form submitted after the session expired is kept for 15 minutes and applied after signing in
 again. Every form is protected against cross-site forgery. Shift-D switches between light and dark.
 
-If the call server is unreachable, every page shows a banner, "the call server is not answering.
+If the call server is unreachable, every page shows a banner, "The call server is not answering.
 Nothing can be changed until it does. Showing what was last read at …", and every control that writes
 is disabled. Nothing the console does can interrupt a call.
 
@@ -597,8 +597,8 @@ range, the data directory and the diagnostics retention. Counts: clients (enroll
 apps and wake extensions, SIP registrations, PBX lines registered and failing, calls in progress, the
 licence summary, and admin API counters.
 
-If a trunk is configured, a Trunk section shows the PBX address, the probe state (up, down, or off for a
-UDP trunk, with the time since and the last error), audio encryption and codecs, and the TLS settings
+If a trunk is configured, a Trunk section shows the PBX address, the probe state (up or down with the
+time since and the last error, or "not probed" for a UDP trunk), audio encryption and codecs, and the TLS settings
 including warnings when the PBX certificate is not verified or no certificate is set. In lines mode a
 Lines section shows the registrar, domain, registration lifetime and default line.
 
@@ -881,8 +881,6 @@ Operations
 - Hold music is built in; changing it needs a new build.
 - The server keeps no call history and no audit trail of operator actions.
 - Designed for up to 500 phones and 5,000 contacts per directory; the console does not paginate.
-- The version the app reports to the server is currently a fixed placeholder, so the console's "App
-  1.4" style figure does not yet reflect the real app version.
 
 ## 19. Third-party components
 

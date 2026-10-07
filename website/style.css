@@ -114,70 +114,42 @@ section.hero { border-top: 0; padding: 72px 0 96px; }
 .hero .wrap { display: grid; grid-template-columns: 1fr 330px; gap: 56px; align-items: center; }
 @media (max-width: 860px) { .hero .wrap { grid-template-columns: minmax(0, 1fr); gap: 56px; } }
 
-/* An iPhone in the app's in-call screen: titanium band, black bezel,
-   Dynamic Island. The screen is drawn in the page's colours, so it follows
-   the theme; its proportions follow the App Store screenshot (1320 × 2868). */
+/* An iPhone showing the app's screens in turn (the App Store screenshots,
+   1320 × 2868, at 576 px wide): titanium band, black bezel, Dynamic Island.
+   Each screen has a light and a dark image, swapped with the page's theme;
+   site.js moves .active along and the screens crossfade. */
 .iphone {
   position: relative; width: 312px; max-width: 100%; margin: 8px auto; padding: 3px; border-radius: 58px;
   background: linear-gradient(135deg, #e6e7e9 0%, #8e9095 20%, #d8d9dc 46%, #7a7c81 72%, #c7c8cb 100%);
   box-shadow: 0 40px 80px -32px rgba(10, 12, 18, .38), 0 16px 32px -16px rgba(10, 12, 18, .22);
 }
 .iphone .bezel { padding: 9px; border-radius: 55px; background: #050506; box-shadow: inset 0 0 0 1px #1d1e21; }
-.iphone .screen {
-  position: relative; overflow: hidden; border-radius: 46px; aspect-ratio: 1320 / 2868;
-  background: var(--ground); color: var(--ink);
-  display: flex; flex-direction: column; align-items: center; padding: 0 16px 36px;
+.iphone .screen { position: relative; overflow: hidden; border-radius: 46px; aspect-ratio: 1320 / 2868; background: var(--ground); }
+.iphone .shot { position: absolute; inset: 0; opacity: 0; transition: opacity .6s ease; }
+.iphone .shot.active { opacity: 1; }
+.iphone .shot img { display: block; width: 100%; height: 100%; }
+.iphone .shot img.dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .iphone .shot img.light { display: none; }
+  :root:not([data-theme="light"]) .iphone .shot img.dark { display: block; }
 }
-.iphone .screen > * { flex: none; }
+:root[data-theme="dark"] .iphone .shot img.light { display: none; }
+:root[data-theme="dark"] .iphone .shot img.dark { display: block; }
 .iphone .island { position: absolute; top: 11px; left: 50%; transform: translateX(-50%); width: 88px; height: 26px; border-radius: 13px; background: #000; }
-.iphone .status {
-  position: absolute; top: 0; left: 0; right: 0; height: 49px; padding: 2px 22px 0 34px;
-  display: flex; align-items: center; justify-content: space-between;
-  font-size: 14px; font-weight: 600; letter-spacing: -.01em;
-}
-.iphone .status .icons { display: flex; align-items: center; gap: 5px; }
-.iphone .status svg { display: block; fill: currentColor; }
-.iphone .home { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 104px; height: 4px; border-radius: 2px; background: var(--ink); }
 .iphone .btn { position: absolute; width: 3px; border-radius: 2px; background: linear-gradient(90deg, #6d6f74, #cfd0d3); }
 .iphone .btn.action { left: -2px; top: 112px; height: 28px; }
 .iphone .btn.up { left: -2px; top: 158px; height: 48px; }
 .iphone .btn.down { left: -2px; top: 214px; height: 48px; }
 .iphone .btn.side { right: -2px; top: 176px; height: 76px; border-radius: 2px; background: linear-gradient(270deg, #6d6f74, #cfd0d3); }
-.rings { position: relative; width: 150px; height: 150px; margin-top: 128px; display: grid; place-items: center; }
-.rings i {
-  position: absolute; inset: 0; border: 1px solid var(--ink); border-radius: 50%;
-  opacity: 0; transform: scale(.34);
-  animation: pulse 4.2s linear infinite;
-}
-.rings i:nth-child(2) { animation-delay: -1.4s; }
-.rings i:nth-child(3) { animation-delay: -2.8s; }
-@keyframes pulse {
-  0% { transform: scale(.46); opacity: 0; }
-  12% { opacity: .26; }
-  100% { transform: scale(1); opacity: 0; }
-}
+.dots { display: flex; justify-content: center; gap: 2px; margin-top: 14px; }
+.dots button { width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer; display: grid; place-items: center; border-radius: 50%; }
+.dots button::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ring); transition: background .3s; }
+.dots button:hover::before { background: var(--tertiary); }
+.dots button[aria-pressed="true"]::before { background: var(--ink); }
+.dots button:focus-visible { outline: 2px solid var(--ink); outline-offset: 0; }
 @media (prefers-reduced-motion: reduce) {
-  .rings i { animation: none; }
-  .rings i:nth-child(1) { transform: scale(.6); opacity: .14; }
-  .rings i:nth-child(2) { transform: scale(.8); opacity: .09; }
-  .rings i:nth-child(3) { transform: scale(1); opacity: .05; }
+  .iphone .shot, .dots button::before { transition: none; }
 }
-.monogram {
-  position: relative; width: 68px; height: 68px; border-radius: 50%;
-  border: 1.25px solid var(--ink); display: grid; place-items: center;
-  font-size: 23px; letter-spacing: .01em;
-}
-.iphone .who { font-size: 25px; letter-spacing: -.03em; margin: 22px 0 0; }
-.iphone .time { color: var(--secondary); font-size: 15px; font-variant-numeric: tabular-nums; }
-.controls { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: auto; width: 100%; }
-.controls div { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 10px; color: var(--secondary); }
-.controls span {
-  width: 48px; height: 48px; border-radius: 50%; border: 1px solid var(--ring);
-  display: grid; place-items: center; color: var(--ink);
-}
-.controls svg, .end svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.end { width: 56px; height: 56px; border-radius: 50%; background: var(--end); color: #fff; display: grid; place-items: center; margin-top: 26px; flex: none; }
-.end svg { width: 24px; height: 24px; fill: currentColor; stroke: none; }
 
 /* ---- spec lists ---- */
 table.spec td:first-child { width: 200px; color: var(--ink); }

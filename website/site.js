@@ -7,7 +7,8 @@ document.querySelector(".theme").addEventListener("click", function () {
 });
 
 // The hero phone shows the app's screens in turn, every 4 s. A dot shows its
-// screen and stops the turn; so does a preference for reduced motion.
+// screen and the turn carries on from there after a full 4 s. A preference
+// for reduced motion stops the turn; the dots still work.
 (function () {
   var shots = document.querySelectorAll(".iphone .shot");
   var dots = document.querySelectorAll(".dots button");
@@ -24,7 +25,7 @@ document.querySelector(".theme").addEventListener("click", function () {
   function stop() { clearInterval(timer); timer = null; }
   var stopped = matchMedia("(prefers-reduced-motion: reduce)").matches;
   dots.forEach(function (dot, i) {
-    dot.addEventListener("click", function () { stopped = true; stop(); show(i); });
+    dot.addEventListener("click", function () { stop(); show(i); if (!stopped) start(); });
   });
   document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); else if (!stopped) start(); });
   if (!stopped) start();

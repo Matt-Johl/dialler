@@ -176,6 +176,11 @@ calls are simulated on the phone and nothing leaves it.
   status bar 9:41 with full signal and battery, server 10.0.0.10, Wi-Fi
   networks "Staff, Staff-5G", sample data that is fictitious (Ofcom drama
   numbers for outside lines).
+
+  `appstore/screenshots/6.5-inch-dark/` and `6.9-inch-dark/` (2026-10-07)
+  are the same six screens in dark mode, for the website to swap with its
+  own theme. They are not for App Store Connect, which takes one set per
+  size.
 - **App Privacy label:** diagnostics and logs go to the customer's own
   server, not to us, so "Data Not Collected" is defensible; the privacy
   policy still says what the app sends and where.
